@@ -2,6 +2,8 @@
 
 *By Steffen Lav (OZ1LAV).* Shared over the Network Updated by JP Watters
 
+**This is a work in progress, much testing to be done and fixes to be incorporated..jp**
+
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
 Here’s what the QMX+ PanadapterShared  adds on top of upstream QMX-Panadapter, with how far each has been tested:
