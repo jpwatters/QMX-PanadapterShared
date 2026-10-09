@@ -1,8 +1,44 @@
 # QMX+ Panadapter
 
-*By Steffen Lav (OZ1LAV).*
+*By Steffen Lav (OZ1LAV).* Shared over the Network Updated by JP Watters
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
+
+Here’s what the QMX+ PanadapterShared  adds on top of upstream QMX-Panadapter, with how far each has been tested:
+1.Sharing the radio over the network
+2.Client to present the Networked QMX/QMX+ as a USB port
+3.Network Shared QMX/QMX+ Discovery on the network with a UDP broadcast (QMXR? / QMXR!)
+4.M5Stack Tab5 discovery with the Web Browser http://qmx.local
+
+Sharing the radio over the network
+* Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
+* Raspberry Pi 4/5 relay (tools/pi-relay): the same relay as a background service on a Pi. Written, not yet tested on a Pi.
+* PC serial port on the relay: the QMX’s third serial port is offered on TCP 7356, so PC software can control the radio alongside the Tab5. Tested on the NAS.
+* Find NAS discovery: the Tab5 or the Mac broadcasts QMXR? on UDP 7355, and the relay replies QMXR! <ip> <port>. Tested on the NAS and the Tab5.
+On the Tab5
+* Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
+* Radio source on the web page: the same setting, also available to other programs at /api/relay. Tested.
+* Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus, and upstream’s new GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
+* Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
+* Live spectrum on the web page (fixed). Tested.
+
+Reliability fixes needed for the network stream
+* WiFi receive: the Tab5 now keeps every packet of a bundled WiFi read instead of dropping some, and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
+* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
+* Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
+Mac tools
+* Mac serial bridge (tools/mac-serial-bridge): presents the NAS-shared QMX as a serial port for WSJT-X, qFT8 and similar programs, finding the NAS automatically. Doesn’t connect yet; deferred.
+* Build and flash from a Mac (mac-build-flash.sh), and record the Tab5’s serial log (mac-capture-serial.sh).
+Keeping up with upstream
+* Update kit (make-qmx-panadapter-nas.sh): rebuilds QMX-Panadapter-NAS from each new upstream release plus the 12 NAS patches. --mark-tested promotes a build to QMX-Panadapter-Shared, and replaced folders go to an archive rather than being deleted.
+* GitHub publishing (push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared. The first upload still needs to go through.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.16.12-NAS.
+Documentation
+* The relay README: setup, troubleshooting, and the power-off cure for a stuck touch chip.
+* The project PDF, QMX-Panadapter-Shared.pdf: covers all of this, with sources and full code listings.
+
+
+
 
 The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4 decoding and transmit, ADIF logging, and a matching browser web UI.
 
@@ -1295,3 +1331,4 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own 
 ## License
 
 MIT (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
+
