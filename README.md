@@ -42,6 +42,9 @@ Documentation
 
 The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4 decoding and transmit, ADIF logging, and a matching browser web UI.
 
+
+!!!   End of JP's edits to Steffen's Readme   !!!
+
 **Documentation:** [tab5.lav.dk](https://tab5.lav.dk) — the user guide, quick-start, and reference as plain web pages. A more approachable read than this page if you just want to set the device up; the source code and release downloads stay here on GitHub.
 
 ![Panadapter on M5Stack Tab5 — QMX+ tuned to 7.019.470 MHz, 40 m CW activity with callsign spot labels above the waterfall](QMX-Panadapter-NAS/docs/QMX-Panadapter_v1.16.7.png)
