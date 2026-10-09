@@ -1,0 +1,893 @@
+// "Set and Sync the Clock" modal.
+//
+// Three large boxes: [HH] : [MM] : [SS]
+//
+//  HH / MM  — tap to show a 2-row numpad BELOW this panel:
+//    Row 1: [0][1][2][3][4][✓]   Row 2: [5][6][7][8][9][✗]
+//    ✓ confirms; ✗ = backspace (tap on empty = cancel).
+//    Validated: HH 0-23, MM 0-59. Pre-filled from current UTC.
+//    "HH"/"MM" hint stays centred below the big digits.
+//
+//  SS  — live FT8/FT4-corrected seconds (syncs at each slot decode: ~15 s
+//    FT8, ~7.5 s FT4; whichever sub-mode is currently active).
+//    ⚠ TAPPING SS CHANGES THE CLOCK SOURCE. It does NOT "lock" anything —
+//    it cycles FT8 -> NTP -> QMX -> FT8, and the frame colour names the
+//    source: blue = FT8/FT4 slot timing, green = NTP, white-grey = the
+//    radio's own clock.
+//
+//    This comment used to describe a lock ("blue = auto, grey = locked, tap
+//    to toggle"), which the design left behind and the comment did not.
+//    Don WB0LQW read the same thing into the UI: he tapped twice "to lock it
+//    in", landing on QMX — i.e. he adopted the RADIO's clock as his
+//    reference, which on a GPS-less QMX at a POTA site is the one source
+//    v1.8.2 stopped trusting. So the hint under the box now says
+//    "NTP source (tap)" / "QMX source (tap)" rather than "SS NTP sync".
+//    HOLD SS and RELEASE on the minute to set the seconds to 00 — the only way
+//    to set the clock to the second with no WiFi and no GPS. Applies on
+//    RELEASE, not on Apply: the release is the measurement.
+//
+//  Apply: time_sync_apply_correction_ms (sub-second) when only SS
+//    correction is needed; time_sync_set_manual when HH or MM were edited.
+
+#include "ft8_time_modal.h"
+#include "date_confirm_modal.h"   // the date line opens it - HH:MM:SS alone never set the day
+#include "ui_theme.h"
+#include "ft8_test.h"
+#include "time_sync/time_sync.h"
+#include "storage/settings.h"   // qmx_gps flag for the active-source label
+#include "cat.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <math.h>
+
+#include "esp_log.h"
+#include "lvgl.h"
+
+static const char *TAG = "ft8_time_modal";
+
+// SS_SYNC_FT8 is really "synced off whatever FT8/FT4 sub-mode is currently
+// decoding" - the timing-offset math itself is protocol-agnostic (see
+// ft8_test.c's decode_candidate_range fix, 2026-06-30), this just picks the
+// label to show the operator.
+static const char *active_proto_label(void)
+{
+    return (ft8_op_mode_get() == FT8_OP_MODE_FT4) ? "FT4" : "FT8";
+}
+
+// The clock source actually in charge right now, as a short UI label. NTP/GPS
+// when a real reference is up (the FT8 auto-sync is DISABLED then - it only
+// runs as the offline fallback, since its offset is RX-audio-latency-biased);
+// FT8/FT4 only when it's genuinely the offline source.
+static const char *active_source_label(void)
+{
+    switch (time_sync_get_effective_source()) {   // current authority, not last writer
+        // The Unit GPS says "GPS" like every other GPS authority - origin is
+        // told apart by the bottom-bar chip and the apply logs, not by a new
+        // word here, and the SS cycle below stays FT8/NTP/QMX.
+        case TIME_SOURCE_UNIT_GPS: return "GPS";
+        case TIME_SOURCE_SNTP:   return "NTP";
+        case TIME_SOURCE_QMX:    return time_sync_qmx_gps_confirmed() ? "GPS" : "QMX";
+        case TIME_SOURCE_FT8:    return active_proto_label();   // FT8 or FT4
+        case TIME_SOURCE_MANUAL: return "manual";
+        case TIME_SOURCE_RTC:    return "RTC";
+        default:                 return "--";
+    }
+}
+
+// Is FT8/FT4 slot timing ACTUALLY driving the clock right now? Only true
+// offline (no SNTP/GPS); the auto-sync is gated off when a real reference is up.
+static bool ft8_is_clock_source(void)
+{
+    return time_sync_get_source() == TIME_SOURCE_FT8;
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+typedef enum { SS_SYNC_FT8 = 0, SS_SYNC_NTP = 1, SS_SYNC_QMX = 2 } ss_mode_t;
+
+static int       s_hh_val     = 0;
+static int       s_mm_val     = 0;
+static int       s_ss_display = 0;
+static int       s_ss_err_ms  = 0;        // FT8 sub-second correction (ms)
+static ss_mode_t s_ss_mode    = SS_SYNC_FT8;
+static int       s_edit_field = 0;        // 0=none, 1=HH, 2=MM
+// QMX-mode base time: TM; result + system time_t when it was queried
+static int   s_qmx_h     = 0;
+static int   s_qmx_m     = 0;
+static int   s_qmx_s     = 0;
+static time_t s_qmx_base = 0;
+static bool  s_qmx_valid = false;
+static char s_edit_buf[3];
+static bool s_hh_edited  = false;
+static bool s_mm_edited  = false;
+
+// HOLD-TO-ZERO on the SS box. Don WB0LQW hit the gap this fills on a real POTA
+// activation: with WiFi off and no GPS there was no way to set the clock to the
+// second, because HH and MM are editable and SS is not - so he could not get inside
+// the ~1 s FT8 needs. The user guide's section 7.5 described a manual time set that
+// no longer existed.
+//
+// The gesture is Roy KI0ER's proposal, and it is the right one because the operator
+// already has the reference in front of them: hold the SS box, watch a wristwatch or
+// listen for the FT8 gap, and RELEASE on the minute. Release is the instant that
+// carries the information, which is why the clock is set on release and not on Save
+// - a Save tap seconds later would be seconds late.
+static bool s_ss_zero_armed = false;    // holding, waiting for the release
+static bool s_ss_zero_done  = false;    // suppress the CLICKED that follows a release
+static bool s_open       = false;
+
+// ---------------------------------------------------------------------------
+// Widgets
+// ---------------------------------------------------------------------------
+
+static lv_obj_t   *s_modal    = NULL;
+static lv_obj_t   *s_panel    = NULL;
+static lv_obj_t   *s_box_hh   = NULL;
+static lv_obj_t   *s_box_mm   = NULL;
+static lv_obj_t   *s_box_ss   = NULL;
+static lv_obj_t   *s_lbl_hh   = NULL;
+static lv_obj_t   *s_lbl_mm   = NULL;
+static lv_obj_t   *s_lbl_ss   = NULL;
+static lv_obj_t   *s_hint_ss  = NULL;  // dynamic FT8/FT4 status below SS digits
+static lv_obj_t   *s_hint_top = NULL;  // top one-line hint, mentions the active sub-mode
+static lv_obj_t   *s_numpad   = NULL;
+static lv_obj_t   *s_lbl_date_row = NULL;   // the tappable date row (see build)
+static lv_timer_t *s_timer    = NULL;
+
+// ---------------------------------------------------------------------------
+// Colours
+// ---------------------------------------------------------------------------
+
+#define BOX_BG             0x0e1620
+#define BOX_BORDER_DIM     0x334455
+#define BOX_BORDER_ACT     0x5588cc   // HH or MM selected
+#define BOX_BORDER_SS_FT8  0x1a5090   // SS FT8 sync (blue)
+#define BOX_BORDER_SS_NTP  0x1a7030   // SS NTP sync (green)
+#define BOX_BORDER_SS_QMX  0xb0b0b0   // SS QMX sync (white-ish)
+
+static void refresh_box_styles(void)
+{
+    lv_obj_set_style_border_color(s_box_hh,
+        lv_color_hex(s_edit_field == 1 ? BOX_BORDER_ACT : BOX_BORDER_DIM), 0);
+    lv_obj_set_style_border_width(s_box_hh, s_edit_field == 1 ? 3 : 2, 0);
+
+    lv_obj_set_style_border_color(s_box_mm,
+        lv_color_hex(s_edit_field == 2 ? BOX_BORDER_ACT : BOX_BORDER_DIM), 0);
+    lv_obj_set_style_border_width(s_box_mm, s_edit_field == 2 ? 3 : 2, 0);
+
+    uint32_t ss_border; uint32_t ss_digit;
+    switch (s_ss_mode) {
+        case SS_SYNC_FT8: ss_border = BOX_BORDER_SS_FT8; ss_digit = 0x80bbff; break;
+        case SS_SYNC_NTP: ss_border = BOX_BORDER_SS_NTP; ss_digit = 0x80e890; break;
+        case SS_SYNC_QMX: ss_border = BOX_BORDER_SS_QMX; ss_digit = 0xffffff; break;
+        default:          ss_border = BOX_BORDER_DIM;    ss_digit = 0xffffff; break;
+    }
+    // Armed for hold-to-zero: the same amber this UI uses for "armed" on the FT8
+    // transmit status, so the state is recognisable rather than novel.
+    if (s_ss_zero_armed) ss_border = 0xFFA040;
+    lv_obj_set_style_border_color(s_box_ss, lv_color_hex(ss_border), 0);
+    lv_obj_set_style_border_width(s_box_ss, 3, 0);
+    lv_obj_set_style_text_color(s_lbl_ss, lv_color_hex(ss_digit), 0);
+}
+
+
+static void update_box_label(int field)
+{
+    char buf[8];
+    if (field == 1) {
+        if (s_edit_buf[0]) snprintf(buf, sizeof(buf), "%s_", s_edit_buf);
+        else               snprintf(buf, sizeof(buf), "%02d", s_hh_val);
+        lv_label_set_text(s_lbl_hh, buf);
+    } else if (field == 2) {
+        if (s_edit_buf[0]) snprintf(buf, sizeof(buf), "%s_", s_edit_buf);
+        else               snprintf(buf, sizeof(buf), "%02d", s_mm_val);
+        lv_label_set_text(s_lbl_mm, buf);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Numpad logic
+// ---------------------------------------------------------------------------
+
+static void confirm_edit(void)
+{
+    if (!s_edit_buf[0]) goto done;
+    int val = atoi(s_edit_buf);
+    bool ok = false;
+    if (s_edit_field == 1 && val >= 0 && val <= 23) { s_hh_val = val; s_hh_edited = true; ok = true; }
+    if (s_edit_field == 2 && val >= 0 && val <= 59) { s_mm_val = val; s_mm_edited = true; ok = true; }
+    if (!ok) {
+        lv_obj_t *b = (s_edit_field == 1) ? s_box_hh : s_box_mm;
+        lv_obj_set_style_border_color(b, lv_color_hex(0xcc3333), 0);
+        lv_obj_set_style_border_width(b, 3, 0);
+        return;  // keep numpad open
+    }
+done:
+    s_edit_buf[0] = '\0';
+    update_box_label(1);
+    update_box_label(2);
+    lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    s_edit_field = 0;
+    refresh_box_styles();
+}
+
+static void digit_cb(lv_event_t *e)
+{
+    int d = (int)(intptr_t)lv_event_get_user_data(e);
+    if (strlen(s_edit_buf) < 2) {
+        size_t l = strlen(s_edit_buf);
+        s_edit_buf[l] = '0' + d;
+        s_edit_buf[l + 1] = '\0';
+    }
+    update_box_label(s_edit_field);
+}
+
+static void check_cb(lv_event_t *e) { (void)e; confirm_edit(); }
+
+static void cross_cb(lv_event_t *e)
+{
+    (void)e;
+    size_t l = strlen(s_edit_buf);
+    if (l > 0) {
+        s_edit_buf[l - 1] = '\0';
+        update_box_label(s_edit_field);
+    } else {
+        s_edit_buf[0] = '\0';
+        update_box_label(s_edit_field);
+        lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+        s_edit_field = 0;
+        refresh_box_styles();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Box tap callbacks
+// ---------------------------------------------------------------------------
+
+static void hh_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_edit_field == 1) { confirm_edit(); return; }
+    if (s_edit_field == 2)   confirm_edit();
+    s_edit_field = 1;
+    s_edit_buf[0] = '\0';
+    lv_obj_clear_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    refresh_box_styles();
+}
+
+static void mm_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_edit_field == 2) { confirm_edit(); return; }
+    if (s_edit_field == 1)   confirm_edit();
+    s_edit_field = 2;
+    s_edit_buf[0] = '\0';
+    lv_obj_clear_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    refresh_box_styles();
+}
+
+// Long press on SS: arm, and say what releasing will do. Deliberately no countdown
+// or animation - the operator's eyes belong on their watch, not on this box.
+static void ss_hold_cb(lv_event_t *e)
+{
+    (void)e;
+    s_ss_zero_armed = true;
+    if (s_hint_ss) lv_label_set_text(s_hint_ss, "release ON the minute");
+    refresh_box_styles();
+}
+
+// Release while armed: THIS is the moment being measured.
+static void ss_release_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ss_zero_armed) return;
+    s_ss_zero_armed = false;
+    s_ss_zero_done  = true;      // the CLICKED that follows must not cycle the source
+
+    time_t now = time(NULL);
+    struct tm tm; gmtime_r(&now, &tm);
+
+    int hh, mm;
+    if (s_hh_edited || s_mm_edited) {
+        // Don's flow: the clock was badly wrong, so HH:MM were typed in. Rounding the
+        // system clock would be meaningless - take what the operator entered.
+        hh = s_hh_val;
+        mm = s_mm_val;
+    } else {
+        // Roy's flow: the clock is roughly right and only the seconds are adrift.
+        // Releasing on the minute means the intended time is the NEAREST minute
+        // boundary, so 12:34:47 rounds up to 12:35:00 rather than back to 12:34:00.
+        time_t target = now - tm.tm_sec + (tm.tm_sec >= 30 ? 60 : 0);
+        struct tm tt; gmtime_r(&target, &tt);
+        hh = tt.tm_hour;
+        mm = tt.tm_min;
+    }
+
+    time_sync_set_manual(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, hh, mm, 0);
+    ESP_LOGI(TAG, "seconds zeroed by hold-and-release: %02d:%02d:00 (was %02d:%02d:%02d)",
+             hh, mm, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+    s_hh_edited = false;         // the clock now IS this; stop holding the typed values
+    s_mm_edited = false;
+    if (s_hint_ss) lv_label_set_text(s_hint_ss, "SS  set to 00");
+    refresh_box_styles();
+}
+
+static void ss_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    // A release that just set the clock also raises CLICKED; cycling the sync source
+    // on top of it would undo the thing the operator was aiming for.
+    if (s_ss_zero_done) { s_ss_zero_done = false; return; }
+    // Discard any in-progress numpad edit before switching source
+    if (s_edit_field) {
+        s_edit_buf[0] = '\0';
+        s_edit_field  = 0;
+        lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    s_ss_mode = (ss_mode_t)((s_ss_mode + 1) % 3);
+    char b[4];
+
+    if (s_ss_mode == SS_SYNC_NTP) {
+        s_hh_edited = false;
+        s_mm_edited = false;
+        s_ss_err_ms = 0;
+        // Update HH/MM immediately from system clock (no wait for next timer tick)
+        time_t now = time(NULL);
+        struct tm tm; gmtime_r(&now, &tm);
+        s_hh_val = tm.tm_hour;
+        s_mm_val = tm.tm_min;
+        snprintf(b, sizeof(b), "%02d", s_hh_val); lv_label_set_text(s_lbl_hh, b);
+        snprintf(b, sizeof(b), "%02d", s_mm_val); lv_label_set_text(s_lbl_mm, b);
+
+    } else if (s_ss_mode == SS_SYNC_QMX) {
+        s_hh_edited = false;
+        s_mm_edited = false;
+        s_qmx_valid = false;
+        if (cat_is_ready()) {
+            if (cat_query_qmx_time(&s_qmx_h, &s_qmx_m, &s_qmx_s) == ESP_OK) {
+                s_qmx_base = time(NULL);
+                s_qmx_valid = true;
+                // Update HH/MM immediately from QMX result
+                s_hh_val = s_qmx_h;
+                s_mm_val = s_qmx_m;
+                snprintf(b, sizeof(b), "%02d", s_qmx_h); lv_label_set_text(s_lbl_hh, b);
+                snprintf(b, sizeof(b), "%02d", s_qmx_m); lv_label_set_text(s_lbl_mm, b);
+                ESP_LOGI(TAG, "QMX time: %02d:%02d:%02d", s_qmx_h, s_qmx_m, s_qmx_s);
+            } else {
+                ESP_LOGW(TAG, "QMX TM; query failed");
+            }
+        } else {
+            ESP_LOGW(TAG, "QMX not ready for TM; query");
+        }
+
+    } else {
+        // Back to FT8 — HH/MM revert to system clock on next timer tick
+        s_ss_err_ms = 0;
+        ft8_get_last_timing_ms(&s_ss_err_ms);
+    }
+
+    refresh_box_styles();
+    ESP_LOGI(TAG, "SS mode: %s", s_ss_mode == SS_SYNC_FT8 ? "FT8" :
+                                  s_ss_mode == SS_SYNC_NTP ? "NTP" : "QMX");
+}
+
+// ---------------------------------------------------------------------------
+// Apply / Close
+// ---------------------------------------------------------------------------
+
+static void modal_close(void)
+{
+    if (!s_modal || !s_open) return;
+    lv_obj_add_flag(s_modal, LV_OBJ_FLAG_HIDDEN);
+    if (s_timer) lv_timer_pause(s_timer);
+    s_open = false;
+}
+
+static void apply_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_edit_field) confirm_edit();
+    time_t now = time(NULL);
+    struct tm tm; gmtime_r(&now, &tm);
+
+    switch (s_ss_mode) {
+        case SS_SYNC_FT8: {
+            int err_ms = 0;
+            if (!s_hh_edited && !s_mm_edited && ft8_get_last_timing_ms(&err_ms)) {
+                time_sync_apply_correction_ms(err_ms);
+                ESP_LOGI(TAG, "Applied %s correction: %+d ms", active_proto_label(), err_ms);
+            } else {
+                time_sync_set_manual(tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+                                     s_hh_val, s_mm_val, s_ss_display);
+                time_sync_mark_ft8();
+            }
+            break;
+        }
+        case SS_SYNC_NTP:
+            // System clock is already NTP-disciplined — push current time to QMX.
+            time_sync_push_to_qmx();
+            break;
+        case SS_SYNC_QMX:
+            if (s_qmx_valid) {
+                time_sync_set_manual(tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+                                     s_hh_val, s_mm_val, s_ss_display);
+                time_sync_mark_qmx();
+                ESP_LOGI(TAG, "Applied QMX time: %02d:%02d:%02d", s_hh_val, s_mm_val, s_ss_display);
+            }
+            break;
+    }
+    modal_close();
+}
+
+static void cancel_cb(lv_event_t *e) { (void)e; modal_close(); }
+static void swallow_click_cb(lv_event_t *e) { (void)e; }
+
+/* The second hint line carries the DATE and opens the date question when
+ * tapped. HH:MM:SS never set the day - time_sync_set_manual() keeps whatever
+ * date the clock already has - which is how Don WB0LQW could set his time
+ * perfectly with an atomic watch and still log a date two days behind. */
+static void set_top_hint(void)
+{
+    time_t now = time(NULL);
+    struct tm tm; gmtime_r(&now, &tm);
+    char tb[120];
+    snprintf(tb, sizeof(tb), "Clock: %s - tap HH/MM to set manually", active_source_label());
+    lv_label_set_text(s_hint_top, tb);
+
+    snprintf(tb, sizeof(tb), LV_SYMBOL_EDIT "  %04d-%02d-%02d UTC%s",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             time_sync_date_verified() ? "" : "  (unverified)");
+    if (s_lbl_date_row) lv_label_set_text(s_lbl_date_row, tb);
+}
+
+static void date_line_cb(lv_event_t *e) { (void)e; date_confirm_modal_show(); }
+
+// ---------------------------------------------------------------------------
+// 1 Hz timer
+// ---------------------------------------------------------------------------
+
+static void timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_open) return;
+
+    // Keep the top hint's active-source label live (SNTP can sync, or we can go
+    // offline, while the modal is open).
+    if (s_hint_top) set_top_hint();
+
+    time_t now = time(NULL);
+    struct tm tm; gmtime_r(&now, &tm);
+
+    if (s_ss_mode == SS_SYNC_QMX && s_qmx_valid) {
+        // QMX mode: all three values extrapolated from the TM; base
+        time_t elapsed = now - s_qmx_base;
+        int total_s = s_qmx_h * 3600 + s_qmx_m * 60 + s_qmx_s + (int)elapsed;
+        total_s %= 86400;
+        if (total_s < 0) total_s += 86400;
+        int qh = total_s / 3600;
+        int qm = (total_s % 3600) / 60;
+        int qs = total_s % 60;
+        if (s_edit_field != 1) {
+            s_hh_val = qh;
+            char b[4]; snprintf(b, sizeof(b), "%02d", qh);
+            lv_label_set_text(s_lbl_hh, b);
+        }
+        if (s_edit_field != 2) {
+            s_mm_val = qm;
+            char b[4]; snprintf(b, sizeof(b), "%02d", qm);
+            lv_label_set_text(s_lbl_mm, b);
+        }
+        s_ss_display = qs;
+        char b[4]; snprintf(b, sizeof(b), "%02d", qs);
+        lv_label_set_text(s_lbl_ss, b);
+        lv_label_set_text(s_hint_ss, "QMX source (tap)");
+    } else {
+        // FT8 or NTP mode — HH/MM from system clock
+        // NTP forces live tracking even if user previously tapped HH/MM
+        bool ntp = (s_ss_mode == SS_SYNC_NTP);
+        if ((!s_hh_edited || ntp) && s_edit_field != 1) {
+            s_hh_val = tm.tm_hour;
+            char b[4]; snprintf(b, sizeof(b), "%02d", s_hh_val);
+            lv_label_set_text(s_lbl_hh, b);
+        }
+        if ((!s_mm_edited || ntp) && s_edit_field != 2) {
+            s_mm_val = tm.tm_min;
+            char b[4]; snprintf(b, sizeof(b), "%02d", s_mm_val);
+            lv_label_set_text(s_lbl_mm, b);
+        }
+
+        // SS — FT8-corrected or raw NTP
+        int err_ms = 0;
+        if (s_ss_mode == SS_SYNC_FT8) {
+            if (ft8_get_last_timing_ms(&err_ms)) s_ss_err_ms = err_ms;
+            err_ms = s_ss_err_ms;
+        }
+        // Sub-second precision matters here: time(NULL)/now above is truncated
+        // to whole seconds, so it's missing up to 999 ms of the real wall-clock
+        // fraction. Subtracting a precise err_ms from that truncated value can
+        // throw the result a full second off (e.g. real time 12.9s, now=12,
+        // err_ms=+700 -> 12000-700=11300 -> sec 11, when the true corrected
+        // second is 12). Use gettimeofday() for the microsecond-accurate "now"
+        // instead, matching what time_sync_apply_correction_ms does on Save.
+        struct timeval tv_now; gettimeofday(&tv_now, NULL);
+        int64_t now_us = (int64_t)tv_now.tv_sec * 1000000LL + tv_now.tv_usec;
+        int64_t corrected_us = now_us - (int64_t)err_ms * 1000LL;
+        time_t corrected = (time_t)(corrected_us / 1000000LL);
+        struct tm tc; gmtime_r(&corrected, &tc);
+        s_ss_display = tc.tm_sec;
+        char b[4]; snprintf(b, sizeof(b), "%02d", s_ss_display);
+        lv_label_set_text(s_lbl_ss, b);
+
+        if (s_ss_mode == SS_SYNC_FT8) {
+            if (ft8_is_clock_source()) {
+                // Offline: FT8/FT4 slot timing is genuinely driving the clock -
+                // show the REAL per-slot correction applied (ft8_get_last_applied_ms
+                // - damped, leashed), not the RX-latency-biased raw offset.
+                int applied = 0;
+                ft8_get_last_applied_ms(&applied);
+                // Show the RUNNING TOTAL as well as the latest nudge. Don WB0LQW
+                // could not tell how long to let it run or what it had actually
+                // done to his clock: the per-slot figure alone answers neither.
+                // time_sync_get_ft8_offset_ms() is the sum since the last hard
+                // sync, which is exactly "how far has this moved my clock".
+                int total = (int)time_sync_get_ft8_offset_ms();
+                char hb[40];
+                snprintf(hb, sizeof(hb), "%s %+d ms  tot %+d",
+                         active_proto_label(), applied, total);
+                if (!s_ss_zero_armed) lv_label_set_text(s_hint_ss, hb);
+            } else {
+                // Online: the clock is on NTP/GPS and FT8 auto-sync is disabled
+                // (its offset is one-way RX-audio latency, not a clock error).
+                char hb[24];
+                snprintf(hb, sizeof(hb), "on %s (auto)", active_source_label());
+                if (!s_ss_zero_armed) lv_label_set_text(s_hint_ss, hb);
+            }
+        } else {
+            if (!s_ss_zero_armed) lv_label_set_text(s_hint_ss, "NTP source (tap)");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build helpers
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *make_box(lv_obj_t *parent, int x, int y, int w, int h)
+{
+    lv_obj_t *b = lv_obj_create(parent);
+    lv_obj_set_size(b, w, h);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_bg_color(b, lv_color_hex(BOX_BG), 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(BOX_BORDER_DIM), 0);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_style_radius(b, 10, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    return b;
+}
+
+static void build_numpad(lv_obj_t *panel_ref)
+{
+    // 6 buttons × 100 px + 5 × 8 px gaps = 640 px wide; 2 rows × 60 + 1 × 8 = 128 px
+    const int NW = 640, BW = 100, BH = 60, GAPX = 8, GAPY = 8;
+
+    s_numpad = lv_obj_create(s_modal);
+    lv_obj_set_size(s_numpad, NW, 2 * BH + GAPY);
+    lv_obj_align_to(s_numpad, panel_ref, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+    lv_obj_set_style_bg_color(s_numpad, lv_color_hex(0x141c24), 0);
+    lv_obj_set_style_bg_opa(s_numpad, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_numpad, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(s_numpad, 2, 0);
+    lv_obj_set_style_radius(s_numpad, 10, 0);
+    lv_obj_set_style_pad_all(s_numpad, 0, 0);
+    lv_obj_clear_flag(s_numpad, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+
+    struct { const char *lbl; lv_event_cb_t cb; void *ud; uint32_t col; } keys[12] = {
+        {"0", digit_cb, (void*)0, 0x2a3a4a},
+        {"1", digit_cb, (void*)1, 0x2a3a4a},
+        {"2", digit_cb, (void*)2, 0x2a3a4a},
+        {"3", digit_cb, (void*)3, 0x2a3a4a},
+        {"4", digit_cb, (void*)4, 0x2a3a4a},
+        {LV_SYMBOL_OK,    check_cb, NULL, 0x1e6028},
+        {"5", digit_cb, (void*)5, 0x2a3a4a},
+        {"6", digit_cb, (void*)6, 0x2a3a4a},
+        {"7", digit_cb, (void*)7, 0x2a3a4a},
+        {"8", digit_cb, (void*)8, 0x2a3a4a},
+        {"9", digit_cb, (void*)9, 0x2a3a4a},
+        {LV_SYMBOL_CLOSE, cross_cb, NULL, 0x962020},
+    };
+    for (int i = 0; i < 12; i++) {
+        int col = i % 6, row = i / 6;
+        lv_obj_t *b = lv_btn_create(s_numpad);
+        lv_obj_set_size(b, BW, BH);
+        lv_obj_set_pos(b, col * (BW + GAPX), row * (BH + GAPY));
+        lv_obj_set_style_bg_color(b, lv_color_hex(keys[i].col), 0);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_add_event_cb(b, keys[i].cb, LV_EVENT_CLICKED, keys[i].ud);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, keys[i].lbl);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+        lv_obj_center(l);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build
+// ---------------------------------------------------------------------------
+
+static void modal_build(void)
+{
+    if (s_modal) return;
+
+    lv_obj_t *scr = lv_screen_active();
+
+    s_modal = lv_obj_create(scr);
+    lv_obj_set_size(s_modal, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(s_modal, 0, 0);
+    lv_obj_set_style_bg_color(s_modal, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_modal, UI_OPA_MODAL_SCRIM, 0);
+    lv_obj_set_style_border_width(s_modal, 0, 0);
+    lv_obj_set_style_radius(s_modal, 0, 0);
+    lv_obj_set_style_pad_all(s_modal, 0, 0);
+    lv_obj_clear_flag(s_modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_modal, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_modal, cancel_cb, LV_EVENT_CLICKED, NULL);
+
+    /* ⛔ 640 x 316 PUT THE DATE LINE UNDER THE HH/MM BOXES (2026-10-07).
+     *
+     * Inner was 600 x 276. The hint is TWO lines - the clock line and the date
+     * line - starting at y 42, so at font 22 it ran to y~96, and the boxes
+     * started at BY=85. The date line, which is the only way into manual date
+     * entry, was printed behind them and half visible in muted grey.
+     *
+     * Now 700 x 392 (inner 660 x 352), and the date line is its own bordered,
+     * tappable row instead of the second line of a grey subtitle:
+     *     title    0..40    (font 32)
+     *     clock   48..75    (font 22, one line, muted - it IS just a caption)
+     *     DATE    86..138   (row 500x52, bordered, amber, tappable)
+     *     boxes  152..268   (BH 116)
+     *     Save/Cancel 278..339
+     * Numpad is aligned OUT_BOTTOM of this panel, so it follows: screen centre
+     * 360 - 116 = 244 -> panel 48..440, numpad 448..576 < 720 OK */
+    s_panel = lv_obj_create(s_modal);
+    lv_obj_set_size(s_panel, 700, 392);
+    lv_obj_align(s_panel, LV_ALIGN_CENTER, 0, -116);
+    lv_obj_set_style_bg_color(s_panel, lv_color_hex(0x1c2128), 0);
+    lv_obj_set_style_bg_opa(s_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_panel, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(s_panel, 2, 0);
+    lv_obj_set_style_radius(s_panel, 10, 0);
+    lv_obj_set_style_pad_all(s_panel, 20, 0);
+    lv_obj_clear_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_panel, swallow_click_cb, LV_EVENT_CLICKED, NULL);
+
+    // Inner: 600 × 256 (after pad_all=20)
+
+    // Title
+    lv_obj_t *title = lv_label_create(s_panel);
+    lv_label_set_text(title, "Set and Sync the Clock");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_32, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    // Clock caption - what the time is coming from. Not tappable: tapping is
+    // done on the HH/MM boxes themselves, which is what the text says.
+    lv_obj_t *hint = lv_label_create(s_panel);
+    lv_obj_set_style_text_color(hint, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(hint, 660);
+    lv_obj_set_pos(hint, 0, 48);
+    s_hint_top = hint;
+
+    /* The date row. It used to be the second line of the caption above and
+     * nobody could tell it was a control - royord went looking for manual date
+     * entry and reported it missing. A bordered row in the date's own amber
+     * reads as a button, and it is the entry point to date_confirm_modal. */
+    lv_obj_t *drow = lv_obj_create(s_panel);
+    lv_obj_set_size(drow, 500, 52);
+    lv_obj_set_pos(drow, (660 - 500) / 2, 86);
+    lv_obj_set_style_bg_color(drow, lv_color_hex(0x232c36), 0);
+    lv_obj_set_style_bg_opa(drow, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(drow, lv_color_hex(0xFFA040), 0);
+    lv_obj_set_style_border_width(drow, 2, 0);
+    lv_obj_set_style_radius(drow, 8, 0);
+    lv_obj_set_style_pad_all(drow, 0, 0);
+    lv_obj_clear_flag(drow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(drow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(drow, 8);
+    lv_obj_add_event_cb(drow, date_line_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_date_row = lv_label_create(drow);
+    lv_obj_set_style_text_color(s_lbl_date_row, lv_color_hex(0xFFC864), 0);
+    lv_obj_set_style_text_font(s_lbl_date_row, &lv_font_montserrat_24, 0);
+    lv_obj_center(s_lbl_date_row);
+    /* The label must not swallow taps meant for the row. */
+    lv_obj_add_flag(s_lbl_date_row, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    // HH : MM : SS boxes — font_48 for digits.
+    // Group is 2*202 + 182 = 586 wide; inner is now 660, so x starts at 37 to
+    // centre it. BY=152 clears the date row above, which ends at 138.
+    // Box h=116: digit (font_48 ≈ 56 px) centred -10, hint at bottom -6.
+    const int BW = 182, BH = 116, BY = 152;
+    const int x_hh = 37, x_c1 = 222, x_mm = 239, x_c2 = 424, x_ss = 441;
+
+    // HH
+    s_box_hh = make_box(s_panel, x_hh, BY, BW, BH);
+    lv_obj_add_event_cb(s_box_hh, hh_tap_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_hh = lv_label_create(s_box_hh);
+    lv_label_set_text(s_lbl_hh, "00");
+    lv_obj_set_style_text_color(s_lbl_hh, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(s_lbl_hh, &lv_font_montserrat_48, 0);
+    lv_obj_align(s_lbl_hh, LV_ALIGN_CENTER, 0, -12);
+    {
+        lv_obj_t *h = lv_label_create(s_box_hh);
+        lv_label_set_text(h, "HH");
+        lv_obj_set_style_text_color(h, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_18, 0);
+        lv_obj_align(h, LV_ALIGN_BOTTOM_MID, 0, -6);
+    }
+
+    // Colon 1
+    {
+        lv_obj_t *c = lv_label_create(s_panel);
+        lv_label_set_text(c, ":");
+        lv_obj_set_style_text_color(c, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_set_style_text_font(c, &lv_font_montserrat_48, 0);
+        lv_obj_set_pos(c, x_c1, BY + (BH - 56) / 2 - 8);
+    }
+
+    // MM
+    s_box_mm = make_box(s_panel, x_mm, BY, BW, BH);
+    lv_obj_add_event_cb(s_box_mm, mm_tap_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_mm = lv_label_create(s_box_mm);
+    lv_label_set_text(s_lbl_mm, "00");
+    lv_obj_set_style_text_color(s_lbl_mm, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(s_lbl_mm, &lv_font_montserrat_48, 0);
+    lv_obj_align(s_lbl_mm, LV_ALIGN_CENTER, 0, -12);
+    {
+        lv_obj_t *h = lv_label_create(s_box_mm);
+        lv_label_set_text(h, "MM");
+        lv_obj_set_style_text_color(h, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_18, 0);
+        lv_obj_align(h, LV_ALIGN_BOTTOM_MID, 0, -6);
+    }
+
+    // Colon 2
+    {
+        lv_obj_t *c = lv_label_create(s_panel);
+        lv_label_set_text(c, ":");
+        lv_obj_set_style_text_color(c, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_set_style_text_font(c, &lv_font_montserrat_48, 0);
+        lv_obj_set_pos(c, x_c2, BY + (BH - 56) / 2 - 8);
+    }
+
+    // SS
+    s_box_ss = make_box(s_panel, x_ss, BY, BW, BH);
+    lv_obj_add_event_cb(s_box_ss, ss_tap_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_box_ss, ss_hold_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(s_box_ss, ss_release_cb, LV_EVENT_RELEASED, NULL);
+    s_lbl_ss = lv_label_create(s_box_ss);
+    lv_label_set_text(s_lbl_ss, "00");
+    lv_obj_set_style_text_color(s_lbl_ss, lv_color_hex(0x80bbff), 0);
+    lv_obj_set_style_text_font(s_lbl_ss, &lv_font_montserrat_48, 0);
+    lv_obj_align(s_lbl_ss, LV_ALIGN_CENTER, 0, -12);
+    s_hint_ss = lv_label_create(s_box_ss);
+    lv_label_set_text(s_hint_ss, "FT8 nudge --");
+    lv_obj_set_style_text_color(s_hint_ss, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+    lv_obj_set_style_text_font(s_hint_ss, &lv_font_montserrat_18, 0);
+    lv_obj_align(s_hint_ss, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+    // Apply + Cancel — right under the boxes (y = BY+BH+10 = 278)
+    const int ABY = BY + BH + 10;
+    lv_obj_t *save_b = lv_btn_create(s_panel);
+    {
+        lv_obj_t *b = save_b;
+        lv_obj_set_size(b, 322, 61);
+        lv_obj_set_pos(b, 0, ABY);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x1e6028), 0);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_add_event_cb(b, apply_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, "Save");
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+        lv_obj_center(l);
+    }
+    lv_obj_t *cancel_b = lv_btn_create(s_panel);
+    {
+        lv_obj_t *b = cancel_b;
+        lv_obj_set_size(b, 322, 61);
+        lv_obj_set_pos(b, 338, ABY);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x962020), 0);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_set_style_border_width(b, 0, 0);
+        lv_obj_set_style_pad_all(b, 0, 0);
+        lv_obj_add_event_cb(b, cancel_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, "Cancel");
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+        lv_obj_center(l);
+    }
+    // Physical keyboard: Enter -> Save, Esc -> Cancel.
+    ui_kbd_set_buttons(save_b, cancel_b);
+
+    build_numpad(s_panel);
+
+    // 200ms, not 1000ms: timer_cb is idempotent (just recomputes from the live
+    // clock + last measurement each call), and polling 5x/sec instead of 1x/sec
+    // cuts up to 800ms off how long a freshly-landed FT8 nudge takes to show up
+    // in the readout. The remaining latency is the decode pipeline itself
+    // (full 15s slot capture, then ~1-3s decode) - structural, not fixable here.
+    s_timer = lv_timer_create(timer_cb, 200, NULL);
+    lv_timer_pause(s_timer);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+void ft8_time_modal_show(void)
+{
+    modal_build();
+
+    s_edit_field  = 0;
+    s_edit_buf[0] = '\0';
+    s_hh_edited   = false;
+    s_mm_edited   = false;
+    s_ss_zero_armed = false;   // a hold left over from a previous opening must not
+    s_ss_zero_done  = false;   // swallow the first tap of this one
+    s_ss_mode     = SS_SYNC_FT8;
+    s_qmx_valid   = false;
+
+    time_t now = time(NULL);
+    struct tm tm; gmtime_r(&now, &tm);
+    s_hh_val     = tm.tm_hour;
+    s_mm_val     = tm.tm_min;
+    s_ss_display = tm.tm_sec;
+    s_ss_err_ms  = 0;
+    ft8_get_last_timing_ms(&s_ss_err_ms);
+
+    char b[4];
+    snprintf(b, sizeof(b), "%02d", s_hh_val);    lv_label_set_text(s_lbl_hh, b);
+    snprintf(b, sizeof(b), "%02d", s_mm_val);    lv_label_set_text(s_lbl_mm, b);
+    snprintf(b, sizeof(b), "%02d", s_ss_display); lv_label_set_text(s_lbl_ss, b);
+    char hb[32];
+    if (ft8_is_clock_source()) {
+        int applied0 = 0;
+        ft8_get_last_applied_ms(&applied0);
+        snprintf(hb, sizeof(hb), "%s nudge %+d ms", active_proto_label(), applied0);
+    } else {
+        snprintf(hb, sizeof(hb), "on %s (auto)", active_source_label());
+    }
+    lv_label_set_text(s_hint_ss, hb);
+    // Source-aware, honest in every mode: NTP/GPS auto-manage the clock (nothing
+    // to do); FT8 only when offline; HH/MM is the manual override. The second
+    // line is the date, tappable - see set_top_hint().
+    set_top_hint();
+
+    lv_obj_add_flag(s_numpad, LV_OBJ_FLAG_HIDDEN);
+    refresh_box_styles();
+
+    lv_obj_clear_flag(s_modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_modal);
+    lv_timer_resume(s_timer);
+    s_open = true;
+}

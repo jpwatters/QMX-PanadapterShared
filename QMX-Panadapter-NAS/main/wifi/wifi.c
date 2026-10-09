@@ -1,0 +1,1462 @@
+#include "wifi.h"
+#include "util/mem_ledger.h"   // DMA-pool bracket, 2026-10-04
+#include "util/hosted_watchdog.h"   // when the link is declared dead
+#include "ui.h"                       // ui_toast_ms - the operator has to be told
+#include "settings.h"
+#include "net/mdns_svc.h"   // qmx.local, announced once we have an IP
+#include <stdbool.h>
+
+#include <string.h>
+#include <time.h>
+#include <sys/time.h>
+
+#include "esp_log.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_netif_sntp.h"
+#include "esp_sntp.h"
+#include "esp_wifi.h"
+#include "esp_wifi_netif.h"        // wifi_netif_driver_t, esp_wifi_register_if_rxcb, ...
+#include "esp_wifi_default.h"      // ESP_NETIF_INHERENT_DEFAULT_WIFI_STA, attach_wifi_station
+#include "esp_private/wifi.h"      // esp_wifi_internal_reg_netstack_buf_cb, set_sta_ip
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "psram_task.h"
+#include "freertos/event_groups.h"
+#include "driver/gpio.h"
+#include "bsp/esp-bsp.h"
+#include "webserver.h"
+#include "rigctld_server.h"
+#include "time_sync.h"
+#include "esp_timer.h"   // scan-hold timeout
+
+static const char *TAG = "wifi";
+
+// State -----------------------------------------------------------------
+static EventGroupHandle_t s_events = NULL;
+#define BIT_CONNECTED  (1 << 0)
+#define BIT_TIME_OK    (1 << 1)
+
+static int s_retry_count = 0;
+#define MAX_FAST_RETRIES 5
+
+// STA netif handle + whether esp_wifi_start() has been called this boot.
+static esp_netif_t *s_sta_netif = NULL;
+static bool s_wifi_started = false;
+
+// Set true when the user turns WiFi OFF via the live toggle
+// (panadapter_wifi_set_enabled(false)). While set, the STA_DISCONNECTED
+// handler must NOT auto-reconnect — otherwise a user-requested stop would be
+// fought by the retry loop and the radio would come straight back up.
+static volatile bool s_wifi_user_disabled = false;
+
+// A user SSID scan competes with the reconnect loop for the C6's radio: with
+// an unreachable stored network the connect retries run back-to-back (the
+// backoff even sleeps ON the event-loop task), and every scan returns 0 APs
+// (hardware-captured 2026-08-02: stored hotel SSID gone, "scan done: 0 AP(s)"
+// ten seconds after the request, plenty of networks around). While a scan is
+// in flight AND we are not connected, the retry chain is held off and
+// re-kicked when the scan completes; time-bounded so a lost SCAN_DONE can't
+// kill WiFi. Scans while CONNECTED are untouched - they have always worked,
+// and dropping a live link to scan would be worse than the disease.
+static volatile bool    s_scan_hold = false;
+static volatile int64_t s_scan_hold_us = 0;
+// A scan is considered lost after this long with no SCAN_DONE. Shared by the
+// "already scanning" guard and the state accessor so one cannot outlive the
+// other: the guard must not refuse a fresh press for a scan the accessor has
+// already given up on.
+#define SCAN_STALE_US        (20LL * 1000000)
+static volatile int64_t s_scan_started_us   = 0;
+static volatile bool    s_scan_stale_logged = false;
+#define SCAN_HOLD_TIMEOUT_US (15LL * 1000000)
+// One free automatic retry per user scan: a 0-AP result while we were
+// holding the retry chain is almost always interference (some timing window
+// trampling the scan), not an actually-empty band - retry once before
+// reporting "no networks", which also covers windows not yet imagined.
+static volatile bool    s_scan_auto_retried = false;
+
+// Roaming to a remembered network (Roy KI0ER: "remember a few SSID setups ...
+// auto connect if that SSID is present"). When the configured network will not
+// come up, we scan once and, if a DIFFERENT remembered network is on the air,
+// switch to it. s_roam_scan marks a scan we started for that purpose - the user
+// Scan button uses the same machinery and must not trigger a credential change.
+// s_roam_last_us rate-limits the attempts instead of allowing only one per
+// episode: a one-shot would stop looking entirely if the first scan happened
+// before the other network was up, which is precisely the "arrived somewhere new"
+// case this feature is for. Cleared on a successful IP so the next episode can
+// roam immediately.
+static volatile bool    s_roam_scan    = false;
+static volatile int64_t s_roam_last_us = 0;
+#define ROAM_RESCAN_INTERVAL_US (30LL * 1000000)
+// How many failed connects before looking elsewhere. Deliberately small: waiting
+// for the fast-retry budget AND the 10 s backoff took the best part of a minute
+// to notice a hotspot had gone (operator, 2026-08-05). Two failures is already a
+// clear signal, and a scan cannot pick a different network unless the configured
+// one is genuinely absent from the air - so being eager here is safe.
+#define ROAM_AFTER_RETRIES 2
+
+// True when WE created the STA netif (without IDF's default, un-guarded event
+// handlers) and therefore drive its start/connect/disconnect lifecycle from
+// on_wifi_event()/on_ip_event(). False when we reused an ESP-Hosted
+// auto-created WIFI_STA_DEF (whose own default handlers do that).
+static bool s_manual_netif = false;
+// Set once esp_netif_action_start() has run. Guards against the DUPLICATE
+// WIFI_EVENT_STA_START that newer ESP-Hosted/C6 firmware delivers: IDF's default
+// esp_netif_action_start has no "already started" guard (esp_netif_lwip.c calls
+// netif_add() unconditionally), so a second STA_START would netif_add() twice →
+// "netif already added" assert → reboot. Seen in the field on the SSID-scan path
+// (Roy's log: two "STA started" lines then the assert).
+static bool s_netif_started = false;
+
+// Live credentials. Filled at boot from NVS, or overwritten via
+// panadapter_wifi_reconnect(). 0-length ssid means "not configured".
+static char s_ssid[33] = {0};
+static char s_pass[65] = {0};
+
+// WiFi scan state (for the SSID picker). Results are written in the
+// WIFI_EVENT_SCAN_DONE handler (event-loop task) and read by the UI via
+// panadapter_wifi_scan_get(); s_scan_state is set last so a reader that sees
+// DONE also sees a complete s_scan[] / s_scan_n.
+#define WIFI_SCAN_MAX 24
+static wifi_scan_ap_t s_scan[WIFI_SCAN_MAX];
+static volatile int s_scan_n = 0;
+static volatile wifi_scan_state_t s_scan_state = WIFI_SCAN_IDLE;
+
+// Tab5 SDIO pin drive-strength quirk -----------------------------------
+// Matches N6HAN's qrp_companion and M5Stack factory demo: SDIO between P4
+// and the C6 co-processor needs the LOWEST drive capability or the link
+// becomes unreliable.
+static void set_sdio_gpio_drive(void)
+{
+    static const gpio_num_t sdio_gpios[] = {
+        GPIO_NUM_8, GPIO_NUM_9, GPIO_NUM_10, GPIO_NUM_11,
+        GPIO_NUM_12, GPIO_NUM_13, GPIO_NUM_15,
+    };
+    for (size_t i = 0; i < sizeof(sdio_gpios) / sizeof(sdio_gpios[0]); i++) {
+        gpio_set_drive_capability(sdio_gpios[i], GPIO_DRIVE_CAP_0);
+    }
+}
+
+// SNTP callback --------------------------------------------------------
+static TaskHandle_t   s_sntp_task;
+static volatile time_t s_sntp_pending;
+
+static void sntp_apply_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        time_sync_notify_sntp(s_sntp_pending);
+    }
+}
+
+static void sntp_sync_cb(struct timeval *tv)
+{
+    struct tm tm_utc;
+    gmtime_r(&tv->tv_sec, &tm_utc);
+    ESP_LOGI(TAG, "SNTP sync: UTC %04d-%02d-%02d %02d:%02d:%02d",
+             tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+             tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    xEventGroupSetBits(s_events, BIT_TIME_OK);
+
+    // Write to the Tab5 supercap RTC, persist NVS anchor, update system clock,
+    // and push to QMX (unless QMX GPS flag is set) - on sntp_apply_task, NOT
+    // here. ⛔ This callback runs ON lwIP's tcpip thread. The QMX time push is
+    // a CAT write, and with the network radio (QMX on a NAS) a CAT write is a
+    // lwIP socket send(), which posts to the tcpip thread and waits for it -
+    // i.e. for itself. Measured 2026-10-04: every boot on the NAS radio, the
+    // whole network stack (radio stream, web page, TLS feeds) died within a
+    // second of "SNTP sync", for good. Over USB the push never touched lwIP,
+    // which is why this was invisible until now. The RTC (I2C) and NVS writes
+    // do not belong on the tcpip thread either.
+    s_sntp_pending = tv->tv_sec;
+    if (s_sntp_task) xTaskNotifyGive(s_sntp_task);
+    else time_sync_notify_sntp(tv->tv_sec);   // worker not up: old behaviour
+}
+
+// Replicates the work IDF's default WIFI_EVENT_STA_START handler (wifi_start in
+// wifi_default.c) does for our manually-created netif: register the wifi→netif
+// RX path and the netstack buffer callbacks, copy the MAC, then start the netif.
+// Called exactly once (guarded by s_netif_started) so a duplicate STA_START is a
+// no-op instead of a second netif_add() crash.
+static void manual_netif_start(esp_event_base_t base, int32_t id, void *data)
+{
+    wifi_netif_driver_t drv = esp_netif_get_io_driver(s_sta_netif);
+    uint8_t mac[6];
+    if (esp_wifi_is_if_ready_when_started(drv)) {
+        // Older path (e.g. native esp_wifi): RX cb can register at start time.
+        esp_wifi_register_if_rxcb(drv, esp_netif_receive, s_sta_netif);
+    }
+    esp_wifi_internal_reg_netstack_buf_cb(esp_netif_netstack_buf_ref,
+                                          esp_netif_netstack_buf_free);
+    if (esp_wifi_get_if_mac(drv, mac) == ESP_OK) {
+        esp_netif_set_mac(s_sta_netif, mac);
+    }
+    esp_netif_action_start(s_sta_netif, base, id, data);
+}
+
+/* ---- static IP (Randy N4OPI) -------------------------------------------
+ *
+ * Empty `wifi_ip` means DHCP, which is what every existing unit has and what a
+ * fresh one gets, so this cannot change anybody's network by being added.
+ *
+ * ⚠ THE ORDER IS NOT OBVIOUS AND IT IS LOAD-BEARING, established by reading
+ * esp_netif_lwip.c rather than by trying combinations:
+ *
+ *  - `esp_netif_set_ip_info()` REFUSES with ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED
+ *    while the DHCP client is anything but STOPPED. So the stop has to come
+ *    first, and it has to come after the netif is started (that is where
+ *    dhcpc_status exists to be stopped).
+ *  - It also posts IP_EVENT_STA_GOT_IP itself - but ONLY when the lwIP netif is
+ *    already UP. The netif comes up in esp_netif_action_connected(), i.e. on
+ *    STA_CONNECTED. Setting the address any earlier stores it and posts
+ *    nothing, and GOT_IP is what starts mDNS, SNTP and the web server here -
+ *    so an early apply gives a device with an address and no services.
+ *  - `esp_netif_set_ip_info()` calls dns_clear_servers() on a DHCP-client
+ *    netif, so DNS must be set AFTER the address, never before.
+ *
+ * Hence: stop at STA_START, apply at STA_CONNECTED, DNS last.
+ */
+/* ⛔ EVERY CALLER OF THIS RUNS ON `sys_evt`, STACK 2808 BYTES.
+ *
+ * This took a whole qmx_settings_t via settings_load_all() and boot-looped the
+ * device: Stack protection fault on sys_evt at 8.3 s of every boot, the moment
+ * WiFi came up (2026-08-31, caught on the first flash). CLAUDE.md records the
+ * same mistake being made twice in this very file on 2026-08-05.
+ *
+ * settings_get_wifi_static() copies the four strings and nothing else - 64
+ * bytes. Keep it that way; do not "simplify" this back to the whole struct. */
+typedef struct { char ip[16], mask[16], gw[16], dns[16]; } static_ip_cfg_t;
+
+/* ⛔ A STATIC ADDRESS BELONGS TO ONE NETWORK, NOT TO THE UNIT.
+ *
+ * This used to answer "is a static IP configured?" and nothing else, so the
+ * address from one WLAN was installed on every other one. Randy N4OPI,
+ * 2026-09-26: "it has no context as to which wireless network you are attached
+ * to ... it will connect but never authenticate. On the Tab5 the WLAN status
+ * will just show Off." The unit associates, gets an address from the wrong
+ * subnet, and has no usable route - with no message saying why, and a remote
+ * operator locks themselves out.
+ *
+ * The stored owner SSID is bound the first time the static config is actually
+ * used (see the GOT_IP path), so an operator who set one on their own network
+ * keeps exactly today's behaviour there, and is dropped to DHCP anywhere else.
+ */
+static bool static_ip_wanted(static_ip_cfg_t *out)
+{
+    settings_get_wifi_static(out->ip, out->mask, out->gw, out->dns);
+    if (out->ip[0] == '\0') return false;
+
+    char owner[33];
+    settings_get_wifi_static_ssid(owner);
+    if (owner[0] && s_ssid[0] && strcmp(owner, s_ssid) != 0) {
+        ESP_LOGW(TAG, "static IP %s belongs to '%s' but this is '%s' - using DHCP "
+                      "instead. Set a static address again here if you want one.",
+                 out->ip, owner, s_ssid);
+        return false;
+    }
+    return true;
+}
+
+/* ⛔ esp_netif_str_to_ip4() RETURNS esp_err_t, AND ESP_OK IS 0.
+ *
+ * Every check in this file used it as if it returned a truthy "valid", which
+ * inverts all three: a VALID address was rejected, a valid netmask was thrown
+ * away for an assumed /24, and DNS was set only when the string FAILED to
+ * parse. Static IP therefore never worked for anybody, and because the caller
+ * stops the DHCP client BEFORE calling this, the unit was left with no address
+ * at all - WiFi simply never came up. Field-observed on the bench 2026-09-01
+ * ("static IP '192.168.1.209' is not a valid address - staying on DHCP",
+ * followed by no `wifi: online` ever); the feature shipped in v1.10.6 and this
+ * is the first machine to have tried it.
+ *
+ * Wrap it once, named for what it answers, so the convention cannot be got
+ * wrong again by reading a call site. */
+static inline bool ip4_ok(const char *str, esp_ip4_addr_t *out)
+{
+    return str && str[0] && esp_netif_str_to_ip4(str, out) == ESP_OK;
+}
+
+static void static_ip_apply_on_connect(void)
+{
+    static_ip_cfg_t st;
+    if (!static_ip_wanted(&st)) {
+        /* ⛔ THIS RUNS ON EVERY CONNECT, NOT JUST THE FIRST ONE - and a
+         * PREVIOUS connect (to a network the static address WAS bound to)
+         * may have left the DHCP client stopped and this exact static
+         * ip_info still sitting on the netif. static_ip_wanted() only
+         * decides whether to apply a NEW static config - it says nothing
+         * about undoing an OLD one, and a bare return here left that OLD
+         * config in place.
+         *
+         * Randy N4OPI, 2026-09-27: his log shows the mismatch correctly
+         * detected - "static IP 192.168.1.199 belongs to 'HomePlace' but
+         * this is 'uBitX24' - using DHCP instead" - and 20 ms later, "Got IP:
+         * 192.168.1.199" anyway. Not a fresh DHCP lease: the stale static
+         * address the netif already had, because nothing had told the DHCP
+         * client to start again. His "Connected to uBitX24 with HomePlace
+         * settings" was this exact log, worded differently.
+         *
+         * Idempotent and cheap when DHCP was already running (the ordinary
+         * case, no static IP ever configured) - ALREADY_STARTED is silently
+         * fine, same convention as the _STOP call below. */
+        esp_err_t e = esp_netif_dhcpc_start(s_sta_netif);
+        if (e != ESP_OK && e != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
+            ESP_LOGW(TAG, "could not restart the DHCP client: %s",
+                     esp_err_to_name(e));
+        return;
+    }
+
+    esp_netif_ip_info_t ip = { 0 };
+    if (!ip4_ok(st.ip, &ip.ip)) {
+        /* Say it, and MEAN it: the caller already stopped the DHCP client, so
+         * without restarting it here "staying on DHCP" was a false statement
+         * and the radio ended up on no network at all. */
+        ESP_LOGW(TAG, "static IP '%s' is not a valid address - returning to DHCP",
+                 st.ip);
+        esp_err_t e = esp_netif_dhcpc_start(s_sta_netif);
+        if (e != ESP_OK && e != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED)
+            ESP_LOGE(TAG, "and the DHCP client would not restart: %s - this unit "
+                          "has no address", esp_err_to_name(e));
+        return;
+    }
+    /* A blank mask is the common case on a home LAN and /24 is the answer
+     * there; guessing it is better than refusing the whole configuration over
+     * a field most operators would leave empty. */
+    if (!ip4_ok(st.mask, &ip.netmask))
+        esp_netif_str_to_ip4("255.255.255.0", &ip.netmask);
+    if (st.gw[0]) (void)ip4_ok(st.gw, &ip.gw);
+
+    /* ⛔ STOP DHCP HERE TOO - do not rely on the one-time STA_START stop.
+     *
+     * Randy N4OPI, 2026-09-27/28: "when it is switched to HomePlace it comes
+     * up on DHCP, but after a Tab5 reboot it seems to always come up properly
+     * on the static settings." His earlier log already had the reason in it,
+     * unfollowed: repeated "static IP refused: ESP_ERR_ESP_NETIF_DHCP_NOT_
+     * STOPPED - the DHCP client is probably still running".
+     *
+     * esp_netif_set_ip_info() REFUSES outright unless the DHCP client is
+     * stopped (see this file's own header comment on that quirk). The ONLY
+     * place that ever stopped it was WIFI_EVENT_STA_START, guarded to run
+     * once per boot (s_netif_started) - so the FIRST connect of a boot always
+     * has DHCP stopped in time, and every LIVE reconnect after that (a
+     * preferred-network switch, a roam, anything using esp_wifi_disconnect()
+     * + esp_wifi_connect() without a fresh STA_START) does not. Once DHCP had
+     * been restarted for a DIFFERENT network (the a094e75 fix, also correct),
+     * switching BACK to the bound network found DHCP still running and this
+     * call failed every time - logged, but never retried, so the unit was
+     * left on whatever DHCP had already handed it. This function must be
+     * self-sufficient on every connect, not just the boot's first one. */
+    esp_err_t stop_e = esp_netif_dhcpc_stop(s_sta_netif);
+    if (stop_e != ESP_OK && stop_e != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)
+        ESP_LOGW(TAG, "could not stop the DHCP client before a static IP: %s",
+                 esp_err_to_name(stop_e));
+
+    esp_err_t e = esp_netif_set_ip_info(s_sta_netif, &ip);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "static IP refused: %s - the DHCP client is probably "
+                      "still running", esp_err_to_name(e));
+        return;
+    }
+    /* AFTER the address: set_ip_info clears the DNS list on the way through. */
+    esp_netif_dns_info_t dns = { 0 };
+    const char *dns_src = st.dns[0] ? st.dns
+                        : (st.gw[0] ? st.gw : NULL);
+    if (ip4_ok(dns_src, &dns.ip.u_addr.ip4)) {
+        dns.ip.type = ESP_IPADDR_TYPE_V4;
+        esp_netif_set_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns);
+    }
+    ESP_LOGI(TAG, "static IP applied: %s mask %s gw %s dns %s",
+             st.ip,
+             st.mask[0] ? st.mask : "255.255.255.0 (assumed)",
+             st.gw[0]   ? st.gw   : "(none)",
+             dns_src ? dns_src : "(none)");
+}
+
+// Apply a remembered network's credentials directly to the driver.
+//
+// Deliberately NOT panadapter_wifi_update_credentials(): that persists the SSID
+// as the configured one. Roaming is a convenience, not a decision - the network
+// the operator typed in stays the configured one, so returning home behaves
+// exactly as before. A successful connect is what promotes a network in the
+// remembered list, via settings_wifi_known_remember() on GOT_IP.
+static void apply_creds_live(const char *ssid, const char *pass)
+{
+    snprintf(s_ssid, sizeof(s_ssid), "%s", ssid);
+    snprintf(s_pass, sizeof(s_pass), "%s", pass ? pass : "");
+
+    wifi_config_t sta_cfg = { 0 };
+    memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid));
+    memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password));
+    sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+}
+
+// Pick the strongest remembered network that is actually on the air and switch
+// to it. `recs`/`num` are the freshly harvested scan records - see the call site
+// for why this must run before any connect is issued.
+static void roam_to_known_if_present(const wifi_ap_record_t *recs, uint16_t num)
+{
+    // STATIC, not on the stack: every caller of this runs on the system event
+    // task, whose stack is under 3 KB, and this array is ~590 bytes. The scan
+    // records buffer in the SCAN_DONE handler is static for the same reason.
+    // Safe to share because that task is single-threaded.
+    static wifi_known_t known[WIFI_KNOWN_MAX];
+    int kn = settings_wifi_known_get(known, WIFI_KNOWN_MAX);
+    if (kn <= 1) return;                 // nothing to roam between
+
+    /* ⭐ A DESIGNATED-PREFERRED NETWORK WINS OUTRIGHT, IGNORING SIGNAL STRENGTH.
+     *
+     * Randy N4OPI, 2026-09-23: he runs several sites with overlapping
+     * remembered SSIDs (one is a DMZ network for remote access), and "if a
+     * Tab5 has been connected to more than one, it is beyond my control as to
+     * which network it will connect to on a reboot" - because the code below,
+     * unmodified, always hands the roam to whichever remembered network is
+     * LOUDEST, which has nothing to do with which one he actually wants.
+     *
+     * Checked FIRST, before the RSSI comparison, and only short-circuits it
+     * when the preferred network is actually present in THIS scan - if it is
+     * not on the air right now, this falls straight through to the existing
+     * strongest-signal logic below, so a temporarily-unreachable preference
+     * degrades gracefully instead of stalling. Roam scans repeat on their own
+     * interval (try_start_roam_scan/ROAM_RESCAN_INTERVAL_US), so the
+     * preferred network is re-tried and re-promoted automatically the next
+     * time it is in range - no separate "give up after N attempts" state, and
+     * none of the failure modes a give-up timer would have (never returning
+     * to a preference that comes back mid-session).
+     *
+     * Empty string (the default - nobody has set one) skips this block
+     * entirely, so a unit that never uses the feature sees byte-identical
+     * behaviour to before. */
+    char pref[33];
+    settings_get_wifi_preferred_ssid(pref);
+    if (pref[0]) {
+        for (uint16_t i = 0; i < num; i++) {
+            if (strcmp((const char *)recs[i].ssid, pref) != 0) continue;
+            if (strcmp(pref, s_ssid) == 0) break;   // already trying it, just not answering
+            const char *pass = "";                   // scan records carry no password
+            for (int k = 0; k < kn; k++)
+                if (strcmp(known[k].ssid, pref) == 0) { pass = known[k].pass; break; }
+            ESP_LOGW(TAG, "roam: preferred network '%s' is on the air - taking it "
+                          "over '%s' regardless of signal strength", pref, s_ssid);
+            apply_creds_live(pref, pass);
+            s_retry_count = 0;
+            return;
+        }
+    }
+
+    int best_k = -1, best_rssi = -127;
+    for (uint16_t i = 0; i < num; i++) {
+        if (recs[i].ssid[0] == '\0') continue;
+        for (int k = 0; k < kn; k++) {
+            if (strcmp((const char *)recs[i].ssid, known[k].ssid) != 0) continue;
+            if (recs[i].rssi > best_rssi) { best_rssi = recs[i].rssi; best_k = k; }
+            break;
+        }
+    }
+    if (best_k < 0) {
+        ESP_LOGI(TAG, "roam: none of the %d remembered network(s) are on the air", kn);
+        return;
+    }
+    if (strcmp(known[best_k].ssid, s_ssid) == 0) {
+        // The one we are already failing on is the best remembered one present -
+        // nothing to gain by "switching" to it.
+        ESP_LOGI(TAG, "roam: '%s' (%d dBm) is already the network we are trying",
+                 s_ssid, best_rssi);
+        return;
+    }
+    ESP_LOGW(TAG, "roam: '%s' not reachable - switching to remembered '%s' (%d dBm)",
+             s_ssid, known[best_k].ssid, best_rssi);
+    apply_creds_live(known[best_k].ssid, known[best_k].pass);
+    s_retry_count = 0;                   // fresh fast-retry budget for the new one
+}
+
+// Start a roam scan if it is worth doing. Returns true when a scan was started,
+// in which case the caller must return: SCAN_DONE picks the network and re-kicks
+// the connect.
+static bool try_start_roam_scan(void)
+{
+    if (s_wifi_user_disabled) return false;
+    if (settings_wifi_known_count() <= 1) return false;   // nothing to roam between
+    int64_t now = esp_timer_get_time();
+    if (s_roam_last_us && (now - s_roam_last_us) < ROAM_RESCAN_INTERVAL_US) return false;
+    if (s_scan_hold) return false;                        // a scan is already in flight
+
+    wifi_scan_config_t cfg = { 0 };
+    s_roam_last_us      = now;
+    s_roam_scan         = true;
+    s_scan_hold         = true;
+    s_scan_hold_us      = now;
+    s_scan_auto_retried = false;
+    if (esp_wifi_scan_start(&cfg, false) != ESP_OK) {
+        s_roam_scan = false;
+        s_scan_hold = false;
+        return false;
+    }
+    ESP_LOGI(TAG, "'%s' not answering - scanning for a remembered network", s_ssid);
+    return true;
+}
+
+// Event handlers -------------------------------------------------------
+static void on_wifi_event(void *arg, esp_event_base_t base,
+                          int32_t id, void *data)
+{
+    if (id == WIFI_EVENT_STA_START) {
+        // ⛔ POWER SAVE OFF. This device is a SERVER, and IDF's default
+        // (WIFI_PS_MIN_MODEM) assumes the opposite: the radio sleeps between
+        // DTIM beacons and relies on the AP to buffer anything arriving for it.
+        // Outbound traffic is unaffected - the device wakes whenever IT wants to
+        // transmit - so the spot feeds, PSK Reporter and SNTP all worked
+        // perfectly while the web UI was intermittently unreachable from a PC on
+        // the same LAN. Measured on the bench over 494 samples at 5 s: the Tab5
+        // failed to answer a ping in 93 of them (19%), and TCP/80 in 66, with
+        // the router answering every single time from the same PC and adapter -
+        // and, when it did answer, ~2.2 s for a 6.7 KB request.
+        //
+        // That asymmetry - outbound flawless, inbound absent - is what modem
+        // sleep looks like when the AP's buffering does not hold up. Nothing is
+        // saved by it here either: the panel, the USB host and the FFT are all
+        // running flat out, and a spectrum stream at 10 fps means the radio is
+        // never idle for long anyway.
+        //
+        // Set from the STA_START handler so all four esp_wifi_start() call
+        // sites are covered by one line that cannot be forgotten. It must run
+        // AFTER start, which is exactly what this event means.
+        esp_err_t ps = esp_wifi_set_ps(WIFI_PS_NONE);
+        if (ps != ESP_OK) ESP_LOGW(TAG, "could not disable WiFi power save: %s",
+                                   esp_err_to_name(ps));
+
+        // Drive the netif start ourselves, exactly once. The s_netif_started
+        // guard makes the duplicate STA_START that newer ESP-Hosted firmware
+        // delivers harmless (see s_netif_started declaration).
+        if (s_manual_netif && !s_netif_started) {
+            s_netif_started = true;
+            manual_netif_start(base, id, data);
+            /* Stop DHCP here, while the netif is started but not yet up:
+             * set_ip_info at STA_CONNECTED refuses outright unless the client
+             * is STOPPED. Harmless to call when it never started. */
+            static_ip_cfg_t st;   /* 64 bytes - NOT a qmx_settings_t; sys_evt */
+            if (static_ip_wanted(&st)) {
+                esp_err_t e = esp_netif_dhcpc_stop(s_sta_netif);
+                if (e != ESP_OK && e != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED)
+                    ESP_LOGW(TAG, "could not stop the DHCP client: %s",
+                             esp_err_to_name(e));
+                else
+                    ESP_LOGI(TAG, "DHCP client stopped - static IP %s requested",
+                             st.ip);
+            }
+        }
+        if (s_ssid[0] == '\0') {
+            ESP_LOGI(TAG, "STA started but no SSID configured; not connecting");
+            return;
+        }
+        ESP_LOGI(TAG, "STA started, connecting to '%s'", s_ssid);
+        esp_wifi_connect();
+    } else if (id == WIFI_EVENT_STA_STOP) {
+        if (s_manual_netif) {
+            esp_netif_action_stop(s_sta_netif, base, id, data);
+            s_netif_started = false;
+        }
+    } else if (id == WIFI_EVENT_STA_CONNECTED) {
+        if (s_manual_netif) {
+            // Hosted path (esp_wifi_remote): the interface isn't ready at start,
+            // so the RX cb is registered here on connect — this is the glue a
+            // bare esp_netif_new()/attach left out (data path was dead without it).
+            wifi_netif_driver_t drv = esp_netif_get_io_driver(s_sta_netif);
+            if (!esp_wifi_is_if_ready_when_started(drv)) {
+                esp_wifi_register_if_rxcb(drv, esp_netif_receive, s_sta_netif);
+            }
+            esp_netif_action_connected(s_sta_netif, base, id, data);
+            /* The netif is UP only now, which is what makes set_ip_info post
+             * GOT_IP - see the block comment on static_ip_apply_on_connect(). */
+            static_ip_apply_on_connect();
+        }
+    } else if (id == WIFI_EVENT_SCAN_DONE) {
+        // Harvest FIRST: esp_wifi_connect() flushes the scan results on the
+        // radio, so the retry-chain re-kick below must wait until the records
+        // are copied out. Hardware-caught 2026-08-02: the first version of
+        // the scan-hold fix re-kicked first and read back 0 APs every time -
+        // the hold had given the scan its airtime and the harvest then threw
+        // the results away.
+        static wifi_ap_record_t recs[WIFI_SCAN_MAX];
+        uint16_t num = WIFI_SCAN_MAX;
+        esp_err_t get_err = esp_wifi_scan_get_ap_records(&num, recs);
+        // Empty result while holding: take the one free retry BEFORE releasing
+        // the hold (releasing reconnects, which flushes scan state). Extend the
+        // hold clock so the second scan gets its full window.
+        if (get_err == ESP_OK && num == 0 && s_scan_hold && !s_scan_auto_retried) {
+            s_scan_auto_retried = true;
+            s_scan_hold_us = esp_timer_get_time();
+            wifi_scan_config_t retry_cfg = { 0 };
+            if (esp_wifi_scan_start(&retry_cfg, false) == ESP_OK) {
+                ESP_LOGW(TAG, "scan returned 0 APs while held - auto-retrying once");
+                return;   // stay RUNNING; the retry's own SCAN_DONE lands here
+            }
+        }
+        // Roam BEFORE the re-kick below. This is the only safe window: the
+        // records are already out of the radio (so the connect's scan-flush
+        // cannot lose them), and no connect has been issued yet - so the new
+        // credentials are the ones the re-kick actually uses. Doing it after the
+        // re-kick would waste an attempt on the old network first.
+        if (s_roam_scan && get_err == ESP_OK) {
+            s_roam_scan = false;
+            roam_to_known_if_present(recs, num);
+        }
+
+        // Scan finished: if the retry chain was held for it, resume connecting
+        // (the chain is event-driven, so skipping a retry ends it - it must be
+        // re-kicked here or WiFi stays down until reboot).
+        if (s_scan_hold) {
+            s_scan_hold = false;
+            if (!s_wifi_user_disabled) esp_wifi_connect();
+        }
+        if (get_err != ESP_OK) {
+            // Say WHY. All three paths that set WIFI_SCAN_FAILED used to be
+            // silent, so "Scan failed - tap Scan to try again" appeared on the
+            // Tab5 with nothing whatsoever in the diagnostic log to explain it
+            // - which is exactly the situation on 2026-08-10, moving office,
+            // with the stored SSID out of range and an rpc_core timeout to the
+            // C6 in the same second. A user-visible failure that leaves no
+            // trace is not diagnosable after the fact.
+            ESP_LOGE(TAG, "scan FAILED: could not read AP records (%s)",
+                     esp_err_to_name(get_err));
+            s_scan_state = WIFI_SCAN_FAILED;
+            return;
+        }
+        int n = 0;
+        for (uint16_t i = 0; i < num && n < WIFI_SCAN_MAX; i++) {
+            if (recs[i].ssid[0] == '\0') continue;  // hidden SSID
+            bool dup = false;
+            for (int j = 0; j < n; j++) {
+                if (strcmp(s_scan[j].ssid, (char *)recs[i].ssid) == 0) { dup = true; break; }
+            }
+            if (dup) continue;
+            strncpy(s_scan[n].ssid, (char *)recs[i].ssid, sizeof(s_scan[n].ssid) - 1);
+            s_scan[n].ssid[sizeof(s_scan[n].ssid) - 1] = '\0';
+            s_scan[n].rssi   = recs[i].rssi;
+            s_scan[n].locked = (recs[i].authmode != WIFI_AUTH_OPEN);
+            n++;
+        }
+        s_scan_n = n;
+        s_scan_state = WIFI_SCAN_DONE;  // set last
+        ESP_LOGI(TAG, "scan done: %d AP(s)", n);
+
+    } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_manual_netif) esp_netif_action_disconnected(s_sta_netif, base, id, data);
+        wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)data;
+        xEventGroupClearBits(s_events, BIT_CONNECTED);
+        webserver_stop();
+        if (s_wifi_user_disabled) {
+            ESP_LOGI(TAG, "Disconnected (WiFi turned off by user); not reconnecting");
+            return;
+        }
+        if (s_scan_hold &&
+            (esp_timer_get_time() - s_scan_hold_us) < SCAN_HOLD_TIMEOUT_US) {
+            // A user SSID scan is in flight: don't immediately re-grab the
+            // radio (and don't sleep the event loop in the backoff, which
+            // would also delay SCAN_DONE). The scan-done path resumes us.
+            ESP_LOGI(TAG, "Disconnected during SSID scan - retry held until scan completes");
+            return;
+        }
+        s_retry_count++;
+
+        // Look for a remembered network as soon as two connects have failed,
+        // rather than after the whole fast-retry budget plus a 10 s sleep.
+        if (s_retry_count >= ROAM_AFTER_RETRIES && try_start_roam_scan()) return;
+
+        if (s_retry_count <= MAX_FAST_RETRIES) {
+            ESP_LOGW(TAG, "Disconnected (reason=%d) retry %d/%d",
+                     e->reason, s_retry_count, MAX_FAST_RETRIES);
+            esp_wifi_connect();
+        } else {
+            // Back off — try again every 10 s.
+            ESP_LOGW(TAG, "Disconnected (reason=%d) backing off", e->reason);
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            // Re-check the scan hold AFTER the sleep: a scan started during
+            // the backoff would otherwise be flushed by this wake-up connect
+            // (hardware-caught 2026-08-02: the first Scan press after a
+            // backoff always read 0 APs; a press during a connect attempt
+            // worked - the entry check above only covers that case). The
+            // SCAN_DONE handler re-kicks the chain, so returning here is safe.
+            if (s_scan_hold &&
+                (esp_timer_get_time() - s_scan_hold_us) < SCAN_HOLD_TIMEOUT_US) {
+                ESP_LOGI(TAG, "backoff wake during SSID scan - retry held");
+                return;
+            }
+
+            // Still nowhere? Keep looking for a remembered network on the way
+            // round the backoff loop too (rate-limited inside).
+            if (try_start_roam_scan()) return;
+            esp_wifi_connect();
+        }
+    }
+}
+
+static void on_ip_event(void *arg, esp_event_base_t base,
+                        int32_t id, void *data)
+{
+    if (id == IP_EVENT_STA_GOT_IP) {
+        if (s_manual_netif) {
+            // Mirrors IDF's default got-ip handler: tell the wifi driver the new
+            // IP, then run the netif got-ip action (sets default route etc.).
+            esp_wifi_internal_set_sta_ip();
+            esp_netif_action_got_ip(s_sta_netif, base, id, data);
+        }
+        ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
+        /* DMA-pool bracket (2026-10-04). The pool is 36.6 KB at 17.4 s and
+         * 8.4 KB at 23.4 s - 28 KB goes inside this six-second window and
+         * nothing said to what. Association/DHCP is the first suspect. */
+        MEM_LEDGER("wifi got IP");
+        s_retry_count = 0;
+        s_roam_last_us = 0;         // this network works; allow an immediate roam next time
+        xEventGroupSetBits(s_events, BIT_CONNECTED);
+
+        // Remember the network that actually worked, most-recently-used first.
+        // Building the list from successes rather than from a management screen
+        // means there is nothing for the operator to maintain - which is the
+        // whole point of the request.
+        settings_wifi_known_remember(s_ssid, s_pass);
+
+        /* Bind an unbound static address to the network it just worked on.
+         * Done HERE, on proven success, not when the operator types it: that
+         * way an existing configuration migrates itself with no UI step and no
+         * chance of binding to a network that never worked. */
+        {
+            char sip[16], smask[16], sgw[16], sdns[16], owner[33];
+            settings_get_wifi_static(sip, smask, sgw, sdns);
+            settings_get_wifi_static_ssid(owner);
+            if (sip[0] && !owner[0] && s_ssid[0]) {
+                settings_set_wifi_static_ssid(s_ssid);
+                ESP_LOGI(TAG, "static IP %s is now bound to '%s' - other networks "
+                              "will use DHCP", sip, s_ssid);
+            }
+        }
+
+        // Announce qmx.local now that there is an interface to announce on.
+        // Idempotent, so the reconnects and roams that are routine here cost
+        // nothing - and the name survives the address change a roam causes,
+        // which is the whole reason it is here.
+        mdns_svc_start();
+        {
+            // Count only - never a WIFI_KNOWN_MAX buffer here. This runs on the
+            // system event task, whose stack is under 3 KB; a 588-byte array on it
+            // is a stack-protection fault, which is exactly how this got flashed
+            // once and crash-looped (2026-08-05).
+            int kn_n = settings_wifi_known_count();
+            ESP_LOGI(TAG, "remembered '%s' (%d network%s known)",
+                     s_ssid, kn_n, kn_n == 1 ? "" : "s");
+        }
+
+        // Kick off SNTP on first connect.
+        static bool sntp_started = false;
+        if (!sntp_started) {
+            sntp_started = true;
+            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+            cfg.sync_cb = sntp_sync_cb;
+            // Same stack/priority as time_sync_task, which runs this same
+            // time_sync code for its other sources.
+            if (!s_sntp_task)
+                s_sntp_task = psram_task_create(sntp_apply_task, "sntp_apply", 8192,
+                                                NULL, 4, tskNO_AFFINITY);
+            esp_netif_sntp_init(&cfg);
+            ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
+        }
+
+        webserver_start();
+        rigctld_server_start();
+    }
+}
+
+// Ensure the STA netif exists exactly once before calling esp_wifi_start().
+//
+// The "netif already added" assert that bricked WiFi on newer ESP-Hosted/C6
+// firmware comes from a DUPLICATE WIFI_EVENT_STA_START: IDF's default
+// esp_netif_action_start handler is not idempotent (esp_netif_lwip.c always
+// calls netif_add()), so the second STA_START adds the same netif twice → panic.
+// (Field-proven on Roy's unit, on the SSID-scan path: two "STA started" lines
+// then the assert.)
+//
+// Fix: don't install IDF's default (un-guarded) STA handlers at all. Create the
+// netif with esp_netif_new()/esp_netif_attach_wifi_station() and drive its
+// lifecycle from on_wifi_event()/on_ip_event() with the s_netif_started guard,
+// replicating the default handlers' RX-callback glue (manual_netif_start() +
+// the STA_CONNECTED rxcb registration) so the data path still works on hosted.
+//
+// We still poll ~2 s for an ESP-Hosted auto-created WIFI_STA_DEF first; if one
+// exists, its own default handlers manage it and we leave it alone.
+static void ensure_sta_netif(void)
+{
+    if (s_sta_netif) return;  // idempotent across boot / scan / reconnect paths
+
+    for (int i = 0; i < 20 && esp_netif_get_handle_from_ifkey("WIFI_STA_DEF") == NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    s_sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (s_sta_netif != NULL) {
+        s_manual_netif = false;
+        ESP_LOGI(TAG, "STA netif auto-created by ESP-Hosted; reusing");
+        return;
+    }
+
+    esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_WIFI_STA();
+    esp_netif_config_t cfg = {
+        .base   = &base,
+        .driver = NULL,
+        .stack  = ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA,
+    };
+    s_sta_netif = esp_netif_new(&cfg);
+    ESP_ERROR_CHECK(esp_netif_attach_wifi_station(s_sta_netif));
+    s_manual_netif  = true;
+    s_netif_started = false;
+    ESP_LOGI(TAG, "STA netif created (manual guarded handlers, hosted-safe)");
+}
+
+// Init runs in its own task so app_main is not blocked --------------
+/* Hosted-link watchdog state. The thresholds and the counting live in
+ * util/hosted_watchdog.c, because a bench unit never trips this: the probe
+ * succeeds every 30 s here, so a clean soak proves nothing about the bounds,
+ * and the fault itself has only ever been seen in Bryan N0LUF's capture.
+ * test/hosted_watchdog_harness.c exercises the decision on the host. The
+ * recovery below still has not run against a real wedge. */
+static hosted_wd_t s_hosted_wd;
+
+/* Power-cycle the C6 and bring the hosted transport back up.
+ *
+ * ⛔ THE ORDER MATTERS AND IS THE SAME ONE BOOT USES: stop WiFi, drop the
+ * co-processor's power rail, pause, raise it, re-init hosted, then start WiFi
+ * and reconnect. bsp_set_wifi_power_enable() is the same call wifi_task() makes
+ * at start-up, so this is not a new way of bringing the C6 up - it is the
+ * existing one, run again.
+ *
+ * ⚠ esp_wifi_stop()/start() are deliberately NOT ESP_ERROR_CHECK'd here. Every
+ * one of them talks to a co-processor we already believe is dead, so a failure
+ * is the expected case and must not abort the device - that is the same mistake
+ * the esp_hosted init-fail patch exists to undo. Each step logs and the next is
+ * tried regardless; if the whole sequence fails, the streak simply builds again
+ * and the attempt counter stops it for good. */
+/* ⛔ THIS NO LONGER POWER-CYCLES THE C6, AND THAT IS THE FIX.
+ *
+ * It used to: esp_wifi_stop(), drop the rail, raise it, esp_hosted_init(),
+ * esp_wifi_start(). The first time it ever ran against a real dead link -
+ * Bryan N0LUF, v1.16.10 - it failed, and the log says why:
+ *
+ *   relink: esp_wifi_stop: ESP_FAIL
+ *   M5STACK_TAB5: set_wifi_power_enable: 0
+ *   sdmmc_io_rw_extended: sdmmc_send_cmd returned 0x107      x many
+ *   H_SDIO_DRV: sdio_get_tx_buffer_num: err: 263             x many
+ *   relink: esp_wifi_start failed: ESP_FAIL
+ *
+ * The rail is dropped while the SDIO transport is still up and still polling
+ * the slave, so the driver spins on errors against hardware that is no longer
+ * powered. The ordered teardown that would avoid it is esp_hosted_deinit(),
+ * and that is ESP_ERROR_CHECK throughout - on a slave already believed dead
+ * those abort the device, turning "WiFi is down" into "the device reboots",
+ * which is strictly worse than the fault.
+ *
+ * ⭐ AND THE REASON IT EXISTED IS GONE. The link was dying because our own
+ * SDIO drain advanced its byte counter past data it had never read - see
+ * sdio_drv.c, fixed and measured 2026-10-03. The recovery was treating a
+ * symptom of our own bug.
+ *
+ * So this now reports and stands down rather than acting. A restart genuinely
+ * does fix it - Bryan's own restart brought WiFi straight back - and that is
+ * the operator's call to make, not something to do under their hands while
+ * they are working a QSO. */
+static void hosted_relink(void)
+{
+    ESP_LOGE(TAG, "the hosted WiFi link is not answering and cannot be revived "
+                  "in place - restart the Tab5 to bring WiFi back. (Your QMX "
+                  "will need a power cycle after the restart, as always.)");
+    ui_toast_ms("WiFi has stopped answering and cannot be restarted on its own. "
+                "Restart the Tab5 to bring it back - your QMX will need a power "
+                "cycle afterwards.", 15000);
+}
+
+/* ⛔ DELIBERATE TEST ENTRY POINT - kills the WiFi co-processor for real.
+ *
+ * Bryan N0LUF's hosted link dies on its own and the recovery has never been
+ * reproducible here, which is why 3567847 shipped with its recovery unproven -
+ * and when it finally ran on his unit in v1.16.10 it failed (esp_wifi_stop
+ * ESP_FAIL, an SDIO error storm after the rail dropped, esp_wifi_start
+ * ESP_FAIL). I said the condition could not be reproduced on the bench. That
+ * was wrong.
+ *
+ * Dropping the C6's power rail with the SDIO transport still up and still
+ * polling it puts the host in exactly the state his unit reaches: the slave is
+ * silent, every SDIO command fails, every RPC times out. The host cannot tell
+ * "lost power" from "stopped answering".
+ *
+ * ⚠ It is a NECESSARY condition, not an identical one: his C6 dies with a
+ * backlog of oversize frames behind it, this one dies clean. A recovery that
+ * cannot handle the clean case certainly cannot handle his.
+ *
+ * POST /api/cmd {"action":"wifi_kill_c6"}
+ *
+ * Nothing calls this in normal operation. The watchdog below then sees six
+ * probe failures over ~3 minutes and runs the REAL recovery. */
+void wifi_debug_kill_c6(void)
+{
+    ESP_LOGE(TAG, "TEST: dropping the C6 power rail - the hosted link will now "
+                  "die exactly as it does in the field. The watchdog should see "
+                  "%d probe failures over ~%d s and then re-link.",
+             HOSTED_WD_FAILS_BEFORE_RELINK, HOSTED_WD_FAILS_BEFORE_RELINK * 30);
+    bsp_set_wifi_power_enable(false);
+}
+
+static void wifi_task(void *arg)
+{
+    ESP_LOGI(TAG, "calling esp_hosted_init() explicitly (constructor not running)");
+    extern esp_err_t esp_hosted_init(void);
+    esp_err_t hosted_err = esp_hosted_init();
+    if (hosted_err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_hosted_init failed: %s", esp_err_to_name(hosted_err));
+        return;
+    }
+    ESP_LOGI(TAG, "esp_hosted_init OK");
+
+    ESP_LOGI(TAG, "powering on C6 co-processor");
+    bsp_set_wifi_power_enable(true);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    set_sdio_gpio_drive();
+
+    // ESP-IDF core init (event loop, default STA netif).
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip_event, NULL, NULL));
+
+    // Load credentials from NVS - the two fields, not the whole struct: this
+    // task has a 4096-byte stack and qmx_settings_t is ~1 KB. settings.h has
+    // the rule, and the four times it has been broken.
+    bool wifi_enabled_at_boot = false;
+    settings_get_wifi_creds(s_ssid, s_pass, &wifi_enabled_at_boot);
+
+    /* ⛔ THE PREFERENCE MUST BE APPLIED HERE TOO, NOT ONLY IN THE ROAM PATH.
+     *
+     * Randy N4OPI, 2026-09-24: "It always connects to whichever WLAN was last
+     * selected from the Tab5, regardless of the Web UI config changes." He is
+     * right, and the reason is this function, not the web UI.
+     *
+     * As shipped in v1.16.3 the preference was read in exactly one place -
+     * roam_to_known_if_present(), which is reached ONLY from the
+     * disconnect/retry path after ROAM_AFTER_RETRIES failed connects. So the
+     * feature worked precisely when the configured network was DOWN, and did
+     * nothing at all in the case it was actually written for: both networks
+     * reachable, the configured one answers on the first try, and the operator
+     * wanted the other one. That is the normal case, so for most people the
+     * setting appeared to be ignored entirely.
+     *
+     * Applied only when the preferred SSID is one of the REMEMBERED networks,
+     * because the scan records carry no password and NVS is the only place a
+     * usable one exists. An unknown SSID falls through unchanged and is still
+     * picked up later by the roam scan if it appears.
+     *
+     * Safe against a wrong or out-of-range preference: if it does not answer,
+     * two failed connects arm try_start_roam_scan() and the existing
+     * strongest-remembered-network logic takes over, which is where the unit
+     * would have been anyway. The configured SSID in NVS is NOT overwritten -
+     * same rule as apply_creds_live(): roaming is a convenience, not a
+     * decision. */
+    {
+        char pref[33];
+        settings_get_wifi_preferred_ssid(pref);
+        if (pref[0] && strcmp(pref, s_ssid) != 0) {
+            static wifi_known_t known[WIFI_KNOWN_MAX];   /* ~590 B, 4 KB stack */
+            int kn = settings_wifi_known_get(known, WIFI_KNOWN_MAX);
+            for (int k = 0; k < kn; k++) {
+                if (strcmp(known[k].ssid, pref) != 0) continue;
+                ESP_LOGW(TAG, "preferred network '%s' is set - connecting to it "
+                              "instead of the configured '%s'", pref, s_ssid);
+                /* Precisions, not a bare %s: the compiler cannot see that an
+                 * element of known[] is NUL-terminated, only that the array is
+                 * 588 bytes, so -Werror=format-truncation rejects the plain
+                 * form. The widths are the field sizes less the terminator. */
+                snprintf(s_ssid, sizeof(s_ssid), "%.32s", known[k].ssid);
+                snprintf(s_pass, sizeof(s_pass), "%.64s", known[k].pass);
+                break;
+            }
+        }
+    }
+
+    wifi_config_t sta_cfg = { 0 };
+    // s_ssid/s_pass already NUL-terminated; sta.ssid/password are zero-init via { 0 }.
+    memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid));
+    memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password));
+    sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+    // Only start the radio if we actually have credentials. esp_wifi_start()
+    // is what raises WIFI_EVENT_STA_START and drives the netif start/add path;
+    // not starting it with no SSID both avoids that path entirely (belt-and-
+    // suspenders against the double-add crash above) and saves power. WiFi is
+    // brought up later from panadapter_wifi_reconnect() when the user saves
+    // credentials in the settings drawer.
+    if (s_ssid[0] != '\0' && wifi_enabled_at_boot) {
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+        ensure_sta_netif();
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    } else if (s_ssid[0] != '\0') {
+        ESP_LOGW(TAG, "WiFi credentials present but WiFi boot-initiation disabled");
+    } else {
+        ESP_LOGW(TAG, "no WiFi credentials configured; WiFi idle until configured");
+    }
+
+    // Periodic status log so user can see what's going on. Every 10 min, was
+    // every 30 s (log audit 2026-09-13): connect/disconnect are logged where
+    // they happen, so this is only a "still here" marker with the clock.
+    int ticks = 0;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+        EventBits_t b = xEventGroupGetBits(s_events);
+        if ((b & BIT_CONNECTED) && (++ticks % 20) == 0) {
+            time_t now = time(NULL);
+            struct tm tm_utc;
+            gmtime_r(&now, &tm_utc);
+            ESP_LOGI(TAG, "online; UTC %04d-%02d-%02d %02d:%02d:%02d",
+                     tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+                     tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+        }
+
+        /* ⭐ HOSTED-LINK WATCHDOG - the C6 can stop answering and never come
+         * back, and until now only a full reboot fixed it.
+         *
+         * Bryan N0LUF, 2026-10-01, captured on the SD card WHILE the WiFi was
+         * dead (the web download cannot work once it is - Michael KZ4LY made
+         * that point and he was right):
+         *
+         *   W H_SDIO_DRV: SDIO RX oversize: len=19838 host_cnt=.. slave_reg=..
+         *      - draining to recover            x183 in NINE SECONDS
+         *   W rpc_core: Timeout waiting for Resp for Req[0x126]   x61, forever
+         *
+         * The oversize drain (tools/patches/apply_esp_hosted_sdio_recovery.ps1)
+         * does advance the host counter correctly - host_cnt tracks the previous
+         * slave_reg every time - but the slave ran 10-20 KB further ahead on
+         * each pass, 20 times a second, and then went silent altogether. So the
+         * link does not merely desynchronise, it dies, and draining cannot fix
+         * a dead link however long it runs. ⛔ Its "recovered" line has never
+         * appeared in ANY capture, here or on the bench.
+         *
+         * 0x126 is WifiStaGetApInfo, which is exactly what
+         * esp_wifi_sta_get_ap_info() issues - so the same call that was timing
+         * out in his log is the cheapest possible probe for the condition.
+         *
+         * ⛔ BOUNDED, AND DELIBERATELY SLOW. CLAUDE.md records the FT8 respawn
+         * watchdog firing ~390 times and degrading the device it was rescuing.
+         * This needs SIX consecutive failures (~3 minutes, since the loop is
+         * 30 s) before it acts, and it acts at most WIFI_RELINK_MAX times in a
+         * session. A momentary RPC hiccup must not power-cycle the radio.
+         *
+         * ⚠ NOT YET SEEN TO RESCUE A REAL WEDGE. The condition has only been
+         * observed in Bryan's log, never reproduced on the bench, so this path
+         * has never run against the fault it is written for. */
+        {
+            const bool watching = (b & BIT_CONNECTED) && !s_wifi_user_disabled;
+            wifi_ap_record_t probe;
+            const bool probe_ok = watching &&
+                                  esp_wifi_sta_get_ap_info(&probe) == ESP_OK;
+
+            switch (hosted_wd_tick(&s_hosted_wd, watching, probe_ok)) {
+            case HOSTED_WD_RECOVERED:
+                ESP_LOGI(TAG, "hosted link answered again after %d missed probe(s)",
+                         s_hosted_wd.last_missed);
+                break;
+            case HOSTED_WD_RELINK:
+                ESP_LOGW(TAG, "hosted link dead: %d consecutive probe failures "
+                              "(~%d s) - reporting it (attempt %d/%d)",
+                         HOSTED_WD_FAILS_BEFORE_RELINK,
+                         HOSTED_WD_FAILS_BEFORE_RELINK * 30,
+                         s_hosted_wd.relink_count, HOSTED_WD_MAX_RELINKS);
+                hosted_relink();
+                break;
+            case HOSTED_WD_EXHAUSTED:
+                ESP_LOGE(TAG, "hosted link is dead and %d re-link attempt(s) did "
+                              "not bring it back - stopping, a reboot is needed",
+                         HOSTED_WD_MAX_RELINKS);
+                break;
+            case HOSTED_WD_NOTHING:
+                break;
+            }
+        }
+    }
+}
+
+// Public API -----------------------------------------------------------
+void panadapter_wifi_start(void)
+{
+    if (s_events) return;  // idempotent
+    s_events = xEventGroupCreate();
+    psram_task_create(wifi_task, "wifi", 4096, NULL, 5, tskNO_AFFINITY);
+}
+
+bool wifi_is_connected(void)
+{
+    if (!s_events) return false;
+    return (xEventGroupGetBits(s_events) & BIT_CONNECTED) != 0;
+}
+
+bool panadapter_wifi_is_enabled(void)
+{
+    return !s_wifi_user_disabled;
+}
+
+const char *wifi_get_ssid(void)
+{
+    static char ssid_buf[33];
+    if (!wifi_is_connected()) { ssid_buf[0] = '\0'; return ssid_buf; }
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) { ssid_buf[0] = '\0'; return ssid_buf; }
+    memcpy(ssid_buf, ap.ssid, sizeof(ssid_buf) - 1);
+    ssid_buf[sizeof(ssid_buf) - 1] = '\0';
+    return ssid_buf;
+}
+
+int wifi_get_rssi_dbm(void)
+{
+    if (!wifi_is_connected()) return 0;
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
+}
+
+const char *wifi_get_ip(void)
+{
+    static char ip_buf[16];
+    ip_buf[0] = '\0';
+    if (!wifi_is_connected()) return ip_buf;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) return ip_buf;
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK) return ip_buf;
+    if (ip_info.ip.addr == 0) return ip_buf;
+    snprintf(ip_buf, sizeof(ip_buf), IPSTR, IP2STR(&ip_info.ip));
+    return ip_buf;
+}
+
+// The address the device is living on RIGHT NOW, whether it came from DHCP or
+// from a static configuration - which is the same question either way: what
+// network is the browser that is talking to us on?
+//
+// This is what makes a static address safe to accept (util/ip_guard.c). It is
+// deliberately read live rather than remembered: a remembered lease belongs to
+// whichever network the device was on when it was stored, and judging today's
+// configuration against yesterday's network is exactly the mistake the guard
+// exists to prevent.
+bool panadapter_wifi_get_lease(char ip[16], char mask[16],
+                               char gw[16], char dns[16])
+{
+    if (ip)   ip[0]   = '\0';
+    if (mask) mask[0] = '\0';
+    if (gw)   gw[0]   = '\0';
+    if (dns)  dns[0]  = '\0';
+
+    if (!wifi_is_connected()) return false;
+    esp_netif_t *netif = s_sta_netif ? s_sta_netif
+                       : esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) return false;
+
+    esp_netif_ip_info_t info;
+    if (esp_netif_get_ip_info(netif, &info) != ESP_OK) return false;
+    if (info.ip.addr == 0) return false;   // associated but no address yet
+
+    if (ip)   snprintf(ip,   16, IPSTR, IP2STR(&info.ip));
+    if (mask) snprintf(mask, 16, IPSTR, IP2STR(&info.netmask));
+    if (gw && info.gw.addr) snprintf(gw, 16, IPSTR, IP2STR(&info.gw));
+
+    esp_netif_dns_info_t d;
+    if (dns && esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &d) == ESP_OK &&
+        d.ip.type == ESP_IPADDR_TYPE_V4 && d.ip.u_addr.ip4.addr)
+        snprintf(dns, 16, IPSTR, IP2STR(&d.ip.u_addr.ip4));
+
+    return true;
+}
+
+bool wifi_time_is_valid(void)
+{
+    if (!s_events) return false;
+    return (xEventGroupGetBits(s_events) & BIT_TIME_OK) != 0;
+}
+void panadapter_wifi_update_credentials(const char *ssid, const char *pass)
+{
+    if (!ssid || ssid[0] == '\0') {
+        ESP_LOGW(TAG, "update_credentials: empty SSID, ignoring");
+        return;
+    }
+    // Update live creds.
+    strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
+    s_ssid[sizeof(s_ssid) - 1] = '\0';
+    if (pass) {
+        strncpy(s_pass, pass, sizeof(s_pass) - 1);
+        s_pass[sizeof(s_pass) - 1] = '\0';
+    } else {
+        s_pass[0] = '\0';
+    }
+    // Persist.
+    settings_set_wifi_ssid(s_ssid);
+    settings_set_wifi_pass(s_pass);
+    // Push into the driver config so a later connect/start uses them. Valid
+    // even before esp_wifi_start() — esp_wifi_init() always ran at boot.
+    wifi_config_t sta_cfg = { 0 };
+    memcpy(sta_cfg.sta.ssid, s_ssid, sizeof(sta_cfg.sta.ssid));
+    memcpy(sta_cfg.sta.password, s_pass, sizeof(sta_cfg.sta.password));
+    sta_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    ESP_LOGI(TAG, "credentials updated for '%s' (connection state unchanged)", s_ssid);
+}
+
+static void reconnect_deferred(void);   // defined below; used by both reconnect paths
+
+void panadapter_wifi_reconnect(const char *ssid, const char *pass)
+{
+    if (!ssid || ssid[0] == '\0') {
+        ESP_LOGW(TAG, "reconnect: empty SSID, ignoring");
+        return;
+    }
+    ESP_LOGI(TAG, "reconnect: switching to '%s'", ssid);
+
+    // Explicit intent to connect — clear any prior "user turned WiFi off"
+    // state so the connect below isn't suppressed by the STA_DISCONNECTED guard.
+    s_wifi_user_disabled = false;
+
+    panadapter_wifi_update_credentials(ssid, pass);
+
+    // Reset retry counter so fast retries get a fresh budget.
+    s_retry_count = 0;
+
+    if (!s_wifi_started) {
+        // First credentials this boot (booted with no SSID, so the radio was
+        // left idle). Bring it up now; esp_wifi_start() raises STA_START and
+        // the event handler issues the connect.
+        ESP_LOGI(TAG, "starting WiFi for the first time this boot");
+        ensure_sta_netif();
+        ESP_ERROR_CHECK(esp_wifi_start());
+        s_wifi_started = true;
+    } else {
+        // Already running: cycle the connection with the new config.
+        // Deferred, not inline - see reconnect_deferred()'s own comment:
+        // this is reachable from webserver.c's settings save (switching to a
+        // remembered network with no password typed), and an inline
+        // esp_wifi_disconnect() here kills that same request's own response.
+        reconnect_deferred();
+    }
+}
+
+/* ⛔ NEVER esp_wifi_disconnect()+connect() INLINE FROM AN HTTP HANDLER.
+ *
+ * Randy N4OPI, 2026-09-27: repeatedly saw a settings save hang at
+ * "Saving..." and never reach "Saved...", specifically whenever the save
+ * also changed the network the unit is on. esp_wifi_disconnect() tears the
+ * STA link down immediately - including the TCP connection the httpd worker
+ * is using RIGHT NOW to send that same request's own "{"ok":true}" response.
+ * The device-side save had completed; the browser just never heard about it,
+ * because the link it was waiting on was the one just cut out from under it.
+ *
+ * This is not specific to the preferred-network path - panadapter_wifi_
+ * reconnect() (used at webserver.c's "switch to a remembered network, no
+ * password typed" case) had the exact same shape, and I only found it by
+ * going looking after this same bug bit him a second time under a different
+ * name. Both now route through this one deferred primitive, so a third
+ * caller doing this inline cannot reintroduce it unnoticed.
+ *
+ * Runs the disconnect/reconnect ~500 ms later, off the caller's stack, so an
+ * HTTP response has time to leave over the OLD link first - same reasoning
+ * as factory_reset.c's reboot_task giving a response time to flush before
+ * esp_restart() pulls the rug out. Harmless when the caller is the on-device
+ * UI instead of the web UI (ui/wifi_config.c): a fifth of a second of extra
+ * delay before a touch-driven network switch is not something a human
+ * notices. */
+static void reconnect_deferred_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    s_retry_count = 0;
+    esp_wifi_disconnect();
+    esp_wifi_connect();
+    vTaskDelete(NULL);
+}
+
+static void reconnect_deferred(void)
+{
+    xTaskCreate(reconnect_deferred_task, "wifi_recon", 2048, NULL, 5, NULL);
+}
+
+/* Act on a freshly-saved preferred network without waiting for a reboot.
+ *
+ * Randy N4OPI, 2026-09-24. Without this the operator sets the preference, sees
+ * "Saved", and the Tab5 stays exactly where it was - which reads as the setting
+ * having been ignored, because from the outside there is no difference.
+ *
+ * Deliberately apply_creds_live() and NOT panadapter_wifi_reconnect(): the
+ * latter persists the SSID as the CONFIGURED one, and the preference is a
+ * preference, not a re-configuration. Same rule as the roam path.
+ *
+ * Does nothing unless the preference names a remembered network that is not
+ * the one already in use - clearing the preference does not drag the unit off
+ * a working connection, and neither does saving an unrelated setting. */
+void panadapter_wifi_apply_preferred(void)
+{
+    char pref[33];
+    settings_get_wifi_preferred_ssid(pref);
+    if (!pref[0] || strcmp(pref, s_ssid) == 0) return;
+    if (s_wifi_user_disabled || !s_wifi_started) return;
+
+    static wifi_known_t known[WIFI_KNOWN_MAX];
+    int kn = settings_wifi_known_get(known, WIFI_KNOWN_MAX);
+    for (int k = 0; k < kn; k++) {
+        if (strcmp(known[k].ssid, pref) != 0) continue;
+        ESP_LOGW(TAG, "preferred network set to '%s' - leaving '%s' for it now",
+                 pref, s_ssid);
+        apply_creds_live(known[k].ssid, known[k].pass);
+        reconnect_deferred();
+        return;
+    }
+    ESP_LOGW(TAG, "preferred network '%s' is not one of the %d remembered "
+                  "networks - staying on '%s'", pref, kn, s_ssid);
+}
+
+// Live WiFi on/off. Runs off the LVGL thread because ensure_sta_netif() can
+// poll for up to ~2 s and esp_wifi_start()/stop() can block. esp_wifi_init()
+// always ran at boot (in wifi_task, regardless of the enabled flag), so the
+// radio is initialised and can be started/stopped here even if boot left it
+// idle.
+static void wifi_set_enabled_task(void *arg)
+{
+    bool en = (bool)(intptr_t)arg;
+    if (en) {
+        s_wifi_user_disabled = false;
+        s_retry_count = 0;
+        if (s_ssid[0] == '\0') {
+            ESP_LOGW(TAG, "enable: no SSID configured; nothing to connect to");
+        } else if (!s_wifi_started) {
+            ESP_LOGI(TAG, "enable: starting WiFi");
+            ensure_sta_netif();
+            if (esp_wifi_start() == ESP_OK) s_wifi_started = true;
+            else ESP_LOGE(TAG, "enable: esp_wifi_start failed");
+        } else {
+            ESP_LOGI(TAG, "enable: reconnecting");
+            esp_wifi_connect();
+        }
+    } else {
+        // Disconnect only — deliberately NOT esp_wifi_stop(). Leaving the radio
+        // "started" keeps the netif in place, so re-enabling is a plain
+        // esp_wifi_connect() (the well-trodden retry path) instead of a
+        // stop→start→netif-re-add cycle, which is the fragile path this driver
+        // has a long crash history with (see ensure_sta_netif / s_netif_started).
+        // The s_wifi_user_disabled guard in on_wifi_event() suppresses the
+        // auto-reconnect loop, and STA_DISCONNECTED already stops the webserver,
+        // so this is functionally "off": no association, no traffic, no retries.
+        s_wifi_user_disabled = true;
+        esp_wifi_disconnect();
+        ESP_LOGI(TAG, "disable: WiFi disconnected (radio left started for fast re-enable)");
+    }
+    vTaskDelete(NULL);
+}
+
+void panadapter_wifi_set_enabled(bool enabled)
+{
+    settings_set_wifi_enabled(enabled);   // persist the boot preference regardless
+    if (!s_events) return;                // subsystem not up yet; NVS flag applies at boot
+    psram_task_create(wifi_set_enabled_task, "wifi_en", 4096,
+                      (void *)(intptr_t)enabled, 5, tskNO_AFFINITY);
+}
+
+// ---- WiFi scan (SSID picker) -----------------------------------------
+// Runs the (potentially slow) radio bring-up + scan kick-off off the LVGL
+// thread. ensure_sta_netif() polls for up to ~2 s, and esp_wifi_start() can
+// block, so neither may run on the UI task.
+static void wifi_scan_task(void *arg)
+{
+    (void)arg;
+    if (!s_wifi_started) {
+        ensure_sta_netif();
+        esp_err_t st = esp_wifi_start();
+        if (st != ESP_OK) {
+            ESP_LOGE(TAG, "scan FAILED: esp_wifi_start (%s)", esp_err_to_name(st));
+            s_scan_state = WIFI_SCAN_FAILED;
+            vTaskDelete(NULL);
+            return;
+        }
+        s_wifi_started = true;
+    }
+    s_scan_n = 0;
+    // Not connected -> the reconnect chain owns the radio (an unreachable
+    // stored SSID retries forever) and starves the scan to 0 APs. Hold the
+    // chain and abort any in-flight connect attempt so the scan gets real
+    // airtime; the SCAN_DONE handler resumes connecting.
+    if (!(xEventGroupGetBits(s_events) & BIT_CONNECTED)) {
+        s_scan_hold_us = esp_timer_get_time();
+        s_scan_hold = true;
+        esp_wifi_disconnect();               // no-op error if idle - fine
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    wifi_scan_config_t scan_cfg = { 0 };  // active scan, all channels
+    esp_err_t sst = esp_wifi_scan_start(&scan_cfg, false);
+    if (sst != ESP_OK) {
+        // Most likely the co-processor did not answer: every one of these calls
+        // is an RPC over SDIO to the C6, and a timed-out RPC surfaces here as a
+        // plain error return. Naming it separates "the radio refused" from
+        // "the scan ran and found nothing", which look identical on screen.
+        ESP_LOGE(TAG, "scan FAILED: esp_wifi_scan_start (%s)", esp_err_to_name(sst));
+        s_scan_state = WIFI_SCAN_FAILED;
+        if (s_scan_hold) {                   // resume the chain we held
+            s_scan_hold = false;
+            if (!s_wifi_user_disabled) esp_wifi_connect();
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+void panadapter_wifi_scan_start(void)
+{
+    // "Already scanning" only blocks a FRESH scan - a RUNNING state older
+    // than 20 s means the SCAN_DONE event was lost (esp_hosted RPC drop),
+    // and without this escape every later press would be refused until
+    // reboot (Scan permanently dead is worse than a doubled scan).
+    int64_t now = esp_timer_get_time();
+    if (s_scan_state == WIFI_SCAN_RUNNING &&
+        (now - s_scan_started_us) < SCAN_STALE_US) return;
+    s_scan_started_us = now;
+    s_scan_state = WIFI_SCAN_RUNNING;
+    s_scan_auto_retried = false;   // each user press gets one free retry
+    s_scan_stale_logged = false;   // and one stale-scan complaint if it hangs
+    psram_task_create(wifi_scan_task, "wifi_scan", 4096, NULL, 5, tskNO_AFFINITY);
+}
+
+wifi_scan_state_t panadapter_wifi_scan_state(void)
+{
+    // A scan whose SCAN_DONE never arrives would otherwise sit at RUNNING
+    // forever and leave the modal saying "Scanning..." with nothing coming.
+    // That is not hypothetical: on 2026-08-10 the background roam scan stopped
+    // completing entirely (no SCAN_DONE, no roam verdict) after an rpc_core
+    // timeout to the C6, and the only reason a later press worked at all was
+    // the staleness escape above. Report the failure instead of spinning - the
+    // operator can then retry, or switch WiFi off to free the radio.
+    if (s_scan_state == WIFI_SCAN_RUNNING && s_scan_started_us &&
+        (esp_timer_get_time() - s_scan_started_us) >= SCAN_STALE_US) {
+        if (!s_scan_stale_logged) {
+            s_scan_stale_logged = true;
+            ESP_LOGE(TAG, "scan FAILED: no SCAN_DONE within %d s "
+                          "(co-processor did not answer)", (int)(SCAN_STALE_US / 1000000));
+        }
+        return WIFI_SCAN_FAILED;
+    }
+    return s_scan_state;
+}
+
+int panadapter_wifi_scan_get(wifi_scan_ap_t *out, int max)
+{
+    if (!out || max <= 0 || s_scan_state != WIFI_SCAN_DONE) return 0;
+    int n = s_scan_n;
+    if (n > max) n = max;
+    memcpy(out, s_scan, n * sizeof(wifi_scan_ap_t));
+    return n;
+}

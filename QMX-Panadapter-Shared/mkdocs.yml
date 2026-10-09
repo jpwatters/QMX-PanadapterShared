@@ -1,0 +1,66 @@
+site_name: QMX Panadapter
+site_url: https://tab5.lav.dk/
+repo_url: https://github.com/SteffenLav/qmx-panadapter
+repo_name: qmx-panadapter
+docs_dir: docs/mkdocs
+site_dir: site
+theme:
+  name: material
+  custom_dir: overrides
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - toc.follow
+    - content.code.copy
+  palette:
+    - scheme: light
+      primary: blue
+      accent: orange
+
+nav:
+  - Home: index.md
+  - Quick Start: quick-start.md
+  - Getting Help: getting-help.md
+  - User Guide:
+    - Panadapter: guide/panadapter.md
+    - Audio (beta): guide/audio.md
+    - Live Spots: guide/spots.md
+    - Spot Map: guide/spot-map.md
+    - Web UI: guide/web-ui.md
+    - FT8 RX: guide/ft8-rx.md
+    - FT8 TX: guide/ft8-tx.md
+    - Time Sync: guide/time-sync.md
+    - WSPR: guide/wspr.md
+    - Radio Menus: guide/radio-menus.md
+    - Settings: guide/settings.md
+  - Reference:
+    - Gestures & Controls: reference/gestures.md
+    - Hardware: reference/hardware.md
+    - Web API: reference/web-api.md
+    - Troubleshooting: reference/troubleshooting.md
+    - Glossary: reference/glossary.md
+  - For Builders:
+    - Build from Source: build/build.md
+    - Architecture: build/architecture.md
+    - Contributing & Feedback: build/contributing.md
+  - Releases: releases.md
+
+plugins:
+  - search
+
+# Post-build hook: mirror the raw source .md tree to site/md/, emit
+# site/md/toc.json (from nav) and site/latest.json (from the latest git tag)
+# for the on-device docs Reader + update check. See mkdocs_reader_export.py and
+# docs/reader-page-and-update-check-plan.md.
+hooks:
+  - mkdocs_reader_export.py
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true

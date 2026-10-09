@@ -1,0 +1,385 @@
+# Target
+CONFIG_IDF_TARGET="esp32p4"
+CONFIG_ESP32P4_REV_MIN_0=y
+
+# Partition table
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM - HPI octal mode for Tab5
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+
+# CPU
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# FreeRTOS
+CONFIG_FREERTOS_UNICORE=n
+CONFIG_FREERTOS_HZ=1000
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# Stacks
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# Cache
+# 256 KB - the hardware default for pre-V3 P4 silicon, and RESTORED here after
+# a measured A/B on 2026-08-28 (#284). The L2 cache is carved out of the SAME
+# L2MEM the DMA-capable heap lives in (heap/port/esp32p4/memory_layout.c sizes
+# the region as SOC_DRAM_HIGH - CONFIG_CACHE_L2_CACHE_SIZE - ...), so 128 KB
+# returns exactly 128 KB to MALLOC_CAP_DMA: measured dma free went 10,071 B ->
+# ~101,000 B, internal free 39 KB (min 2 KB) -> 144 KB (min 68 KB).
+# ⛔ But it was NOT worth it on this board. SPIRAM_FETCH_INSTRUCTIONS,
+# SPIRAM_RODATA and SPIRAM_XIP_FROM_PSRAM are all on, so code and rodata are
+# fetched through this cache, and panadapter core-0 idle collapsed from 6.9-7.6%
+# to 0.1-1.5% with a visibly jerky waterfall. Two attempts to buy that back were
+# both falsified on hardware the same day - shrinking the rotation working set
+# (display.c buffer_size 36 -> 12 made it WORSE) and moving the LVGL task to
+# core 1 (starved fft_task and dropped every audio sample). The real fix is to
+# stop rotating in software at all - see the notes in display.c.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# Compiler
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# Console UART baud rate -- bumped from 115200 to 921600 (8x). Cuts
+# screenshot capture transfer time from ~3.5min to ~25s. idf.py monitor
+# and `qmx m` pick this up automatically from project_description.json;
+# tools/screenshot_decode.py and tools/capture_serial_log.ps1 must be
+# updated to match.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+# Phase 2.1 - bump USB enum buffer for devices with large config descriptors (QMX has CDC + UAC)
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+
+# v1.3 engineering-sample silicon needs 360MHz max (400MHz default fails clock init)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+CONFIG_LV_FONT_MONTSERRAT_48=y
+
+CONFIG_LV_FONT_MONTSERRAT_32=y
+
+# --------------------------------------------------------------------
+# WiFi (ESP32-P4 via ESP32-C6 co-processor over SDIO using esp_hosted)
+# Settings copied from N6HAN's qrp_companion which matches the Tab5
+# factory C6 firmware (esp_hosted slave 1.4.0).
+# --------------------------------------------------------------------
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_HOSTED_ENABLED=y
+CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW=y
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
+CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
+CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=40000
+CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
+CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
+CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
+CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
+CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
+CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
+CONFIG_ESP_HOSTED_GPIO_SLAVE_RESET_SLAVE=15
+CONFIG_HTTPD_WS_SUPPORT=y
+
+# LVGL memory pool -- bumped from 128 KB to 256 KB (v0.16.0) to accommodate
+# pre-built modals + drawer + 40-row FT8 pool (~220 KB cumulative, up from
+# ~110 KB at 20 rows). Pool is a .bss static array in internal SRAM.
+CONFIG_LV_MEM_SIZE_KILOBYTES=1024
+
+
+# Move LVGL static memory pool to PSRAM (.ext_ram.bss). Without this,
+# the pool lives in internal SRAM (.bss) and steals DMA-capable memory
+# from SDIO/USB. With PSRAM placement, the pool is effectively
+# unlimited (28 MB free) and internal SRAM is preserved for DMA.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# Per-task CPU usage accounting (util/cpu_stats.c): uxTaskGetSystemState with
+# run-time counters + per-task core ID. Costs one 32-bit counter read per
+# context switch (esp_timer based) — negligible; kept on permanently so any
+# field diag log contains per-core CPU numbers (the CW-audio ghost task and
+# the FT8-mode render waste were both invisible without these).
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# USB DWC DMA buffers → PSRAM (ESP32-P4 DWC DMA can access external RAM).
+# Without this, USB transfer descriptor lists and data buffers come from
+# internal SRAM. After WiFi connects and consumes ~100 KB, the heap is
+# fragmented to ~31 KB largest block — too small for USB EP alloc on
+# reconnect. Routing USB DMA to PSRAM fixes the "no audio/CAT after QMX
+# power-cycle" regression.
+CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y
+
+# UAC ISO pipeline depth (#51 root-cause fix): 8 URBs x 40 packets x 1 ms =
+# 320 ms of queued isochronous stream (was 3 x 3 = 9 ms). With only 9 ms of
+# hardware autonomy, ANY >9 ms pause of the completion/resubmission pump (the
+# level-1 USB interrupt + UAC bg task, both held off during the post-decode
+# LVGL/LDPC storm) left the IN endpoint with no queued transfer - the QMX's
+# audio was lost at the wire with zero error status (~170-350 ms every FT8
+# slot, measured). Deep queuing rides through pump pauses up to ~300 ms and
+# cuts completion-pump load 13x (25/s vs 328/s). Buffers are PSRAM (USB DWC
+# DMA in PSRAM since v0.19.2), ~165 KB total.
+CONFIG_UAC_NUM_ISOC_URBS=8
+CONFIG_UAC_NUM_PACKETS_PER_URB=40
+
+# TLS must not depend on the MALLOC_CAP_DMA pool (2026-08-04). ALL outbound
+# HTTPS failed on the bench with:
+#     esp-aes: Failed to allocate memory for the array of DMA descriptors
+#     esp-tls-mbedtls: mbedtls_ctr_drbg_seed returned -0x0001
+# Measured at the moment of failure: MALLOC_CAP_DMA free=167-263 B, largest
+# free block 52-116 B - the pool is EMPTY, not merely fragmented, and a plain
+# unaligned 48-byte DMA request fails too (so it is not an alignment issue).
+# Meanwhile MALLOC_CAP_INTERNAL had 26-30 KB free with a 16-20 KB largest
+# block: there is plenty of internal RAM, just none of it DMA-capable. This is
+# the documented TODO #65 collapse (WiFi bring-up takes the pool to ~400 B and
+# it never recovers) finally biting something user-visible.
+#
+# On ESP32-P4 SOC_AES_SUPPORT_DMA=1 and the IDF AES port has NO small-buffer
+# fallback, so EVERY hardware-AES operation - including ctr_drbg's 16-byte
+# ones - first allocates a descriptor array from MALLOC_CAP_DMA|INTERNAL
+# (esp_aes_dma_core.c:422). With ~200 B free that can never succeed, so TLS
+# could not even seed its RNG: spots, update_check and the QRZ/eQSL/LoTW
+# uploads were all dead. Hardware SHA has the same dependency on its
+# realloc/copy paths (sha/dma/sha.c:196,209,354), so it goes too or the
+# failure just moves.
+#
+# MPI and ECC are deliberately LEFT ON: they are register-based and allocate
+# no DMA memory, so RSA/ECDSA - the expensive part of a handshake - stays
+# hardware-accelerated. What we give up is software AES-GCM/SHA over the
+# payload, a few ms of CPU on a background task for a ~40 KB body.
+#
+# Do NOT turn these back on to "recover performance" without first fixing the
+# DMA-pool collapse; hardware crypto that requires a runtime DMA allocation is
+# fundamentally incompatible with a pool that sits near zero whenever WiFi is
+# up. See TODO #65.
+# CONFIG_MBEDTLS_HARDWARE_AES is not set
+# CONFIG_MBEDTLS_HARDWARE_GCM is not set
+# CONFIG_MBEDTLS_HARDWARE_SHA is not set
+
+#
+# mDNS (qmx.local) - keep it OUT of internal RAM.
+# The component defaults to creating its task and its allocations in internal
+# RAM. Kept because it matches this project's standing rule for background tasks
+# (util/psram_task.h) - but MEASURED, it made no difference to the internal
+# low-water mark. What actually recovered it was trimming the static tables
+# below; see CLAUDE.md's mDNS section for the three-build comparison.
+#
+# CONFIG_MDNS_TASK_CREATE_FROM_INTERNAL is not set
+CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
+# CONFIG_MDNS_MEMORY_ALLOC_INTERNAL is not set
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+
+#
+# mDNS sizing. We have exactly ONE interface (WiFi STA) and advertise exactly ONE
+# service (_http._tcp), so the component's defaults of 3 and 10 are static RAM
+# bought for nothing - its own help text says lowering these reduces static RAM.
+# Measured on this board, adding mDNS took the internal low-water mark from ~31 KB
+# to ~9 KB, and moving its task+allocations to PSRAM did NOT recover it, so the
+# cost is elsewhere: static tables like these, and the LWIP pbufs that every
+# multicast packet on the LAN now lands in.
+#
+CONFIG_MDNS_MAX_INTERFACES=1
+CONFIG_MDNS_MAX_SERVICES=2
+
+# Monospace font for the on-device manual's code/diagram blocks. The montserrat
+# fonts are proportional, so every ASCII drawing in the manual came out ragged.
+CONFIG_LV_FONT_UNSCII_16=y
+
+# ---- Bluetooth: BLE HID host for a wireless mouse (feat/bt-mouse) -----------
+# The ESP32-P4 has NO radio of its own - the controller lives on the C6 and is
+# reached over the SAME SDIO link as WiFi (the boot log's "HCI over SDIO,
+# BLE only"), so the controller is DISABLED here and esp_hosted carries HCI.
+#
+# NimBLE, not Bluedroid: esp_hid ships a NimBLE HID host (nimble_hidh.c) and
+# NimBLE costs far less RAM - which on this board is the resource that decides
+# whether a feature is possible at all (see the .bss / MALLOC_CAP_DMA notes).
+#
+# Central + observer only. We scan for and connect to a mouse; we never
+# advertise, so the peripheral and broadcaster roles are dead weight.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_CONTROLLER_DISABLED=y
+# NimBLE defaults its transport to UART whenever the local controller is
+# disabled, and the hosted BT option is gated on !BT_NIMBLE_TRANSPORT_UART.
+# Turning it off is what makes the VHCI-over-SDIO path selectable at all.
+CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+
+# NimBLE sizing for ONE MOUSE, not a generic BLE device. Stock defaults took the
+# MALLOC_CAP_DMA pool from 32 KB to 851 BYTES at nimble_port_init() - the exact
+# #65 signature that breaks USB endpoint alloc on a QMX reconnect, TLS, and the
+# SD mount. Same lesson as the mdns component: a managed component's defaults
+# are sized for a busier device; cut them to what this board actually has.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=6
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=10
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=4
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=6
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=6
+
+# USB host enumeration timing: DELIBERATELY LEFT AT THE IDF DEFAULTS (30/30/10).
+# Tested 2026-08-11 against a really-wedged QMX and it changed NOTHING - see TODO #74.
+# 50 ms and 200 ms reset holds (the latter is Linux's HUB_LONG_RESET_TIME) both produced
+# the identical empty data stage, as did requesting 64 descriptor bytes instead of 8 the
+# way Windows and Linux do. Do not raise these hoping to fix that wedge; it has been
+# measured and it does not.
+
+# SPIFFS garbage collection: 10 (the IDF default) is not enough for the diag
+# log's rotation pattern. Measured 2026-08-18 on the released v1.8.6: the log
+# grows ~47 KB/min in an FT8 session, so diag.log reaches its 256 KB cap and
+# rotates roughly every 11 minutes, deleting a 256 KB file each time. That
+# leaves a large number of blocks holding a mix of live and deleted pages, and
+# SPIFFS returns ENOSPC as soon as GC cannot free a whole block within
+# GC_MAX_RUNS attempts - which happened twice in one 48-minute window with
+# ~400 KB still free:
+#   W diag: flash-persist: write failed (No space left on device) - streak 1
+# It self-heals (diag_log.c rotates early on ENOSPC) but only by DISCARDING a
+# generation, so the flash log silently loses history - and that flash copy is
+# the only log that survives the reboot it is meant to explain.
+# Raising the budget is safe on this board specifically because long erases
+# yield: CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS=20 plus
+# CONFIG_SPIRAM_XIP_FROM_PSRAM=y mean GC cannot hold cache down long enough to
+# stall the MIPI-DSI frame-restart ISR (the "cyan flash" rule in CLAUDE.md).
+# The writes themselves are on diag_persist, a priority-2 background task.
+CONFIG_SPIFFS_GC_MAX_RUNS=32
+
+# #218 one-tap update: a freshly OTA'd image boots PENDING_VERIFY and must call
+# esp_ota_mark_app_valid_cancel_rollback() itself. If it crashes or hangs before
+# it gets there, the bootloader reverts to the previous image on the next reset.
+# That is the whole safety net - without it a bad update is a dead device with no
+# cable in the field. Marked valid from app_main once the UI and network are up.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# TEMP INSTRUMENT (#283) - per-task heap tracking, so dma_owners_report()
+# can name which task holds the MALLOC_CAP_DMA bytes. Costs an owning-task
+# handle in every block header, so free figures on this build read LOW.
+# ⛔ REMOVE with the instrument - see the checklist in TODO #283.
+# CONFIG_HEAP_TASK_TRACKING is DELIBERATELY OFF for shipping builds.
+# It stores an owning-task handle in every heap block header, so free figures
+# read low and the device's memory behaviour is not representative - measured
+# 2026-08-28 on a build that had it on: FT8 decode ran 15.4 s against a 15 s
+# slot with internal heap min at 1 KB. Turn it on only to run
+# /api/cmd {"action":"dma_owners"}, and turn it off again before measuring or
+# releasing anything. dma_owners_report() compiles to a stub without it.
+# TEMP 2026-09-26 - ON to name the owner of the 60 ms internal-RAM dips
+# (heap_watch.c). The dips run at 24/min and bottom at 143-191 B; tag
+# correlation and an RBN/cluster A/B both came back negative, so the only
+# thing left that answers "who" is per-task attribution.
+# TURN THIS BACK OFF before measuring timing or releasing anything.
+# CONFIG_HEAP_TASK_TRACKING is not set
+
+# NimBLE host task on CORE 1, not the IDF default of core 0.
+# Measured 2026-08-28 (#285): with Bluetooth enabled and NOTHING connected, the
+# BLE host processes advertisements at priority 21 on core 0 - the same core as
+# taskLVGL (73.9%), audio_task and render - and was seen taking 6.6% of it, with
+# core-0 idle falling 6.9-7.6% -> 4.2-4.7%. An hour earlier the task did not
+# appear in the top 16 at all, so the cost tracks HOW MANY BLE DEVICES ARE
+# NEARBY: the panadapter gets jerkier because of the room, not because of
+# anything the operator did. That is the worst shape a performance bug can have.
+# Core 1 idles at ~89%, and 6.6% at priority 21 is a very different proposition
+# from the 70% that broke fft_task when taskLVGL was moved there - but WATCH THE
+# AUDIO DROP COUNTER after changing this, because that is the canary (#51).
+CONFIG_BT_NIMBLE_PINNED_TO_CORE_1=y
+# #284/rx_audio: these two were IGNORED by esp_hosted, which hardcoded 5 KB.
+# tools/patches/apply_esp_hosted_task_stacks.ps1 makes the header honour them.
+# 4096, not the 3072 default: measured high-water marks put sdio_read at
+# ~2716 B and rpc_rx at ~2728 B, so 3072 would leave ~350 B of headroom and
+# this project has crashed at 232. Six tasks x 1 KB = 6 KB back to the
+# MALLOC_CAP_DMA pool, which the I2S channel needs.
+CONFIG_ESP_HOSTED_RPC_TASK_STACK=4096
+CONFIG_ESP_HOSTED_DFLT_TASK_STACK=4096
+
+#
+# #329: trap a stack overflow AT THE WRITE, with the culprit task's name.
+#
+# CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY only inspects a few bytes at a
+# CONTEXT SWITCH, so a task that overruns its stack, corrupts whatever is
+# adjacent and returns before the next switch is COMPLETELY UNDETECTED. That is
+# the shape of the ADIF-viewer crash: LVGL's event chain read a link that was
+# not a pointer (0x6a9d5caa, then 0x0000ffff), i.e. someone else's data landed
+# in it, with nothing anywhere reporting a fault. Measured the same day:
+# settings_flush had 232 B of stack left, dxcluster 260 B and FALLING, ws_push
+# 364 B - three tasks one deep call from doing exactly that.
+#
+# This puts a hardware watchpoint on the running task's stack limit, so the
+# overflowing write traps immediately and the panic names the task instead of
+# some innocent subsystem faulting on the corruption minutes later.
+#
+# Costs one debug watchpoint register and a little context-switch time. If a
+# future session needs that register for gdb, turn it off then - not casually.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+
+# Chrome's own header set plus a revalidating reload's If-None-Match overruns
+# the 512-byte default, and esp_http_server answers "Header fields are too
+# long" instead of the page - reproduced on the bench 2026-09-07 by pressing
+# the stale-page banner's own Reload button. HTTPD_SCRATCH_BUF is ONE buffer in
+# the server struct (esp_httpd_priv.h), not one per connection, so this costs
+# 512 bytes once.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# The Reader needs a fourth heading size: body is 24 and h3 is gold 24,
+# so a h4 had to be either smaller than its own prose or identical to h3.
+CONFIG_LV_FONT_MONTSERRAT_26=y
+
+# SelfSpotter's PSK Reporter client (net/pskr_self.c) is the only MQTT user
+# here, and esp-mqtt spawns its own task. Left alone that task is
+# tskNO_AFFINITY, so it can float onto CORE 0 and preempt taskLVGL (priority
+# 4, pinned to core 0) on every incoming publish - for the whole session,
+# since the feed connects at boot whether or not the SelfSpotter screen is
+# ever opened. Randy N4OPI reported exactly that on v1.13.0, the first
+# release to ship SelfSpotter: 1-3 s to register an FT8 row tap, a generally
+# sluggish panadapter, "if I go back to 1.12.4, life is good".
+#
+# Core 1 for the same reason every other new background task in this project
+# goes there (see CLAUDE.md's core-0 accounting: taskLVGL alone is ~74% of
+# core 0, while core 1 idles ~90%). The other half is .task.priority = 3 in
+# pskr_self.c's own client config - priority and affinity are set in two
+# different places because esp-mqtt exposes them that way.
+CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED=y
+CONFIG_MQTT_USE_CORE_1=y
+
+# FatFs sector buffers OUT OF the FATFS/FIL structs (2026-10-04).
+#
+# Off by default, FatFs declares `BYTE win[FF_MAX_SS]` inline inside FATFS and
+# `BYTE buf[FF_MAX_SS]` inline inside FIL. Those are the buffers it hands
+# straight to the SDMMC driver, and the driver DMAs into a buffer only when it
+# satisfies lcm(dma_alignment 4, cacheline) - 128 bytes in PSRAM here
+# (CONFIG_CACHE_L2_CACHE_LINE_SIZE=128), 64 in internal RAM. An inline array
+# sits at a fixed OFFSET inside its struct, so no amount of aligning the
+# allocation helps: measured on the bench 2026-10-04, the window landed at
+# 0x491e58e0, which is 96 bytes past a 128 boundary.
+#
+# A buffer that misses the alignment sends every read down sdmmc_read_sectors'
+# bounce path, which heap_caps_malloc's one 512 B MALLOC_CAP_DMA block PER
+# SECTOR. On this board the DMA pool settles at a few hundred bytes, so that
+# allocation fails and the card reads back as an empty folder or a missing
+# file while it is perfectly healthy - Randy N4OPI's v1.16.11 report, and
+# reproduced here before the fix.
+#
+# With this on, win and buf are separate ff_memalloc() allocations, and
+# tools/patches/apply_fatfs_dma_aligned_alloc.ps1 makes ff_memalloc return
+# them 128-byte aligned. The two go together: either alone does nothing.
+#
+# Costs one 512 B PSRAM allocation per mount and per open file, and saves the
+# same 512 B of INTERNAL DMA memory being taken and released per sector.
+CONFIG_FATFS_USE_DYN_BUFFERS=y

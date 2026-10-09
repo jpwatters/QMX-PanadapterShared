@@ -1,0 +1,34 @@
+# Keep shell scripts LF even when checked out / zipped on Windows, so the
+# macOS/Linux flasher isn't broken by CRLF ("bad interpreter: ...^M").
+*.command  text eol=lf
+*.sh       text eol=lf
+
+# Firmware source: LF, unconditionally. 84 of 203 .c/.h/.html files were found
+# drifted to CRLF in the working tree in 2026-08-25's session (LF-committed,
+# CRLF on disk) with no policy anywhere forcing them back - so a normal git
+# checkout could silently re-drift them, and every future edit to a drifted
+# file makes `git diff` show the WHOLE file as changed instead of the real
+# one-line edit. This is what .command/.sh already had; source code needs the
+# same guarantee.
+*.c        text eol=lf
+*.h        text eol=lf
+*.html     text eol=lf
+*.md       text eol=lf
+*.py       text eol=lf
+*.json     text eol=lf
+*.yml      text eol=lf
+# No extension, so no rule above catches these - and idf.py regenerates
+# sdkconfig with CRLF on Windows, which showed up once as a 3,489-line
+# whitespace-only diff in a merge.
+sdkconfig  text eol=lf
+sdkconfig.defaults text eol=lf
+
+# Windows batch/PowerShell scripts use CRLF.
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+
+# Firmware images and other binaries: never touch them.
+*.bin      binary
+*.elf      binary
+*.png      binary
+*.pdf      binary

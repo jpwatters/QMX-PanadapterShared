@@ -1,0 +1,31 @@
+[Unit]
+Description=QMX network relay (QMX on USB -> Tab5 on TCP 7355, PC software on TCP 7356)
+Documentation=file:///opt/qmx-relay/README.md
+Wants=network-online.target
+After=network-online.target
+# Restart at most 3 times: the first start plus 3 restarts = 4 starts. A 5th
+# start is refused for the rest of the window (a year, so in practice until the
+# next reboot or "sudo qmx-relay-ctl restart"), and qmx-relay-gaveup.service
+# writes that to the log.
+StartLimitIntervalSec=365d
+StartLimitBurst=4
+OnFailure=qmx-relay-gaveup.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/qmx-relay
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/qmx-relay/qmx-relay-event.sh start
+ExecStart=/usr/bin/python3 -u /opt/qmx-relay/qmx_nas_relay.py $RELAY_ARGS
+ExecStopPost=/opt/qmx-relay/qmx-relay-event.sh stop
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/qmx-relay/qmx-relay.log
+StandardError=inherit
+# The relay opens the QMX through /dev/bus/usb (usbfs) and detaches the
+# kernel's cdc_acm / snd-usb-audio drivers from it, which needs root.
+User=root
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes

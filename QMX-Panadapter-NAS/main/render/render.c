@@ -1,0 +1,299 @@
+﻿#include "render.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_err.h"
+#include "esp_heap_caps.h"
+
+#include "dsp.h"
+#include "ui.h"
+#include "ui_mode.h"
+#include "render_waterfall.h"
+#include <string.h>
+
+static const char *TAG = "render";
+
+// Render at 10 Hz. Higher rates cause LVGL flush cascades on this hardware
+// (PSRAM ~30 MB/s vs 1280x720 RGB565 framebuffer); 10 Hz gives LVGL clean
+// breathing room between iterations and keeps unlock cost stable ~26 ms.
+#define RENDER_PERIOD_MS  100
+
+static TaskHandle_t s_render_task = NULL;
+static float *s_scratch = NULL;
+
+// Phase 5.4: smoothing (EMA per bin, alpha=0.4)
+static float *s_smoothed = NULL;
+static bool s_smoothed_init = false;
+// Phase 5.10D Stage 2: runtime-adjustable EMA smoothing
+static float s_ema_alpha = 0.4f;
+
+// v0.16.0: separate, more heavily smoothed spectrum fed only to the
+// waterfall. The spectrum trace wants responsiveness (alpha 0.4), but the
+// waterfall's per-bin noise floor tracker compares against a single frame -
+// with alpha 0.4 the frame-to-frame variance of pure noise routinely
+// exceeds the floor+6dB threshold, so noise bins light up as speckle even
+// when the floor tracking itself is correct. A slower EMA here reduces that
+// per-frame variance without affecting the spectrum trace's responsiveness.
+#define WF_EMA_ALPHA 0.15f
+static float *s_wf_smoothed = NULL;
+static bool s_wf_smoothed_init = false;
+
+void render_set_ema_alpha(float alpha)
+{
+    if (alpha < 0.05f) alpha = 0.05f;
+    if (alpha > 1.0f) alpha = 1.0f;
+    s_ema_alpha = alpha;
+    ESP_LOGI("render", "EMA alpha = %.2f", (double)alpha);
+}
+
+// Operator-facing waterfall rate, in rows per second. Started life as the
+// FT8-sync-lines diagnostic's private s_wf_2x, became a 1..4x drawer
+// multiplier, and is now rows/s so it can go DOWN as well as up - which is
+// what it was actually asked for. See render.h.
+#define WF_ROWS_NOMINAL (1000 / RENDER_PERIOD_MS)   /* 10 rows/s at 1x */
+static volatile uint8_t s_wf_rows = WF_ROWS_NOMINAL;
+static uint16_t s_wf_acc;   /* render_task only - no other task touches it */
+
+void render_set_waterfall_rows_per_s(uint8_t rows)
+{
+    if (rows < 1)  rows = 1;
+    if (rows > 40) rows = 40;
+    s_wf_rows = rows;
+    ESP_LOGI("render", "waterfall rate: %u rows/s", rows);
+}
+
+
+
+// Phase 5.5: autoscale removed — static Ref/Range, manual control
+
+
+static void render_task(void *arg)
+{
+    TickType_t last = xTaskGetTickCount();
+    while (1) {
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(RENDER_PERIOD_MS));
+
+        // v0.19.3 (Tier 1): the spectrum + waterfall canvases are fully
+        // covered by the FT8 screen, but this loop used to keep drawing them
+        // at 10 Hz anyway — every canvas write invalidates the region, and
+        // every invalidation drags the whole flush + 90° software-rotation
+        // pipeline (the highest-priority CPU consumer on core 0) over pixels
+        // nobody can see, directly on top of audio_task and the ft8_dec0
+        // decode helper on the same core. Skip ALL canvas work while the FT8
+        // screen is up; only the S-meter below stays live (it is visible in
+        // the FT8 top bar — the v0.15.7 fix exists precisely to keep it
+        // running there). The web UI is unaffected: ws_push_task reads
+        // dsp_get_spectrum() itself, not this pipeline.
+        // WSPR is NOT excluded here, and that is a decision backed by numbers.
+        //
+        // It was excluded at first, on the theory that a 66 s decode inside a
+        // 120 s cycle needs core 0 the way FT8 does. Measured, it buys nothing:
+        // the decode takes 64.1-65.5 s with the panadapter rendering (the
+        // self-test, in panadapter mode) and 65.7-66.1 s with it gated off (the
+        // live loop, in WSPR mode). What it DID buy was a Tab5 frozen for as
+        // long as the loop ran - reported by the operator within minutes - while
+        // the web kept moving, because ws_push_task reads dsp_get_spectrum() on
+        // its own path.
+        //
+        // The panadapter still freezes for the 120 s of each CAPTURE, because
+        // dsp.c skips the FFT while one is armed. That is inherent to capturing
+        // and not this gate's business.
+        //
+        // ⭐ WIDENED 2026-09-13 to any full-screen overlay, not just FT8 mode.
+        // Operator: "I think we really need to close any other process down
+        // when entering these resource eating features". The Reader, "Need
+        // guidance?", the radio terminal and now SelfSpotter are all opaque
+        // and cover the ENTIRE screen - the spectrum/waterfall canvases behind
+        // any of them are exactly as invisible as they are in FT8 mode, and
+        // this gate's own reasoning (a canvas write costs the flush + 90 deg
+        // rotation pipeline regardless of whether anyone can see the result)
+        // applies identically. ui_any_overlay_active() is the SAME four-way OR
+        // sync_nav_affordances() already uses to hide the edge-swipe strips
+        // for these same overlays - one predicate, not a second copy that
+        // could drift from it.
+        bool pan_visible = (ui_mode_get() != UI_MODE_FT8) && !ui_any_overlay_active();
+        bool have_spectrum = false;
+
+        if (pan_visible) {
+            have_spectrum = (dsp_get_spectrum(s_scratch) == ESP_OK);
+            // ESP_ERR_NOT_FOUND just means no spectrum yet (no audio).
+        } else {
+            // Restart both EMAs from fresh data when the panadapter returns,
+            // instead of blending new frames into a minutes-old picture.
+            s_smoothed_init = false;
+            s_wf_smoothed_init = false;
+            // Same reasoning for the row accumulator: a part-accumulated row
+            // from before the overlay is not owed to the operator now.
+            s_wf_acc = 0;
+        }
+
+        if (have_spectrum) {
+            // Phase 5.4: EMA smoothing
+            if (!s_smoothed_init) {
+                // First frame: initialize smoothed with current values (no fade-in)
+                memcpy(s_smoothed, s_scratch, DSP_FFT_SIZE * sizeof(float));
+                s_smoothed_init = true;
+            } else {
+                for (int i = 0; i < DSP_FFT_SIZE; i++) {
+                    s_smoothed[i] = s_ema_alpha * s_scratch[i]
+                                  + (1.0f - s_ema_alpha) * s_smoothed[i];
+                }
+            }
+
+
+            // Push smoothed spectrum to UI
+            ui_push_spectrum(s_smoothed, DSP_FFT_SIZE);
+
+            // Separate, more heavily smoothed spectrum for the waterfall only
+            if (!s_wf_smoothed_init) {
+                memcpy(s_wf_smoothed, s_scratch, DSP_FFT_SIZE * sizeof(float));
+                s_wf_smoothed_init = true;
+            } else {
+                for (int i = 0; i < DSP_FFT_SIZE; i++) {
+                    s_wf_smoothed[i] = WF_EMA_ALPHA * s_scratch[i]
+                                     + (1.0f - WF_EMA_ALPHA) * s_wf_smoothed[i];
+                }
+            }
+        }
+
+        // Phase 5.10D: sample S-meter at ~5 Hz from spectrum peak around VFO.
+        // Runs in BOTH modes (dsp keeps publishing a spectrum every ~10 FFT
+        // iterations while FT8 captures, and dsp_get_peak_dbm_around_vfo()
+        // reads the DSP's own copy — it doesn't need s_scratch).
+        //
+        // ⭐ Also skipped under any full-screen overlay (2026-09-13), same
+        // reasoning as pan_visible above: the S-meter is only ever visible in
+        // the main app's own top bar (FT8's included), and every overlay this
+        // file gates on covers that bar completely. Cheaper than the canvas
+        // pipeline either way, but there is no reason to pay it for a widget
+        // nobody can see.
+        if (!ui_any_overlay_active()) {
+            static int s_smeter_tick = 0;
+            s_smeter_tick++;
+            if (s_smeter_tick >= 6) {  // 10 Hz / 6 ≈ 1.7 Hz
+                s_smeter_tick = 0;
+                float peak_dbm;
+                int vfo_bin = ((ui_get_if_bin_shift(DSP_FFT_SIZE) % DSP_FFT_SIZE) + DSP_FFT_SIZE) % DSP_FFT_SIZE;
+                if (dsp_get_peak_dbm_around_vfo(vfo_bin, 64, &peak_dbm) == ESP_OK) {
+                    // S-unit conversion: S9 = -73 dBm, 6 dB per S-unit below.
+                    // Above S9, we use S9+xx where xx = dbm - (-73).
+                    int s_units;
+                    if (peak_dbm >= -73.0f) {
+                        s_units = 9 + (int)((peak_dbm + 73.0f) + 0.5f);
+                    } else {
+                        s_units = 9 + (int)((peak_dbm + 73.0f) / 6.0f + 0.5f);
+                        if (s_units < 0) s_units = 0;
+                    }
+                    ui_update_smeter(s_units);
+                }
+            }
+        }
+
+        if (have_spectrum) {
+            /* One accumulator covers the whole 1..40 rows/s range, instead of
+             * a fast branch and a slow branch that could disagree: add the
+             * rate each period and emit a row for every whole 10 that have
+             * accumulated. At 10 that is exactly one row per tick (today's
+             * behaviour, bit for bit), at 40 four, at 1 one row every tenth
+             * tick. Non-multiples land evenly rather than in bursts - 3
+             * rows/s gives 10,3,3,3,10,... ticks apart, never 3 rows then a
+             * second of nothing.
+             *
+             * ⛔ The accumulator is reset when the panadapter is not visible
+             * (see the else branch), so returning from an overlay cannot dump
+             * a backlog of rows in one frame. */
+            s_wf_acc += s_wf_rows;
+            while (s_wf_acc >= WF_ROWS_NOMINAL) {
+                s_wf_acc -= WF_ROWS_NOMINAL;
+                render_waterfall_tick(s_wf_smoothed, DSP_FFT_SIZE);
+            }
+        }
+    }
+}
+
+esp_err_t render_init(void)
+{
+    ESP_LOGI(TAG, "Render init (Phase 5.5 - static scale, smoothed spectrum at %d Hz)",
+             1000 / RENDER_PERIOD_MS);
+
+    // Scratch buffer in PSRAM, accessed once per frame
+    s_scratch = heap_caps_malloc(DSP_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (!s_scratch) {
+        ESP_LOGE(TAG, "Failed to alloc render scratch buffer");
+        return ESP_ERR_NO_MEM;
+    }
+    // Moved to PSRAM 2026-09-20 (was MALLOC_CAP_INTERNAL "for fast access" -
+    // no measurement behind that claim, unlike dsp_init's FFT buffers, which
+    // stayed internal only after a real 10x-slowdown test). Both are touched
+    // in exactly the same sequential per-bin loop as s_scratch above, which
+    // has always been PSRAM - a simple EMA over 1024 floats at 10 Hz is
+    // nowhere near PSRAM's bandwidth limit. Found chasing the boot-time
+    // MALLOC_CAP_DMA trough (8,192 B of it back to the pool).
+    s_smoothed = heap_caps_malloc(DSP_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (!s_smoothed) {
+        ESP_LOGE(TAG, "Failed to alloc smoothing buffer");
+        return ESP_ERR_NO_MEM;
+    }
+    s_smoothed_init = false;
+
+    s_wf_smoothed = heap_caps_malloc(DSP_FFT_SIZE * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (!s_wf_smoothed) {
+        ESP_LOGE(TAG, "Failed to alloc waterfall smoothing buffer");
+        return ESP_ERR_NO_MEM;
+    }
+    s_wf_smoothed_init = false;
+
+    esp_err_t wferr = render_waterfall_init();
+    if (wferr != ESP_OK) {
+        return wferr;
+    }
+    /* ⭐ CORE 1, NOT CORE 0 - AND THIS ONE IS SAFE WHERE taskLVGL WAS NOT.
+     *
+     * Measured 2026-09-22 with cpu_owners while the radio streamed and RX audio
+     * played, decomposing the panadapter with ui_dev_canvas_hide():
+     *
+     *   canvases shown :  taskLVGL 66.7%  render 13.5%  idle0 0.0%  fps 11.5
+     *   canvases hidden:  taskLVGL 33.9%  render 44.3%  idle0 0.1%  fps 19.4
+     *
+     * render TAKES 13.5% and WANTS 44.3% - it is starved by taskLVGL at
+     * priority 5 above it. Adding up what core 0 is actually asked for:
+     * taskLVGL 67 + render 44 + audio_task 13 + UAC 5 + misc 5 = ~134% of one
+     * core. ⛔ CORE 0 IS OVERSUBSCRIBED BY A THIRD, which is why a year of
+     * trying to shave it has failed - there is no 30% saving inside any single
+     * task. Core 1 idles at 81% in the same sample.
+     *
+     * ⛔ WHY THIS IS NOT THE FALSIFIED taskLVGL MOVE. display.c's note by
+     * .task_affinity records moving taskLVGL to core 1 killing the audio ring
+     * within seconds: taskLVGL is priority 5, ABOVE fft_task's 4, so it
+     * preempted the ring's only consumer. render is priority 3, BELOW
+     * fft_task - FreeRTOS cannot schedule it while fft_task is ready, the same
+     * structural argument rx_audio.c makes for its own task. And render never
+     * touches LVGL or display_lock (grep: zero matches in render.c and
+     * render_waterfall.c), so there is no lock to carry across the cores.
+     *
+     * ⚠ It now shares priority 3 with rx_audio on core 1. rx_audio spends
+     * nearly all its time blocked in the I2S write (it does not even appear in
+     * the cpu_owners table, i.e. under 0.2%), so they should not contend - but
+     * that is the thing to watch if audio gets worse rather than better. */
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        render_task, "render", 4096, NULL, 3, &s_render_task, 1);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create render task");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Render task started");
+    return ESP_OK;
+}
+
+
+
+
+
+
+
+
+
+
+

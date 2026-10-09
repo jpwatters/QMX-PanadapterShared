@@ -1,0 +1,120 @@
+# Build output. Anchored to the repo root on purpose: a bare `build/` matches a
+# directory of that name at ANY depth, which silently swallowed the three
+# documentation pages in docs/mkdocs/build/ - they were never committed, and a
+# fresh clone would have built a website and an on-device manual missing them.
+/build/
+/managed_components/
+/test/build/
+
+# mkdocs build output (root-level `mkdocs build` target — published to
+# tab5.lav.dk by manual FTP, never committed)
+/site/
+
+# ESP-IDF generated files
+sdkconfig.old
+dependencies.lock
+
+# VS Code workspace state (keep settings/extensions.json if you want)
+.vscode/ipch/
+.vscode/.browse.*
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Editor swap files
+*.swp
+*~
+qmx_panadapter_merged.bin
+
+# Screenshots (decoded locally to ~/Downloads, never in repo)
+qmx_*.png
+
+qmx_panadapter-*-merged.bin
+hunt.txt
+qmx_panadapter_v*.bin
+
+# Firmware that the flasher downloads into its folder at runtime (and any
+# local test/offline bins) - never commit firmware images into the repo.
+tools/flasher/*.bin
+# esptool the flasher auto-downloads + extracts on first run (Windows).
+tools/flasher/esptool/
+
+# Third-party vendor manuals (QRP Labs copyright) — kept locally for reference,
+# not redistributed in this public MIT repo. See docs/qmx-reference/SOURCES.md
+# for what they are and where to download your own copy.
+docs/qmx-reference/*.pdf
+# pdftotext extracts of the same vendor manuals (derived content, same policy)
+docs/qmx-reference/*.txt
+
+# Local dev session log captures (idf.py output redirected to file)
+build_flash*.txt
+build_only.txt
+flash_only.txt
+flash_monitor.txt
+
+# Serial console captures from capture_serial_log.ps1 (debug artifacts)
+tools/qmx_log_*.txt
+
+# Auto-memory store + exports (per-machine, not shared through the repo)
+memory/
+*memory-export*.zip
+
+# Logs
+*.log
+
+# Flasher release artifacts in the current flasher folder (note the space in
+# the path). Merged firmware images, the auto-downloaded esptool, and the
+# versioned flasher zips are all release artifacts — never commit them.
+tools/QMX-Panadapter flasher/*.bin
+tools/QMX-Panadapter flasher/esptool/
+tools/QMX-Panadapter flasher.zip
+tools/QMX-Panadapter-flasher-*.zip
+tools/QMX-Panadapter flasher/*.zip
+
+# Local SWR capture helper + its output
+tools/_swr*.ps1
+
+site/
+
+# Local working notes / correspondence drafts — never publish (repo is public)
+scratchpad/
+
+# LoTW harness scratch output (test/lotw_harness.c regenerates all of it)
+test/*.exe
+test/hx_*
+test/v_*
+# Stage 1/2 offline decode-harness diagnostics (regenerated per run)
+test/stage1_diag.csv
+test/lotw_test_*.pem
+test/lotw_sample_tq8.txt
+test/device_tq8*
+.claude/
+
+# wsprd.exe scratch, written into the working directory by the reference
+# decoder whenever tools/wspr_noise_ladder.py or a manual comparison run runs
+# it from the repo root. Not ours, never wanted.
+ALL_WSPR.TXT
+hashtable.txt
+wspr_spots.txt
+wspr_timer.out
+wspr_wisdom.dat
+wspr_cap_sweep.exe
+wspr_decode_harness.exe
+wspr_subtract_sweep.exe
+
+# Serial capture output (cap_serial_reboot.ps1 default -Out)
+reboot.txt
+
+# tools/gen_world_map.py's downloaded Natural Earth source cache (~10 MB) -
+# fetched on demand, not source. Re-run the script to regenerate it.
+tools/ne_*m_land.geojson
+
+# graphify knowledge-graph output (graph.json, cache/, HTML viz) -
+# a build artefact, regenerate with /graphify <path> --update
+graphify-out/

@@ -1,0 +1,13 @@
+[Unit]
+Description=Start the QMX relay 60 seconds after boot
+Documentation=file:///opt/qmx-relay/README.md
+
+[Timer]
+# The relay is started by this timer only, 60 s after the system boots, so
+# USB, the network and the QMX have settled. A manual start is immediate.
+OnBootSec=60s
+AccuracySec=1s
+Unit=qmx-relay.service
+
+[Install]
+WantedBy=timers.target

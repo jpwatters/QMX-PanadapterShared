@@ -1,0 +1,14 @@
+# Settings for the QMX relay service (qmx-relay.service). After a change:
+#   sudo qmx-relay-ctl restart
+#
+# Arguments for qmx_nas_relay.py:
+#   --selftest            test the QMX at start-up (read-only) and log the result
+#   --port 7355           Tab5 port (QMXR/1); the Find NAS search answers on UDP 7355 too
+#   --serial-port 7356    QMX serial port 3 for PC software (0 = off)
+#   --discovery-port N    UDP port for the QMXR? search (0 = off)
+#   -v                    log every CAT exchange
+RELAY_ARGS="--selftest"
+
+# USB access: usbfs (built in, the backend tested on the hardware) or libusb
+# (needs python3-usb1).
+QMX_BACKEND=usbfs

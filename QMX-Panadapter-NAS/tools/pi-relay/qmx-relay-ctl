@@ -1,0 +1,91 @@
+#!/bin/sh
+# qmx-relay-ctl - look after the QMX relay service on this Raspberry Pi.
+#
+#   qmx-relay-ctl status          service, timer, restarts used, ports, QMX on USB, last log lines
+#   qmx-relay-ctl log [N]         last N log lines (default 50)
+#   qmx-relay-ctl follow          follow the log as it is written (Ctrl-C to stop)
+#   qmx-relay-ctl test            network test against the running relay (read-only, never transmits)
+#   qmx-relay-ctl probe           list the USB devices and the QMX's interfaces
+#   sudo qmx-relay-ctl restart    start again now, with a fresh set of 3 restarts
+#   sudo qmx-relay-ctl stop       stop it (it starts again 60 s after the next boot)
+#   sudo qmx-relay-ctl start      start it now if stopped
+
+OPT=/opt/qmx-relay
+LOG=/var/log/qmx-relay/qmx-relay.log
+UNIT=qmx-relay.service
+EVENT="$OPT/qmx-relay-event.sh"
+
+need_root() {
+    [ "$(id -u)" = 0 ] || { echo "Run this with sudo: sudo qmx-relay-ctl $1"; exit 1; }
+}
+
+who_did() { echo "${SUDO_USER:-$(id -un)}"; }
+
+qmx_on_usb() {
+    for d in /sys/bus/usb/devices/*; do
+        [ -f "$d/idVendor" ] || continue
+        if [ "$(cat "$d/idVendor")" = "0483" ] && [ "$(cat "$d/idProduct")" = "a34c" ]; then
+            echo "yes ($(cat "$d/product" 2>/dev/null || echo QMX), bus $(cat "$d/busnum") device $(cat "$d/devnum"))"
+            return
+        fi
+    done
+    echo "NO - is the QMX switched on and plugged in with a data cable?"
+}
+
+case "${1:-status}" in
+status)
+    echo "QMX relay on $(uname -n)"
+    echo "  service : $(systemctl is-active $UNIT 2>/dev/null)  (restarts used: $(systemctl show -p NRestarts --value $UNIT 2>/dev/null) of 3)"
+    res="$(systemctl show -p Result --value $UNIT 2>/dev/null)"
+    [ -n "$res" ] && [ "$res" != "success" ] && echo "  result  : $res  -> 'sudo qmx-relay-ctl restart' starts it again"
+    echo "  timer   : $(systemctl is-enabled qmx-relay.timer 2>/dev/null) (starts the relay 60 s after boot)"
+    echo "  uptime  : $(cut -d. -f1 /proc/uptime) s"
+    echo "  QMX USB : $(qmx_on_usb)"
+    if command -v ss >/dev/null 2>&1; then
+        echo "  ports   :"
+        ss -ltnu 2>/dev/null | awk 'NR > 1 && $5 ~ /:735[56]$/ { print "            " $1 " " $5 }'
+    fi
+    echo "  log     : $LOG"
+    echo
+    tail -n 15 "$LOG" 2>/dev/null
+    ;;
+log)
+    tail -n "${2:-50}" "$LOG"
+    ;;
+follow)
+    tail -n 20 -F "$LOG"
+    ;;
+test)
+    python3 "$OPT/nettest.py" 127.0.0.1
+    ;;
+probe)
+    need_root probe
+    QMX_BACKEND="${QMX_BACKEND:-usbfs}" python3 "$OPT/qmx_nas_relay.py" --probe
+    ;;
+restart)
+    need_root restart
+    "$EVENT" note "manual restart by $(who_did): restart count and limit reset."
+    systemctl reset-failed $UNIT 2>/dev/null
+    systemctl restart $UNIT
+    sleep 2
+    systemctl is-active $UNIT
+    ;;
+start)
+    need_root start
+    "$EVENT" note "manual start by $(who_did)."
+    systemctl reset-failed $UNIT 2>/dev/null
+    systemctl start $UNIT
+    sleep 2
+    systemctl is-active $UNIT
+    ;;
+stop)
+    need_root stop
+    "$EVENT" note "manual stop by $(who_did) (it starts again 60 s after the next boot)."
+    systemctl stop $UNIT
+    systemctl is-active $UNIT
+    ;;
+*)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

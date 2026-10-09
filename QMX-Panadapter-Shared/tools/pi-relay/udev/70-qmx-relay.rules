@@ -1,0 +1,7 @@
+# QRP Labs QMX / QMX+ (USB 0483:a34c) is served to the network by the QMX relay.
+# Keep other programs off it: ModemManager would probe its serial ports with
+# AT commands, and PipeWire/PulseAudio would open its audio. Also keep it out
+# of USB autosuspend so the I/Q stream never pauses.
+ACTION=="add|change", SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="a34c", ENV{ID_MM_DEVICE_IGNORE}="1", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="a34c", ENV{ID_MM_DEVICE_IGNORE}="1"
+ACTION=="add|change", SUBSYSTEM=="sound", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="a34c", ENV{PULSE_IGNORE}="1", ENV{ACP_IGNORE}="1"

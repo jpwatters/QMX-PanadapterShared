@@ -1,0 +1,35 @@
+# network-radio (2026-10-04): four components are pinned to the versions the
+# official v1.16.11 release was built with (identified from its firmware image).
+# A fresh fetch resolved newer ones (cdc_acm 2.4.1, usb_host_hid 1.2.1,
+# esp_codec_dev 1.6.2, mdns 1.14.0) and that build had NO working touch input on
+# the Tab5, while the official binary of the same source had it.
+dependencies:
+  idf:
+    version: ">=5.4.0"
+
+  espressif/esp_lcd_ili9881c: "^1.1.0"
+  espressif/esp_lcd_touch_gt911: "^1.1.1~2"
+  espressif/esp_lcd_touch_st7123: "^1.0.0"
+  espressif/esp_codec_dev: "1.5.11"     # network-radio: pinned, see note above
+  espressif/esp_lvgl_port: "~2.5.0"
+
+  espressif/usb_host_cdc_acm: "2.4.0"   # network-radio: pinned
+  espressif/usb_host_uac: "^1.4.0"
+  espressif/usb_host_hid: "1.2.0"       # network-radio: pinned
+
+  espressif/esp-dsp: "^1.6.0"
+
+  # mDNS: reach the Tab5 as qmx.local instead of hunting an IP that changes with
+  # the network. Added after an evening lost to exactly that (roamed onto a hotel
+  # WiFi, new lease, no way to find it).
+  espressif/mdns: "1.11.3"               # network-radio: pinned
+
+  lvgl/lvgl: "~9.2.0"
+  espressif/esp_wifi_remote:
+    version: "0.8.5"
+    rules:
+      - if: "target in [esp32p4]"
+  espressif/esp_hosted:
+    version: "1.4.0"
+    rules:
+      - if: "target in [esp32p4]"

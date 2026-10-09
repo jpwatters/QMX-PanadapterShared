@@ -1,0 +1,10 @@
+/var/log/qmx-relay/qmx-relay.log {
+    weekly
+    rotate 8
+    maxsize 5M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

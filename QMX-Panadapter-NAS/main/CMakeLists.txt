@@ -1,0 +1,326 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "cw_decode.c"
+        "display/display.c"
+        "ui/ui.c"
+        "ui/ui_clock.c"
+        "ui/spots_lane.c"
+        "ui/help_topics.c"
+        "ui/help_triage.c"
+        "ui/wifi_config.c"
+        "ui/tune_modal.c"
+        "ui/power_cal_modal.c"
+        "ui/ota_modal.c"
+        "net/net_quiet.c"
+        "net/bg_feed_gate.c"
+        "ui/activation_modal.c"
+        "ui/identity_config.c"
+        "ui/onboarding.c"
+        "ui/memory_modal.c"
+        "ui/ui_mode.c"
+        "ui/ft8_screen.c"
+        "ui/ft8_screen_view.c"
+        "ui/wspr_screen_view.c"
+        "ui/ft8_tx_modal.c"
+        "ui/ft8_cq_modal.c"
+        "ui/ft8_filter_modal.c"
+        "ui/ft8_time_modal.c"
+        "ui/date_confirm_modal.c"
+        "ui/ft8_tone_modal.c"
+        "ui/adif_view_modal.c"
+        "ui/ft8_pileup_modal.c"
+        "ui/resource_mgmt_modal.c"
+        "ui/reader_view.c"
+        "ui/spot_map_view.c"
+        "ui/qmx_term_view.c"
+        "ui/font_qmx_mono_25.c"
+        "ui/reader_diagram.c"
+        "ui/watermark_img.c"
+        "util/status.c"
+        "util/maidenhead.c"
+    "util/db_gridlines.c"
+    "util/pan_view.c"
+    "util/hid_rotate.c"
+    "util/wf_shift.c"
+    "util/qmx_prompt_gate.c"
+    "util/hosted_watchdog.c"
+    "util/cat_restore.c"
+    "util/freq_gridlines.c"
+    "ft8_slot_gate.c"
+    "util/net_guard.c"
+    "util/ip_guard.c"
+    "util/sock_probe.c"
+    "util/heap_watch.c"
+    "util/sock_owners.c"
+    "util/ansi_term.c"
+        "util/bandplan.c"
+        "util/dxcc.c"
+        "util/country.c"
+        "util/country_shorten.c"
+        "util/battery.c"
+        "util/ina226.c"
+        "util/bsp_info.c"
+        "util/diag_log.c"
+        "util/panic_hook.c"
+        "util/psram_task.c"
+        "util/usb_patch_counters.c"
+        "util/sdio_ready.c"
+        "util/factory_reset.c"
+"util/usb_replug.c"
+        "util/cpu_stats.c"
+        "util/gpio_relay.c"
+        "util/dma_owners.c"   # TEMP INSTRUMENT #283 - delete with the diagnosis
+        "util/task_stacks.c"  # on-demand stack headroom - /api/cmd {"action":"stacks"}
+        "adif/adif_check.c"   # #263 "check my log" - portable, host-tested
+        "util/format_freq.c"  # #302 one frequency format, portable
+        "cat/cat.c"
+        "audio/audio.c"
+        "audio/rx_audio.c"
+        "dsp/dsp.c"
+        "dsp/iq_balance.c"
+        "dsp/spur_map.c"
+        "render/render.c"
+        "render/render_waterfall.c"
+        "screenshot/screenshot.c"
+        "storage/settings.c"
+        "storage/config_io.c"
+        "storage/mem_channels.c"
+        "storage/sd_archive.c"
+        "storage/sd_io_buf.c"
+        "wifi/wifi.c"
+        "util/usb_shutdown.c"
+        "net/mdns_svc.c"
+        "net/webserver.c"
+        "net/webserver_ws.c"
+        "net/filebrowser.c"
+        "usb_hid_mouse.c"
+        "net/rigctld_server.c"
+        "net/radio_relay.c"
+        "net/reader_net.c"
+        "net/manual_embed.c"
+        "net/update_check.c"
+        "net/ota_update.c"
+        "qmx_term.c"
+        "ft8_test.c"
+        "ft8_tx.c"
+        "ft8_hash.c"
+        "ft8_msg_guard.c"
+        "ft8_status.c"
+        "ft8_qso.c"
+        "ft8_recent.c"
+        "ft8_pileup.c"
+        "ft8_greylist.c"
+        "net/pskreporter.c"
+        "net/wsprnet.c"
+        "net/spots.c"
+        "net/spot_sig.c"
+        "ft8_hound.c"
+        "net/psk_rx.c"
+        "hid_cursor.c"
+        "bt_hid_mouse.c"
+        "hid_report_map.c"
+        "hid_keycode.c"
+        "net/rbn.c"
+        "net/dxcluster.c"
+        "net/qrz_coords.c"
+        "net/pskr_self.c"
+        "net/wspr_self.c"
+        "net/band_conditions.c"
+        "util/geo_coords.c"
+        "util/world_map_data.c"
+        "ft8_robot.c"
+        "ft8_sim.c"
+        "wspr_proto.c"
+        "wspr_fano.c"
+        "wspr_decode.c"
+        "wspr_subtract.c"
+        "wspr_tx.c"
+        "wspr_selftest.c"
+        "wspr_spots.c"
+        "wspr_rx.c"
+        "wspr_sched.c"
+        "wspr_wav.c"
+        "wspr_sim.c"
+        "adif/adif_log.c"
+        "adif/qrz_upload.c"
+        "adif/eqsl_upload.c"
+        "adif/cloudlog_upload.c"
+        "adif/lotw_tq8.c"
+        "adif/lotw_upload.c"
+        "rtc/rtc.c"
+        "time_sync/time_sync.c"
+        "unit_gps/nmea_parse.c"
+        "unit_gps/unit_gps.c"
+        "keyboard/tab5_keyboard.c"
+    INCLUDE_DIRS
+        "."
+        "display"
+        "ui"
+        "util"
+        "cat"
+        "audio"
+        "dsp"
+        "render"
+        "screenshot"
+        "storage"
+        "wifi"
+        "net"
+        "rtc"
+        "time_sync"
+        "unit_gps"
+        "adif"
+        "keyboard"
+    REQUIRES
+        esp_lcd
+        esp_timer
+        driver
+        usb
+        lvgl__lvgl
+        m5stack_tab5
+        espressif__esp_lcd_touch
+        espressif__usb_host_cdc_acm
+        espressif__usb_host_uac
+        espressif__esp-dsp
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        lwip
+        esp_http_server
+        esp_http_client
+        esp_https_ota   # #218 one-tap update
+        app_update      # #218 esp_ota_ops / rollback
+        espressif__mdns
+        mbedtls
+        json
+        ft8_lib
+        spiffs
+        bt            # NimBLE host for the BLE mouse (controller is on the C6)
+        esp_hid
+        mqtt          # net/pskr_self.c - live PSK Reporter self-spotting
+    PRIV_REQUIRES
+        esp_app_format
+        fatfs
+    EMBED_FILES
+        "net/www/forge.min.js.gz"
+        # User manual, built into the binary so it is available with no WiFi, no
+        # SD card and no download - and can never document a different firmware
+        # version than the one running. Regenerated by tools/pack_manual.py, which
+        # mkdocs_reader_export.py runs during `mkdocs build`; committed so the
+        # firmware build needs no Python/mkdocs of its own. ~136 KB of an 8 MB app
+        # partition, and zero SPIFFS. See net/manual_embed.h.
+        "manual.bin"
+)
+
+# ---------------------------------------------------------------------------
+# The web page is COMPRESSED AT BUILD TIME (#229).
+#
+# It was embedded raw and served raw - 263 KB of HTML+JS with
+# `Cache-Control: no-store`, so every visit re-downloaded all of it. That is
+# fine over Ethernet and hopeless here: this board's WiFi is esp_hosted over
+# SDIO to a C6 co-processor, the live spectrum WebSocket holds 1026 B x 10 fps
+# = 10.0 KB/s of it continuously, and MEASURED total capacity was ~12.7 KB/s.
+# The page therefore got 2.7 KB/s and took ~95 SECONDS to load, which reads as
+# "the web UI is unreachable" - reported from two different PCs on 2026-08-21,
+# and it has been getting worse every release as the page grew.
+#
+# gzip -9 takes it 263 KB -> 83 KB (3.2x). Together with the WS pause and the
+# ETag in webserver.c's root_handler, a load goes ~95 s -> ~6 s, and a repeat
+# visit to unchanged firmware costs one 304.
+#
+# GENERATED, never committed. `main/manual.bin` is the cautionary tale: a
+# committed derived artifact that shipped stale in v1.8.8 because its
+# regeneration ran after the tag. This cannot go stale - CMake rebuilds it
+# whenever index.html is newer, and the build fails if it cannot.
+set(WWW_SRC "${CMAKE_CURRENT_SOURCE_DIR}/net/www/index.html")
+set(WWW_GZ  "${CMAKE_CURRENT_BINARY_DIR}/index.html.gz")
+add_custom_command(
+    OUTPUT  "${WWW_GZ}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Compressing web UI..."
+    COMMAND "${python}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gzip_asset.py"
+            "${WWW_SRC}" "${WWW_GZ}"
+    DEPENDS "${WWW_SRC}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gzip_asset.py"
+    COMMENT "gzip index.html -> index.html.gz"
+    VERBATIM
+)
+add_custom_target(www_gz DEPENDS "${WWW_GZ}")
+add_dependencies(${COMPONENT_LIB} www_gz)
+target_add_binary_data(${COMPONENT_LIB} "${WWW_GZ}" BINARY)
+
+# Route LVGL's 256 KB builtin tlsf pool from internal SRAM BSS to PSRAM.
+# LV_MEM_POOL_ALLOC is defined in lv_pool_shim.h and force-included into
+# every LVGL translation unit so lv_mem_core_builtin.c uses it instead of
+# the static work_mem_int[] BSS array.  This returns ~256 KB to IDF's
+# internal heap without changing the tlsf allocator or touching Kconfig.
+idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
+target_compile_options(${lvgl_lib} PRIVATE
+    "-include${CMAKE_CURRENT_SOURCE_DIR}/util/lv_pool_shim.h"
+)
+# ---------------------------------------------------------------------------
+# Refuse to build with a standing patch missing (TODO #181).
+#
+# Six patches live OUTSIDE version control - three in git-ignored
+# managed_components/, three in the pinned ESP-IDF install tree - so a clean
+# fetch, an `idf.py fullclean`, a dependency refresh or an IDF reinstall removes
+# them silently. The binary then builds perfectly and fails on hardware in a way
+# that reads as a hardware fault: on 2026-08-17 three of them were missing and
+# WiFi died within ~4 minutes of every boot, which cost an evening and two wrong
+# hypotheses before anyone checked. See TODO #180.
+#
+# PRE_BUILD on the component lib, not configure-time: a patch can vanish after
+# CMake has run, and this must catch that too. The check is a few file reads.
+add_custom_command(
+    TARGET ${COMPONENT_LIB} PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E env "IDF_PATH=$ENV{IDF_PATH}"
+            ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_patches.py"
+    COMMENT "Checking standing patches (managed_components + IDF tree)"
+    VERBATIM
+)
+
+# Refuse to build settings.c with two settings sharing one dirty bit.
+#
+# The indices are hand-written #defines, so two features developed on separate
+# branches WILL eventually pick the same free number - and the merge is silent:
+# both defines survive, the compiler is happy, nothing complains at runtime.
+# That already happened once (DIRTY_WSPR_DIAL and DIRTY_DRAWER_EXPERT both at
+# 97 after merging feat/wspr-page with main). A collision is mostly a wasted
+# NVS write until one of the bits joins s_config_export_bits, at which point an
+# unrelated setting starts triggering the microSD config mirror - which is the
+# failure CLAUDE.md documents as killing WiFi. Latent, therefore build-checked.
+add_custom_command(
+    TARGET ${COMPONENT_LIB} PRE_BUILD
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_dirty_bits.py"
+    COMMENT "Checking settings dirty-bit indices are unique"
+    VERBATIM
+)
+
+# Refuse to build a web UI whose JavaScript does not parse (TODO #183).
+#
+# v1.8.5 shipped with one unterminated string literal, which stops the ENTIRE
+# inline script running: the page draws its controls and then does nothing - no
+# spectrum, no buttons, "disconnected" in red. Two users reported it within hours.
+# `node --check` finds that in ~50 ms. The C compiler catches this class of mistake
+# in firmware sources; nothing caught it in HTML, because this build has no other
+# reason to parse it.
+#
+# Skips (does not fail) when node is absent, so a machine without it can still
+# build; the release machine has it, which is where it matters.
+add_custom_command(
+    TARGET ${COMPONENT_LIB} PRE_BUILD
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_web.py"
+    COMMENT "Checking web UI JavaScript parses"
+    VERBATIM
+)
+
+# #117: carry a crash across the reboot so the diag log can report it.
+#
+# Panics never reach diag_log's vprintf hook, so a field crash left NOTHING on
+# the device - verified across /api/log/saved, the SD log and a 5 MB SD archive,
+# all of which held zero asserts. Wrapping esp_panic_handler lets us stash a
+# small record in RTC no-init RAM before the real handler reboots; the next boot
+# logs it through the ordinary path. See main/util/panic_hook.c.
+#
+# ⚠ The wrap MUST be on the final link, not on this component alone - the linker
+# only rewrites calls it resolves at link time.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")

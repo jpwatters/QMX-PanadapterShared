@@ -1,0 +1,6 @@
+[Unit]
+Description=Log that the QMX relay used up its 3 restarts
+
+[Service]
+Type=oneshot
+ExecStart=/opt/qmx-relay/qmx-relay-event.sh gaveup

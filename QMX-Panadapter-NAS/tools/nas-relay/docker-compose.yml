@@ -1,0 +1,15 @@
+# Synology: Container Manager > Project > Create, path = the folder holding
+# this file (e.g. /volume1/docker/qmx-relay). Or over SSH: sudo docker compose up -d --build
+services:
+  qmx-relay:
+    build: .
+    image: qmx-nas-relay:latest
+    container_name: qmx-relay
+    restart: unless-stopped
+    network_mode: host          # Tab5 -> <NAS IP>:7355, PC software -> <NAS IP>:7356 (QMX port 3)
+    privileged: true            # raw USB access, incl. the QMX being power-cycled/replugged
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+    command: ["--selftest"]     # test the QMX at startup (read-only) and log the result, then serve
+    # all options: ["--selftest", "--port", "7355", "--serial-port", "7356", "-v"]
+    #   --serial-port 0 = off; -v logs every CAT exchange

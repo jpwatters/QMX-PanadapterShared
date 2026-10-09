@@ -1,0 +1,486 @@
+# Troubleshooting
+
+> **On the Tab5 itself:** swipe in from the right edge and tap **Need guidance?**.
+> It lists these symptoms in plain words, highlights the ones it can see are
+> happening right now, and opens this chapter at the matching section. See
+> [Getting Help](../getting-help.md).
+
+## Common Issues
+
+### Spectrum is flat, no signal
+
+**Symptoms:** Top bar shows `Band: ---`, spectrum shows no activity.
+
+**Causes:**
+
+1. **Charge-only USB cable** — the #1 issue
+2. QMX not powered on
+3. QMX not responding to CAT (firmware too old)
+
+**Fix:**
+
+1. Try a **different USB cable** — use one you know works for data (USB stick, phone file transfer, etc.)
+2. Power cycle the QMX (off 5 seconds, back on)
+3. Power cycle the Tab5
+4. Check QMX firmware version is v1.03.002 or newer, up to v1.04.010 (v1.04.011 is not recommended yet — see [Quick Start Step 1](../quick-start.md))
+
+If still flat after 10 seconds, proceed to [Collecting Diagnostics](#collecting-diagnostics).
+
+### QMX won't reconnect after a restart (v1.3.6 changes)
+
+Before v1.3.6, a QMX that vanished mid-session — powered off and on, or present across a Tab5 restart — could stay invisible no matter how many times you restarted the radio, and only a Tab5 reboot recovered. That was two separate bugs, and v1.3.6 handles both:
+
+1. **Fixed on the Tab5:** powering the QMX off while it streamed could jam the Tab5's USB port with the dead connection. The Tab5 now cleans up properly and additionally "replugs" the port by itself if a device sits unrecognized — turning the QMX off and back on reconnects within a few seconds, hands off.
+2. **Lives in the QMX's own firmware** (reported to QRP Labs; present in v1.03.002 and v1.04.004 alike): after some Tab5 restarts, the QMX answers USB enumeration incorrectly until *it* is restarted. The Tab5 can't fix this one, but it now detects it and shows **"QMX USB is stuck - power-cycle the QMX to reconnect"** on screen. Do exactly that — radio off for a few seconds, back on — and it connects normally.
+
+If you ever see **"USB stuck - power-cycle the QMX (reboot Tab5 if that fails)"** instead, the port ended up in a rarer state: try the QMX power cycle first; a Tab5 reboot is the fallback.
+
+### Spectrum signal is shifted/mirrored, or slides across the whole window as you tune
+
+**Symptoms:** The signal isn't where it should be — it appears shifted, and turning the QMX's own VFO knob slides it across the *entire* 48 kHz window instead of just nudging it. Audio is often silent until you tune the signal back into the visible range.
+
+**Cause:** The QMX never confirmed IQ mode for this session. Without it, the radio streams plain (non-IQ) audio instead of a properly centred baseband, which produces exactly this symptom.
+
+**Fix (v0.19.3+):**
+
+1. The panadapter automatically retries the IQ-mode handshake up to 4 times at connect, so this usually resolves itself within a second of the QMX showing up — no action needed.
+2. If it still happens, a **red banner appears across the top of the screen** telling you immediately. When you see it:
+   - Power-cycle the QMX (forces a fresh handshake on reconnect), **or**
+   - Check the QMX's own **System Config -> IQ Mode** setting is enabled
+3. On firmware older than v0.19.3, this failure was silent — only visible in the diagnostic log as `QMX IQ mode NOT confirmed`. Updating is the simplest fix.
+
+### The radio jumps to 160 m whenever the Tab5 connects (fixed in v1.16.10)
+
+**On v1.16.9 and earlier, every CAT link-up moved your radio.** To show you a band
+list, the Tab5 reads it out of the QMX's own **Band config.** menus — and leaving
+those menus drops the radio on 160 m, in whatever mode the menus left behind. The
+Tab5 did not put it back. It happened on every connection, to everyone.
+
+What it looks like: you set up on 20 m, the Tab5 connects, and the radio is on
+1.837700 MHz in CW. If you run WSPR or a beacon it is worse than an annoyance —
+you transmit on a band you did not choose.
+
+**Update to v1.16.10**, which saves the frequency and mode before the scan and puts
+them back afterwards, and only if the scan actually moved them.
+
+!!! note "It is easy to blame the wrong thing"
+
+    This was reported as a dead CAT link, and then blamed on the radio's Virtual
+    U3S beacon — both wrong, and one operator switched off a beacon that was
+    innocent. The giveaway is in the timing: the band menus flick past in well
+    under two seconds, far faster than any beacon schedule.
+
+### QMX loses CAT connection after 1–2 minutes
+
+**Symptoms:** Frequency/mode/BW stop updating, FT8 can't transmit.
+
+**Cause:** QMX firmware too old or CDC-ACM driver timeout.
+
+**Fix:**
+
+1. Verify QMX firmware is v1.03.002 or newer, up to v1.04.010 (see Step 1 in [Quick Start](../quick-start.md))
+2. Try a shorter/higher-quality USB cable
+3. Restart both devices
+
+### WiFi won't connect
+
+**Symptoms:** WiFi modal shows "Connecting..." for 30+ seconds, then fails.
+
+**Causes:**
+
+1. Wrong SSID or password
+2. WiFi network uses 5 GHz (Tab5 prefers 2.4 GHz, but 5 GHz works)
+3. WiFi network blocks client-to-client traffic (if you're trying to access the web UI from the same network)
+4. Tab5 WiFi module issue (rare)
+
+**Fix:**
+
+1. Double-check SSID spelling and password (copy-paste if possible)
+2. Try your **2.4 GHz WiFi network** instead (if you have dual-band)
+3. Forget the network and reconnect: Settings -> WiFi -> tap network name -> Forget -> re-add
+4. Restart Tab5
+5. If still failing, grab the always-on **diagnostic log** — see [Collecting Diagnostics](#collecting-diagnostics)
+
+### The web page won't change my network, or Preferred network is ignored
+
+**Symptoms (v1.16.3):** you type a different network into **Network name** and
+save, and it goes back to the old one. Or you set **Preferred network** and the
+Tab5 keeps joining whichever network it used last.
+
+**Two separate faults, both fixed after v1.16.3.**
+
+- **Network name was discarded whenever the password field was blank** — even
+  though that field tells you to leave it blank to keep the stored password. So
+  switching to a network the Tab5 already knew did nothing, with no error
+  message, and the page then showed the old name again.
+- **Preferred network was only consulted after the Tab5 had failed to connect
+  twice.** It worked when your usual network was down, and did nothing when
+  both were up and the usual one answered first — which is the normal case. It
+  also needed a reboot to take effect.
+
+**Fix:** update the firmware. Then leave the password blank when you switch to
+a network the Tab5 already knows, and pick the preferred network from the list
+of remembered names now shown under both fields. Only a name on that list
+works.
+
+**If you must stay on v1.16.3:** choose the network from the Tab5's own
+settings drawer instead of the web page.
+
+### WiFi connects, then stops working after a few minutes
+
+**Symptoms:** WiFi (web UI, uploads) worked at first, then went dead after some minutes — while FT8 and radio control kept working normally. On older firmware the only fix was a reboot.
+
+**This is fixed in v0.20.0.** The cause was a low-level lock-up in the link to the WiFi co-processor; the device now recovers from it automatically (dropping one packet, which is simply re-sent) instead of staying wedged. If you're on **v0.20.0 or later** and still see WiFi die permanently, it's a new issue — please capture the diagnostic log (below) and report it. If you're on an **earlier version**, update the firmware.
+
+### FT8 decoding is slow or stops
+
+**Symptoms:** Decode list isn't updating, or only 1–2 decodes per slot.
+
+**First: check your firmware version.** The long-standing version of this — the
+first slots of a session decoding well, then collapsing to a fraction and never
+recovering — was **fixed in v1.1.0**. The cause was audio being lost at the USB
+wire itself: the transfer pipeline held only 9 ms of queued audio, so any pause
+longer than that (a decode burst, redrawing the list) let the stream run dry, and
+roughly 170–350 ms of every slot went missing with no error reported anywhere.
+The pipeline now holds 320 ms. If you are on an earlier version, update; nothing
+else on this page will help.
+
+**On v1.1.0 or later, the likely causes are:**
+
+1. **The QMX stopped sending audio without disconnecting** — a trip through the
+   radio's own menus can do this, because IQ mode is session state the QMX
+   forgets. CAT keeps answering normally, so everything looks connected while
+   the decode list sits empty. The Tab5 re-asserts IQ mode by itself after 30 s
+   of silence; if it does not recover, power-cycle the QMX.
+2. **A cable that is not carrying data properly** — intermittent is worse than
+   dead, because the spectrum can still look alive.
+3. **Your clock is wrong.** FT8 needs UTC within about a second; see *Time is
+   wrong* below. Candidates stay high while decodes go to zero — that pattern is
+   a timing problem, not a signal one.
+
+**What to do:**
+
+1. Check the clock in the bottom bar, and what it says it is synced from
+2. Try the QMX on a different USB cable, connected directly — not through a hub
+3. Turn WiFi off for a few minutes and see whether decodes change
+4. Download the diagnostic log after a session (web UI **Files** menu ->
+   **Diagnostic download ↓**) and post it on GitHub — it records the per-slot
+   decode counts and capture timing, which says immediately which of the above
+   it is
+
+### FT8 transmit doesn't key the QMX
+
+**Symptoms:** You tap "Transmit", the modal closes, but nothing happens (no TX light on QMX, no tone on the air).
+
+**Causes:**
+
+1. QMX firmware doesn't support Kenwood `TX;` command (v1.03.002+ only)
+2. CAT connection is dead (see [QMX loses CAT connection](#qmx-loses-cat-connection-after-12-minutes) above)
+3. Tab5 is in simulation mode (deliberate safety feature)
+4. QMX is stuck in a menu (rare)
+
+**Fix:**
+
+1. Check QMX firmware version (see Quick Start)
+2. Try a manual CAT command via web API: `curl "http://<ip>/api/cat" -d '{"cmd": "TX;"}' -H "Content-Type: application/json"`
+3. If that fails, you have a CAT issue (see above)
+4. Check settings -> FT8 -> Simulation Mode is **off**
+5. Restart both devices
+
+### Battery drains very fast
+
+**Symptoms:** Battery goes from 100% to 0% in under 1 hour with normal use.
+
+**Causes:**
+
+1. Display brightness at 100%
+2. WiFi on (drains ~30% more than without WiFi)
+3. FT8 decoding (uses more CPU than panadapter alone)
+4. Battery is old or defective
+
+**Fix:**
+
+1. Lower display brightness: Settings -> Display -> Brightness -> 50–70%
+2. Turn off WiFi if you don't need the web UI: Settings -> WiFi -> off
+3. FT8 decoding uses more power; this is expected
+4. If battery still drains in <2 hours with low brightness + no WiFi, the battery may be failing
+
+### Time is wrong, FT8 doesn't work
+
+**Symptoms:** Bottom bar shows wrong time, FT8 decoding says "0" and then stops.
+
+**Cause:** Time is off by >1 second (FT8 is time-critical).
+
+**Fix:**
+
+1. Check if WiFi is connected (should auto-sync time via SNTP)
+2. Manually set time: Settings -> Time Sync -> Set Manual Time -> enter UTC time
+3. If no WiFi and no RTC set, the time will be wrong (see [Time Sync](../guide/time-sync.md))
+4. Enable FT8-derived sync: Settings -> Time Sync -> Use FT8-Derived Sync (optional, helps if WiFi isn't available)
+
+For POTA/portable operation without WiFi:
+- Set the RTC **before you leave home** (Settings -> Time Sync -> Set Manual Time)
+- The RTC holds time for 30–40 hours without power
+
+### Web UI stops responding, or the Tab5 restarts, after switching the QMX on during start-up
+
+**Symptoms:** The web interface is unreachable even though the Tab5 is clearly running and
+on WiFi, and the unit may be more prone to restarting. Often after powering the Tab5 and
+the QMX together, or switching the radio on immediately after the Tab5.
+
+**Cause:** In its first few seconds the Tab5 brings up WiFi, the web server and the
+decoders, all of which need a small pool of internal memory. A radio appearing over USB in
+the middle of that competes for the same pool, and the Tab5 can end up short of memory for
+the rest of the session. The web server is usually the first thing to suffer, because it
+needs memory to accept each new connection.
+
+**Fix:** Restart the Tab5, wait until the spectrum is running and WiFi shows a network,
+and only then switch the QMX on. See [Quick Start](../quick-start.md#step-4-power-on).
+
+This is a firmware limitation, not a fault in your setup, and it is being worked on.
+
+### Web UI won't load
+
+**Symptoms:** Browser says "Connection refused" or "Can't reach this page".
+
+**Causes:**
+
+1. Tab5 is not on WiFi
+2. You're using the wrong IP address
+3. WiFi network has client-isolation enabled
+4. Web server crashed (rare)
+
+**Fix:**
+
+1. Check WiFi is **on** (settings drawer)
+2. Check the **IP address** shown in settings (e.g., 192.168.1.50)
+3. Use that IP in your browser: `http://192.168.1.50`
+4. If still failing, try `http://192.168.1.50:80` explicitly
+5. Restart the Tab5
+
+### The SD dot stays yellow, or the card crosses itself out (fixed in v1.16.9)
+
+**Symptoms:** A card is in the slot and the **SD** dot is yellow rather than green, and stays that way while the Tab5 is clearly busy.
+
+**What the colours mean.** From v1.16.3 the dot reports whether writes are actually reaching the card: **green** = something landed within the last 90 seconds, **yellow** = a card is mounted but nothing has lately, **grey with a stroke** = no card.
+
+**Causes:**
+
+1. **Nothing to write.** On a very quiet session there may genuinely be nothing due, and yellow is then correct and harmless. The diagnostic log normally writes every 30 seconds, so this is uncommon.
+2. **The card driver was starved of memory — fixed in v1.16.9.** This was the common one, and on v1.16.8 and earlier it is what you are almost certainly seeing. **Update to v1.16.9.** If you cannot yet, switching **RX audio** off restores the card, at the cost of the speaker and headphone audio.
+3. **A genuinely failing card or slot.** Rarer. The log will show mount-level errors (CRC, invalid response) rather than write failures.
+
+**Fix:**
+
+1. **Update to v1.16.9**, which fixes cause 2. Reseating, reformatting or replacing the card has never helped anybody and will not help here.
+2. If you are staying on an older release, either switch **RX audio** off, or run with WiFi off (the normal POTA/SOTA case), where mirroring is continuous and flawless.
+3. To tell cause 2 from cause 3, download the diagnostic log and look for `SDFAIL[slowopen] err=0x5` with a low `DMA free=` figure (cause 2) versus mount-time errors (cause 3).
+
+> Cause 2 is fixed in v1.16.9. It was never your card.
+
+**What is actually happening (established v1.16.4, fixed v1.16.9).** The card is never the
+problem in cause 2. The diagnostic log now shows the two lines together, in the
+same millisecond:
+
+```
+E dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+W sd_arch: slow diag mirror failed 3 times running - backing off 60s -> 120s
+```
+
+The card is mounted and healthy; the write is **refused before it ever reaches
+it**, because the card driver cannot obtain a memory buffer of the kind it
+needs. The Tab5 then backs off 30 s → 60 s → 120 s → 240 s rather than hammering
+a request that cannot succeed, and the dot goes yellow because that is the
+truth.
+
+The memory is spoken for by the audio path: v1.16.4's start-up ledger (see
+below) shows the audio output stage alone taking 46.5 KB of it. **This is why
+reformatting, reseating or replacing the card has never helped anybody.**
+
+**v1.16.9 fixes it.** 24 KB of that audio total was a buffer sitting in exactly
+the memory the card driver competes for, with no need to be there; it now
+lives in external memory, where 14 MB is spare. Measured on the bench: with the
+old buffer in place and RX audio on, the card failed 40 seconds after boot with
+**87 bytes** of that memory left. With it moved, the same unit keeps writing.
+
+### Reading the start-up memory ledger (v1.16.4)
+
+Every diagnostic log now opens with a table like this, one line per subsystem:
+
+```
+memledger: app_main entry          dma=157499 B (lblk 94208)
+memledger: rx_audio_preopen (I2S)  dma= 99323 B (lblk 47104)
+memledger: dsp_init                dma= 29923 B (lblk 25600)
+memledger: rx_audio_init           dma= 15259 B (lblk 13824)
+```
+
+`dma` is the memory left that hardware can transfer directly to and from;
+`lblk` is the largest single unbroken piece of it. **The second number is
+usually what matters** — several things need one contiguous block, so they can
+fail while the total still looks adequate.
+
+You do not need to act on it. It is there so that when something declines to
+start, the reason is already in the file you send.
+
+### The Tab5 restarts on its own while you are listening
+
+**Symptoms:** The Tab5 reboots without warning, often while audio is playing and
+sometimes several times in a row. Nothing on screen explains it.
+
+**Most likely cause: the 5 V supply is dipping, not a firmware crash.** The
+processor has its own brownout detector; when the rail falls below its
+threshold it stops the chip immediately. Nothing crashed — it lost power for a
+moment.
+
+**From v1.16.4 the Tab5 tells you.** If the previous restart was a brownout, a
+message says so for twelve seconds at start-up, and the diagnostic log records
+`reset_reason=brownout`. Garbled sections in the log are a corroborating sign:
+those are writes cut off mid-write by the power loss.
+
+**What to check, in this order:**
+
+1. **The USB-C supply.** It wants a genuine 5 V 3 A source. A laptop port or a
+   small phone charger is the usual culprit.
+2. **The cable.** A thin or long one drops more than people expect at 2–3 A.
+3. **That the battery is actually charging** — the Tab5 leans on it for peaks.
+
+**Loud audio is the heaviest moment**, so brownouts often strike while you are
+listening or adjusting levels. That is a symptom of a marginal supply, not a
+reason to keep the volume down: a healthy supply runs the Tab5 at full volume
+without complaint.
+
+> Raising **AGC Ceiling** to 1500 in v1.16.3 did not cause this, but it does let
+> you reach a louder output than the old 800 limit allowed — which on a marginal
+> supply can be what tips it over *(Samuel W7STF)*.
+
+### Bluetooth stays grey although the box is ticked
+
+**Symptoms:** **Bluetooth** is enabled in the settings drawer, but the symbol in
+the bottom bar is grey rather than yellow, and no mouse or keyboard is ever
+found.
+
+**Cause: there was not enough memory to start it.** Bluetooth needs a
+contiguous 24 KB of internal memory at start-up. If it is not there, the Tab5
+**declines to start Bluetooth** rather than crash, and your setting is left
+untouched — which is why the box still reads ticked.
+
+The diagnostic log says so plainly:
+
+```
+btmouse: internal heap still 21391 B after 60 s (need 24576)
+         - NOT starting BLE this boot
+```
+
+**What to do:** restart the Tab5 **before** switching on RX audio, and let it
+settle. Audio is the largest consumer of that memory, so a start-up with audio
+already enabled is the case most likely to squeeze Bluetooth out.
+
+> Known and measured. The margin is genuinely thin, and reducing the audio
+> path's memory footprint is being worked on.
+
+### Settings disappear after restart
+
+**Symptoms:** You set your callsign/grid/WiFi password, but after power cycle they're gone.
+
+**Causes:**
+
+1. **Not normal** — settings should persist to NVS (non-volatile storage)
+2. Recent firmware update may have reset NVS
+3. NVS is corrupted (very rare)
+
+**Fix:**
+
+1. Re-enter your settings
+2. If they disappear again, download the diagnostic log (web UI **Files** menu -> **Diagnostic download ↓**) and report on GitHub
+3. As a last resort: export your config via the web UI (**Files** menu -> **Config download ↓**), then do a full factory reset, then re-import
+
+### A Bluetooth mouse never connects
+
+**Symptoms:** Bluetooth is enabled, you have restarted the Tab5 and put the mouse into
+pairing mode, and nothing happens. The Bluetooth symbol in the bottom bar keeps looking
+and never turns blue.
+
+**Most likely cause: the mouse is Bluetooth Classic, not Bluetooth Low Energy.** Only
+Low Energy mice work. The Tab5's Bluetooth comes from a co-processor with no Bluetooth
+Classic radio in it, so a Classic mouse cannot be made to work by any firmware change,
+and it never appears to the Tab5 at all — the Tab5 listens only for mice that announce
+themselves the Low Energy way.
+
+Check the box or the maker's specification for **Bluetooth 4.0 or later**. Most mice
+sold since about 2014 qualify. A dual-mode mouse works on its Low Energy channel.
+
+If the mouse *does* connect — the symbol turns blue — but the pointer moves oddly or
+jumps to the edges of the screen, that is a different problem and worth reporting with
+a diagnostic log, since the Tab5 records what the mouse tells it about its own layout.
+
+### Flashing keeps failing, but the COM port is still listed
+
+**Symptoms:** the flasher runs, the Tab5's COM port is visible in Windows Device
+Manager, and yet esptool fails again and again — often after the Tab5 has been
+running for a long time.
+
+**Fix: reboot the Tab5 and flash again.** Do this before changing cables or
+reinstalling anything.
+
+**Why it happens:** unlike most dev boards, the Tab5 has no separate USB-to-serial
+chip. The serial port you flash over is produced by the **ESP32-P4 itself**, so it
+only exists while the firmware is running. A busy or unhappy firmware can leave the
+port enumerated — Windows still lists it — while it no longer responds to the
+flasher's request to enter download mode. Restarting the Tab5 restarts that serial
+endpoint with it.
+
+Reported by Samuel W7STF after a seven-hour session; a reboot fixed it immediately.
+If a reboot does *not* fix it, the usual causes are a charge-only USB-C cable or a
+serial monitor still holding the port.
+
+### Clearing a stuck configuration (web-based reset, new in v0.21.0)
+
+**Symptoms:** the panadapter behaves as if a setting is wedged — e.g. WiFi won't come up no matter what, or a stored value seems stuck — and re-entering settings doesn't help.
+
+You can now reset from the web page, with no computer or flashing tool needed. In the web UI, open the **Miscellaneous** menu in the bottom bar and pick the scope:
+
+- **Reset settings** — clears the app's stored settings (callsign, grid, filters, preferences) back to defaults. Your memory channels and logs are separate.
+- **Reset WiFi** — clears just the Wi-Fi / network state, for when the connection is stuck.
+
+Each choice asks for confirmation first, then the device reboots and clears the selected storage on the way back up. Export your config first (**Files** menu -> **Config download ↓**) if you want to restore it afterward.
+
+## Collecting Diagnostics
+
+If you're stuck, capture a **diagnostic log**:
+
+### From the Web UI (Wireless)
+
+The diagnostic log is **always on** — nothing to enable.
+
+1. Reproduce the issue (let it sit for 30 seconds)
+2. In the web UI bottom bar, open the **Files** menu and click **Diagnostic download ↓** — it downloads both the live session log and the copy persisted from before the last reboot (useful if the device crashed or was power-cycled)
+3. Alternatively, if a microSD card is inserted, pull `/qmx-panadapter/qmx-log.txt` from the card. With WiFi on it is written every 30 seconds, and those writes wait while a browser is watching the spectrum (never longer than three minutes) — so the card copy can lag by a few minutes. The web download above is always the complete one
+4. Post the `.txt` file on [GitHub Issues](https://github.com/SteffenLav/qmx-panadapter/issues) or the [QRPLabs Groups.io thread](https://groups.io/g/QRPLabs/topic/119565643)
+
+### From Serial Console (Offline)
+
+If WiFi isn't working:
+
+1. Plug Tab5 into your computer with a **USB-C data cable**
+2. Run: `tools/capture_serial_log.ps1` (Windows) or equivalent
+3. Let it capture for 30 seconds while you reproduce the issue
+4. Post the log file on [GitHub Issues](https://github.com/SteffenLav/qmx-panadapter/issues) or the [QRPLabs Groups.io thread](https://groups.io/g/QRPLabs/topic/119565643)
+
+The log includes your firmware version, QMX firmware, callsign, grid, hardware revision, and all serial output from the system.
+
+## Still Stuck?
+
+1. **Check the [Quick Start](../quick-start.md)** — most issues are covered there
+2. **Read [Settings](../guide/settings.md)** — verify your configuration
+3. **Download the diagnostic log** (always on) — it often reveals the root cause
+4. **Post on [GitHub Issues](https://github.com/SteffenLav/qmx-panadapter/issues) or the [QRPLabs Groups.io thread](https://groups.io/g/QRPLabs/topic/119565643)** — include:
+   - Your symptoms (what you saw, what you expected)
+   - Your hardware (Tab5 model, QMX/QMX+, antenna)
+   - Your firmware versions (read from the About screen)
+   - Your diagnostic log (if applicable)
+
+The maintainer (OZ1LAV) and other users are very responsive to well-documented issues.
+
+---
+
+**Next:** Explore [Build from Source](../build/build.md) if you want to modify the firmware.

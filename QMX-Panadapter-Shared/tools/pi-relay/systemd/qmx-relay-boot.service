@@ -1,0 +1,10 @@
+[Unit]
+Description=Log the boot for the QMX relay (it starts 60 s later)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/qmx-relay/qmx-relay-event.sh boot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2125 @@
+/*
+ * SPDX-FileCopyrightText: 2024 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "sdkconfig.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_check.h"
+#include "esp_spiffs.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_ldo_regulator.h"
+#include "esp_vfs_fat.h"
+#include "usb/usb_host.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "freertos/task.h"
+#include "sdmmc_cmd.h"
+#include "esp_lcd_st7703.h"
+#include "esp_lcd_st7123.h"
+#include "esp_lcd_st7121.h"
+#include "esp_lcd_ili9881c.h"
+#include "bsp/m5stack_tab5.h"
+#include "bsp/display.h"
+#include "bsp/touch.h"
+#include "esp_lcd_touch_gt911.h"
+#include "esp_lcd_touch_st7123.h"
+#include "bsp_err_check.h"
+#include "esp_codec_dev_defaults.h"
+
+static const char* TAG = "M5STACK_TAB5";
+
+#if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
+static lv_indev_t* disp_indev = NULL;
+#endif  // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
+
+// Global uSD card handler
+sdmmc_card_t* bsp_sdcard = NULL;
+
+// USB Host Library task
+static TaskHandle_t usb_host_task;
+
+// sys i2c
+static bool i2c_initialized               = false;
+static i2c_master_bus_handle_t i2c_handle = NULL;
+// ext i2c
+static bool ext_i2c_initialized                   = false;
+static i2c_master_bus_handle_t ext_i2c_bus_handle = NULL;
+// grove i2c
+static bool grove_i2c_initialized                   = false;
+static i2c_master_bus_handle_t grove_i2c_bus_handle = NULL;
+// i2s
+static i2s_chan_handle_t i2s_tx_chan            = NULL;
+static i2s_chan_handle_t i2s_rx_chan            = NULL;
+static const audio_codec_data_if_t* i2s_data_if = NULL; /* Codec data interface */
+
+//==================================================================================
+// camera è®¾ç½®è¾“å‡ºæ—¶é’Ÿ
+//==================================================================================
+
+esp_err_t bsp_cam_osc_init(void)
+{
+    ledc_timer_config_t timer_conf;
+    timer_conf.duty_resolution = LEDC_TIMER_1_BIT;
+    timer_conf.freq_hz         = 24000000;  // <<<< change this to the frequency you want
+    timer_conf.speed_mode      = LEDC_LOW_SPEED_MODE;
+    timer_conf.deconfigure     = false;
+    timer_conf.clk_cfg         = LEDC_AUTO_CLK;
+    timer_conf.timer_num       = LEDC_TIMER_0;
+    esp_err_t err              = ledc_timer_config(&timer_conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ledc_timer_config failed for freq %d, rc=%x", 24000000, err);
+    }
+
+    ledc_channel_config_t ch_conf;
+    ch_conf.gpio_num   = 36;  // æ‘„åƒå¤´æ—¶é’Ÿè¾“å…¥
+    ch_conf.speed_mode = LEDC_LOW_SPEED_MODE;
+    ch_conf.channel    = LEDC_CHANNEL_0;
+    ch_conf.intr_type  = LEDC_INTR_DISABLE;
+    ch_conf.timer_sel  = LEDC_TIMER_0;
+    ch_conf.duty       = 1;
+    ch_conf.hpoint     = 0;
+    ch_conf.sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE;
+    err                = ledc_channel_config(&ch_conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ledc_channel_config failed, rc=%x", err);
+    }
+
+    return ESP_OK;
+}
+
+//==================================================================================
+// i2c
+//==================================================================================
+esp_err_t bsp_i2c_init(void)
+{
+    /* I2C was initialized before */
+    if (i2c_initialized) {
+        return ESP_OK;
+    }
+
+    i2c_master_bus_config_t i2c_bus_conf = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .sda_io_num                   = BSP_I2C_SDA,
+        .scl_io_num                   = BSP_I2C_SCL,
+        .i2c_port                     = BSP_I2C_NUM,
+        .flags.enable_internal_pullup = true,
+    };
+    BSP_ERROR_CHECK_RETURN_ERR(i2c_new_master_bus(&i2c_bus_conf, &i2c_handle));
+
+    i2c_initialized = true;
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_i2c_deinit(void)
+{
+    BSP_ERROR_CHECK_RETURN_ERR(i2c_del_master_bus(i2c_handle));
+    i2c_initialized = false;
+    return ESP_OK;
+}
+
+i2c_master_bus_handle_t bsp_i2c_get_handle(void)
+{
+    return i2c_handle;
+}
+
+esp_err_t bsp_ext_i2c_init(void)
+{
+    if (ext_i2c_initialized) {
+        return ESP_OK;
+    }
+
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .i2c_port                     = BSP_EXT_I2C_NUM,
+        .scl_io_num                   = BSP_EXT_I2C_SCL,
+        .sda_io_num                   = BSP_EXT_I2C_SDA,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_new_master_bus(&i2c_mst_config, &ext_i2c_bus_handle);
+
+    ext_i2c_initialized = true;
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_ext_i2c_deinit(void)
+{
+    ext_i2c_initialized = false;
+    return i2c_del_master_bus(ext_i2c_bus_handle);
+}
+
+i2c_master_bus_handle_t bsp_ext_i2c_get_handle(void)
+{
+    return ext_i2c_bus_handle;
+}
+
+esp_err_t bsp_grove_i2c_init(void)
+{
+    if (grove_i2c_initialized) {
+        return ESP_OK;
+    }
+
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source                   = I2C_CLK_SRC_DEFAULT,
+        .i2c_port                     = BSP_EXT_I2C_NUM,
+        .scl_io_num                   = 54,  // BSP_EXT_I2C_SCL,
+        .sda_io_num                   = 53,  // BSP_EXT_I2C_SDA,
+        .flags.enable_internal_pullup = true,
+    };
+    i2c_new_master_bus(&i2c_mst_config, &grove_i2c_bus_handle);
+
+    grove_i2c_initialized = true;
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_grove_i2c_deinit(void)
+{
+    grove_i2c_initialized = false;
+    return i2c_del_master_bus(grove_i2c_bus_handle);
+}
+
+i2c_master_bus_handle_t bsp_grove_i2c_get_handle(void)
+{
+    return grove_i2c_bus_handle;
+}
+
+esp_err_t bsp_i2c_scan()
+{
+    esp_err_t ret;
+    uint8_t address;
+
+    printf("scan i2c device\n");
+    printf("\n     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\r\n");
+    for (int i = 0; i < 128; i += 16) {
+        printf("%02x: ", i);
+        for (int j = 0; j < 16; j++) {
+            fflush(stdout);
+            address = i + j;
+            ret     = i2c_master_probe(i2c_handle, address, 50);
+            if (ret == ESP_OK) {
+                printf("%02x ", address);
+            } else if (ret == ESP_ERR_TIMEOUT) {
+                printf("UU ");
+            } else {
+                printf("-- ");
+            }
+        }
+        printf("\r\n");
+    }
+    printf("\nscan i2c device finished\n");
+
+    return ESP_OK;
+}
+
+//==================================================================================
+// I/O Exapnder PI4IOE5V6416
+//==================================================================================
+#define I2C_DEV_ADDR_PI4IOE1  0x43  // addr pin low
+#define I2C_DEV_ADDR_PI4IOE2  0x44  // addr pin high
+#define I2C_MASTER_TIMEOUT_MS 50
+
+static i2c_master_dev_handle_t i2c_dev_handle_pi4ioe1;
+static i2c_master_dev_handle_t i2c_dev_handle_pi4ioe2;
+
+// PI4IO registers
+#define PI4IO_REG_CHIP_RESET 0x01
+#define PI4IO_REG_IO_DIR     0x03
+#define PI4IO_REG_OUT_SET    0x05
+#define PI4IO_REG_OUT_H_IM   0x07
+#define PI4IO_REG_IN_DEF_STA 0x09
+#define PI4IO_REG_PULL_EN    0x0B
+#define PI4IO_REG_PULL_SEL   0x0D
+#define PI4IO_REG_IN_STA     0x0F
+#define PI4IO_REG_INT_MASK   0x11
+#define PI4IO_REG_IRQ_STA    0x13
+
+#define setbit(x, y) x |= (0x01 << y)
+#define clrbit(x, y) x &= ~(0x01 << y)
+
+void bsp_io_expander_pi4ioe_init(i2c_master_bus_handle_t bus_handle)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    /* */
+    i2c_device_config_t dev_cfg1 = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = I2C_DEV_ADDR_PI4IOE1,
+        .scl_speed_hz    = 400000,
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg1, &i2c_dev_handle_pi4ioe1));
+
+    write_buf[0] = PI4IO_REG_CHIP_RESET;
+    write_buf[1] = 0xFF;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    write_buf[0] = PI4IO_REG_CHIP_RESET;
+    i2c_master_transmit_receive(i2c_dev_handle_pi4ioe1, write_buf, 1, read_buf, 1, I2C_MASTER_TIMEOUT_MS);
+    write_buf[0] = PI4IO_REG_IO_DIR;
+    write_buf[1] = 0b01111111;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);  // 0: input 1: output
+    write_buf[0] = PI4IO_REG_OUT_H_IM;
+    write_buf[1] = 0b00000000;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // ä½¿ç”¨åˆ°çš„å¼•è„šå…³é—­ High-Impedance
+    write_buf[0] = PI4IO_REG_PULL_SEL;
+    write_buf[1] = 0b01111111;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // pull up/down select, 0 down, 1 up
+    write_buf[0] = PI4IO_REG_PULL_EN;
+    write_buf[1] = 0b01111111;
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // P7 ä¸­æ–­ä½¿èƒ½ 0 enable, 1 disable
+    /* Drive LCD_RST (P4) and TP_RST (P5) LOW first to force a reset edge on warm boot, */
+    /* then HIGH to release. Without this, soft-reset-after-flash leaves the panel mid-frame. */
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = 0b01000110;  /* P4=0 P5=0: LCD_RST + TP_RST asserted (low) */
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = 0b01110110;  /* P4=1 P5=1: release reset */
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+
+    /* */
+    i2c_device_config_t dev_cfg2 = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address  = I2C_DEV_ADDR_PI4IOE2,
+        .scl_speed_hz    = 400000,
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg2, &i2c_dev_handle_pi4ioe2));
+
+    write_buf[0] = PI4IO_REG_CHIP_RESET;
+    write_buf[1] = 0xFF;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    write_buf[0] = PI4IO_REG_CHIP_RESET;
+    i2c_master_transmit_receive(i2c_dev_handle_pi4ioe2, write_buf, 1, read_buf, 1, I2C_MASTER_TIMEOUT_MS);
+    write_buf[0] = PI4IO_REG_IO_DIR;
+    write_buf[1] = 0b10111001;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);  // 0: input 1: output
+    write_buf[0] = PI4IO_REG_OUT_H_IM;
+    write_buf[1] = 0b00000110;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // ä½¿ç”¨åˆ°çš„å¼•è„šå…³é—­ High-Impedance
+    write_buf[0] = PI4IO_REG_PULL_SEL;
+    write_buf[1] = 0b10111001;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // pull up/down select, 0 down, 1 up
+    write_buf[0] = PI4IO_REG_PULL_EN;
+    write_buf[1] = 0b11111001;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // pull up/down enable, 0 disable, 1 enable
+    write_buf[0] = PI4IO_REG_IN_DEF_STA;
+    write_buf[1] = 0b01000000;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);  // P6 é»˜è®¤é«˜ç”µå¹³
+    write_buf[0] = PI4IO_REG_INT_MASK;
+    write_buf[1] = 0b10111111;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2,
+                        I2C_MASTER_TIMEOUT_MS);  // P6 ä¸­æ–­ä½¿èƒ½ 0 enable, 1 disable
+    /* Output Port Register P0(WLAN_PWR_EN), P3(USB5V_EN), P7(CHG_EN) è¾“å‡ºé«˜ç”µå¹³ */
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    // write_buf[1] = 0b10001001;
+    write_buf[1] = 0b00001001;
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+/* Read one PI4IO register, and say whether the read actually happened.
+ *
+ * ⛔ THE REASON THIS EXISTS. Every pin function below is a read-modify-write
+ * of an OUTPUT register: read OUT_SET, flip one bit, write the byte back. The
+ * upstream versions ignored the read's return value, and read_buf is zeroed on
+ * entry - so an I2C read that FAILED left 0x00 in it and the function then
+ * wrote 0x00 to the whole output register, clearing every other pin on that
+ * expander.
+ *
+ * On expander 1 that is not a cosmetic bug: P4 is LCD_RST and P5 is TP_RST
+ * (bsp_io_expander_pi4ioe_init() drives them low then high to reset the panel).
+ * Writing 0x00 asserts both - a dead display and a dead touch controller, from
+ * one dropped I2C transaction on a bus shared with the touch controller and the
+ * battery monitor.
+ *
+ * Found by reading, not by failure: the risk went up sharply in v1.16.4, when
+ * bsp_set_speaker_amp_enable() started being called once a second from the
+ * audio write loop. Before that these ran a handful of times a boot.
+ *
+ * The callers treat a failed read as "leave the hardware alone and try again
+ * next time", which is right for every one of them but the poweroff signal -
+ * see the note there. */
+/* Last known-good value of expander 1's OUT_SET.
+ *
+ * ⛔ WHY A SHADOW EXISTS AT ALL. Every pin function is a read-modify-write, and
+ * pi4io_read_reg() correctly refuses to write when the read fails - but for the
+ * SPEAKER AMPLIFIER "do nothing" is the wrong failure: if the amp is already
+ * off, giving up leaves the operator with no audio for the rest of the session,
+ * and the only way back is a reboot they have no reason to try.
+ *
+ * Two users lost audio after v1.16.4 (Steve N9SZ, Samuel W7STF), the release
+ * that started polling the headphone jack every second. The 0x0F read really
+ * does fail in the field - `PI4IO read of reg 0x0f failed (ESP_ERR_TIMEOUT)`
+ * appears in their logs AND 485 times in my own bench capture, so it is not a
+ * board difference. Seeded from the value init() writes, so it is correct from
+ * the first call. */
+static uint8_t s_pi4io1_out_shadow = 0b01110110;   /* == init's release value */
+
+static bool pi4io_read_reg(i2c_master_dev_handle_t dev, uint8_t reg, uint8_t *out)
+{
+    uint8_t addr = reg;
+    esp_err_t err = i2c_master_transmit_receive(dev, &addr, 1, out, 1, I2C_MASTER_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PI4IO read of reg 0x%02x failed (%s) - leaving the port alone",
+                 reg, esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+void bsp_set_charge_qc_en(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        clrbit(write_buf[1], 5);
+    } else {
+        setbit(write_buf[1], 5);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+void bsp_set_charge_en(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 7);
+    } else {
+        clrbit(write_buf[1], 7);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+void bsp_set_usb_5v_en(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 3);
+    } else {
+        clrbit(write_buf[1], 3);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+void bsp_set_ext_5v_en(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe1, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 2);
+    } else {
+        clrbit(write_buf[1], 2);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+void bsp_generate_poweroff_signal()
+{
+    ESP_LOGW(TAG, "Generate poweroff signal!");
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    /* ⛔ THE ONE CALLER THAT MUST NOT BAIL OUT ON A FAILED READ.
+     * Everywhere else, giving up preserves the other pins and the next
+     * call tries again. Here there IS no next call - this is the power
+     * button's own signal, and refusing to write would leave the machine
+     * on. Clobbering the other pins costs nothing on a board that is
+     * about to lose power, so proceed from 0x00 and say so.
+     *
+     * ⚠ write_buf[0] is ALSO set explicitly below. It used to be left
+     * over from the read's own transmit buffer - the only function here
+     * that depended on that, which is exactly how a mechanical sweep
+     * breaks one site out of ten. */
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0]))
+        ESP_LOGW(TAG, "poweroff: reading the port failed - signalling anyway");
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+
+    // Try to generate poweroff signal 3 times to make sure it works :)
+    for (int i = 0; i < 3; i++) {
+        setbit(write_buf[1], 4);
+        i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        clrbit(write_buf[1], 4);
+        i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+}
+
+bool bsp_headphone_detect()
+{
+    uint8_t read_buf[1] = {0};   /* pi4io_read_reg() builds its own address byte */
+
+    /* A failed read returns false, which is the safe answer for both
+     * callers: no headphone detected means nothing is switched off. It is
+     * logged rather than silent - a detect that is actually failing
+     * every second reads exactly like a jack that is simply unplugged. */
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe1, PI4IO_REG_IN_STA, &read_buf[0]))
+        return false;
+
+    // printf("get %02x\n", read_buf[0]);
+
+    // Get bit 8
+    bool ret = false;
+    if (read_buf[0] & 0b10000000) {
+        ret = true;
+    }
+
+    return ret;
+}
+
+bool bsp_usb_c_detect()
+{
+    uint8_t read_buf[1] = {0};   /* pi4io_read_reg() builds its own address byte */
+
+    /* A failed read returns false, which is the safe answer for both
+     * callers: no USB-C detected means nothing is switched off. It is
+     * logged rather than silent - a detect that is actually failing
+     * every second reads exactly like a jack that is simply unplugged. */
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_IN_STA, &read_buf[0]))
+        return false;
+
+    // printf("get %02x\n", read_buf[0]);
+
+    // Get bit 6
+    bool ret = false;
+    if (read_buf[0] & 0b01000000) {
+        ret = true;
+    }
+
+    return ret;
+}
+
+void bsp_set_ext_antenna_enable(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe1, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 0);
+    } else {
+        clrbit(write_buf[1], 0);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+}
+
+/* Speaker power amplifier enable - PI4IOE1 P1.
+ *
+ * ⭐ THE PIN IS NAMED NOWHERE IN THE HEADER. It is recorded in exactly one
+ * place upstream: the Chinese comment in bsp_audio_codec_speaker_init(),
+ * `.pa_pin = -1,  // PI4IOE1 P1 控制` ("controlled by PI4IOE1 P1"). The header's
+ * BSP_POWER_AMP_IO is GPIO_NUM_NC with "(GPIO_NUM_53)" beside it, which looks
+ * like the answer and is not - GPIO 53 on this board is BSP_EXT_I2C_SDA.
+ *
+ * Added for Roy KI0ER, 2026-09-24: the Tab5 plays through the internal speaker
+ * AND the headphone jack at once, because both are fed from the codec's
+ * LOUT1/ROUT1 pair - measured, see rx_audio.c. The codec therefore cannot
+ * separate them; gating the speaker AMP is the only way, and this is its
+ * control line.
+ *
+ * Read-modify-write on the shared output register, same as every other pin
+ * function here: P4/P5 are the LCD and touch resets and must not be disturbed. */
+void bsp_set_speaker_amp_enable(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    /* ⭐ FAIL LOUD, NOT SAFE - see s_pi4io1_out_shadow.
+     *
+     * Turning the amp ON is a recovery action and must happen even when the
+     * read fails; the shadow carries the other pins so P4/P5 (LCD_RST, TP_RST)
+     * are not disturbed. Turning it OFF is only ever a convenience, so that
+     * direction still gives up on a failed read - the worst case there is the
+     * speaker playing alongside headphones for a second, which is what v1.16.3
+     * did for its whole life. */
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe1, PI4IO_REG_OUT_SET, &read_buf[0])) {
+        if (!en) return;                       /* muting can wait for a good read */
+        read_buf[0] = s_pi4io1_out_shadow;     /* enabling cannot */
+        ESP_LOGW(TAG, "speaker amp ON from the shadow - the port read failed");
+    }
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 1);
+    } else {
+        clrbit(write_buf[1], 1);
+    }
+
+    if (i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2,
+                            I2C_MASTER_TIMEOUT_MS) == ESP_OK)
+        s_pi4io1_out_shadow = write_buf[1];
+}
+
+void bsp_set_wifi_power_enable(bool en)
+{
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    ESP_LOGI(TAG, "set_wifi_power_enable: %d", en);
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    if (en) {
+        setbit(write_buf[1], 0);
+    } else {
+        clrbit(write_buf[1], 0);
+    }
+
+    i2c_master_transmit(i2c_dev_handle_pi4ioe2, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe2, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+    printf("0x%02X: %02x\n", PI4IO_REG_OUT_SET, read_buf[0]);
+}
+
+void bsp_reset_tp()
+{
+    ESP_LOGI(TAG, "reset tp");
+
+    ESP_LOGI(TAG, "reset gpio %d", GPIO_NUM_23);
+    gpio_reset_pin(GPIO_NUM_23);
+
+    uint8_t write_buf[2] = {0};
+    uint8_t read_buf[1]  = {0};
+
+    if (!pi4io_read_reg(i2c_dev_handle_pi4ioe1, PI4IO_REG_OUT_SET, &read_buf[0])) return;
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    clrbit(write_buf[1], 4);
+    clrbit(write_buf[1], 5);
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    write_buf[0] = PI4IO_REG_OUT_SET;
+    write_buf[1] = read_buf[0];
+    setbit(write_buf[1], 4);
+    setbit(write_buf[1], 5);
+    i2c_master_transmit(i2c_dev_handle_pi4ioe1, write_buf, 2, I2C_MASTER_TIMEOUT_MS);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+}
+
+//==================================================================================
+// sd card
+//==================================================================================
+#define BSP_LDO_PROBE_SD_CHAN       4
+#define BSP_LDO_PROBE_SD_VOLTAGE_MV 3300
+
+// M5Stack-Tab5-P4 SD card lines. Driven in SPI mode (see below), NOT 4-bit
+// SDMMC mode -- see the SPI-mode rationale comment above bsp_sdcard_init().
+#define GPIO_SDMMC_DET  (GPIO_NUM_NC)  // no card-detect line on this board
+#define GPIO_SDMMC_CLK (GPIO_NUM_43)  // SCLK
+#define GPIO_SDMMC_CMD (GPIO_NUM_44)  // MOSI (was SDIO CMD)
+#define GPIO_SDMMC_D0  (GPIO_NUM_39)  // MISO (was SDIO D0)
+#define GPIO_SDMMC_D1  (GPIO_NUM_40)  // unused in SPI mode (was SDIO D1)
+#define GPIO_SDMMC_D2  (GPIO_NUM_41)  // unused in SPI mode (was SDIO D2)
+#define GPIO_SDMMC_D3  (GPIO_NUM_42)  // CS (was SDIO D3)
+
+#define BSP_SD_SPI_HOST SPI2_HOST  // dedicated SPI bus -- not shared with anything else on this board
+#define BSP_SD_SPI_FREQ_KHZ 10000  // 10 MHz (default is 20); see max_freq_khz note in bsp_sdcard_init
+
+static sdmmc_card_t* card;
+
+// SD CARD IS DRIVEN IN SPI MODE, NOT 4-BIT SDMMC MODE -- DO NOT "OPTIMIZE"
+// THIS BACK TO esp_vfs_fat_sdmmc_mount()/SDMMC_HOST_SLOT_0.
+//
+// Root cause (found 2026-07-06 from a live serial capture + code read, not
+// speculation): the ESP32-P4 has ONE physical SDMMC/SDIO hardware peripheral
+// shared between its two logical "slots". slot 0 (this SD card) and slot 1
+// (ESP-Hosted's WiFi link to the C6 co-processor, see wifi.c / managed_components
+// /espressif__esp_hosted) use different GPIO pins but the SAME underlying
+// hardware block (shared clock generator + DMA engine), and nothing in either
+// driver coordinates access between them -- they are two independent
+// subsystems with zero shared lock. storage/sd_archive.c's background probe
+// (retries bsp_sdcard_init() every 10 s whenever no card is mounted, since
+// this board has no card-detect line) sends a real SD command sequence
+// (sdmmc_init_ocr's CMD1/send_op_cond, ~100 ms) over that shared block on
+// every retry -- with a card mounted, ongoing FatFs read/write traffic does
+// the same thing far more often. Any of that racing against concurrent
+// ESP-Hosted WiFi SDIO traffic can corrupt a length field the C6 reports back,
+// producing `H_SDIO_DRV: sdio_get_len_from_slave: Len from slave[X] exceeds
+// max [1536]` followed by every subsequent WiFi status RPC (0x126,
+// WifiStaGetApInfo) timing out forever -- a permanent wedge with no
+// auto-recovery, confirmed reproducible with or without a card actually
+// mounted (the bare failed-probe command sequence alone is enough).
+//
+// Moving the SD card to SPI mode uses the SPI2 controller instead -- a
+// genuinely separate hardware peripheral from the SDMMC/SDIO block, so SD
+// card activity and WiFi SDIO traffic can no longer contend for the same
+// internal state machine at all. This eliminates the race at the root
+// instead of narrowing its timing window. Trade-off: SPI-mode SD throughput
+// is well below 4-bit SDMMC's, but this card is only used for background
+// mirroring of the diag log / ADIF / config (storage/sd_archive.c) -- small,
+// infrequent writes, not a bulk-storage role -- so the slowdown is not
+// user-visible. SPI2_HOST is unused by anything else on this board (display
+// is MIPI-DSI, touch is I2C, audio/CAT are USB), so no bus contention there.
+esp_err_t bsp_sdcard_init(char* mount_point, size_t max_files)
+{
+    esp_err_t ret_val = ESP_OK;
+
+    if (NULL != card) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot         = BSP_SD_SPI_HOST;
+    // SDSPI_HOST_DEFAULT() leaves this at SDMMC_FREQ_DEFAULT (20 MHz). Card init
+    // was observed failing intermittently with ESP_ERR_INVALID_RESPONSE (0x108)
+    // while memory was abundant - the classic signature of marginal signal
+    // integrity (trace length, weak pull-ups, or a marginal card) rather than a
+    // software fault. The background mirror writes are small and infrequent, so
+    // clock rate is worth nothing here and reliability is worth everything.
+    // Drop to 4000 if 0x108 is still seen.
+    host.max_freq_khz = BSP_SD_SPI_FREQ_KHZ;
+
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = BSP_LDO_PROBE_SD_CHAN,  // `LDO_VO4` is used as the SDMMC IO power
+    };
+    static sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
+
+    if (pwr_ctrl_handle == NULL) {
+        ret_val = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+        if (ret_val != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to new an on-chip ldo power control driver");
+            return ret_val;
+        }
+    }
+    host.pwr_ctrl_handle = pwr_ctrl_handle;
+
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num     = GPIO_SDMMC_CMD,
+        .miso_io_num     = GPIO_SDMMC_D0,
+        .sclk_io_num     = GPIO_SDMMC_CLK,
+        .quadwp_io_num   = -1,
+        .quadhd_io_num   = -1,
+        /* ⛔ THIS WAS 4000, AND THE DIAG LOG WRITES 4096 (2026-09-22).
+         *
+         * A 4096-byte f_write is 8 sectors, which sdmmc_write_sectors issues as
+         * ONE SPI transaction of 4096 data bytes - larger than the DMA
+         * descriptor pool sized by max_transfer_sz, so the transfer fails and
+         * FatFs returns FR_DISK_ERR, which esp_vfs_fat maps to EIO. That is
+         * exactly the symptom: mount fine, README.txt (a few hundred bytes, one
+         * sector) fine, every 4 KB append to qmx-log.txt EIO, on a 31 GB card
+         * with 99.95% free and a zero-length log file.
+         *
+         * 32 KB, not 4096+1: the descriptor pool costs ~12 bytes per 4092-byte
+         * span, so the whole increase is under 100 bytes, and a value this
+         * close to the writes it has to carry is what made a one-sector change
+         * anywhere else in the tree turn into a dead SD card. */
+        .max_transfer_sz = 32768,
+    };
+    ret_val = spi_bus_initialize(BSP_SD_SPI_HOST, &bus_cfg, SDSPI_DEFAULT_DMA);
+    if (ret_val != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize SPI bus for SD card (%s)", esp_err_to_name(ret_val));
+        return ret_val;
+    }
+
+    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot_config.gpio_cs = GPIO_SDMMC_D3;
+    slot_config.host_id = BSP_SD_SPI_HOST;
+
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false, .max_files = max_files, .allocation_unit_size = 16 * 1024};
+
+    ret_val = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
+
+    /* Check for SDSPI mount result. */
+    if (ret_val != ESP_OK) {
+        if (ret_val == ESP_FAIL) {
+            ESP_LOGE(TAG,
+                     "Failed to mount filesystem. "
+                     "If you want the card to be formatted, set the EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
+        } else {
+            ESP_LOGE(TAG,
+                     "Failed to initialize the card (%s). "
+                     "Make sure SD card lines have pull-up resistors in place.",
+                     esp_err_to_name(ret_val));
+        }
+        spi_bus_free(BSP_SD_SPI_HOST);
+        return ret_val;
+    }
+
+    /* Card has been initialized, print its properties. */
+    sdmmc_card_print_info(stdout, card);
+
+    return ret_val;
+}
+
+esp_err_t bsp_sdcard_deinit(char* mount_point)
+{
+    if (mount_point == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Unmount an SD card from the FAT filesystem and release resources acquired */
+    esp_err_t ret_val = esp_vfs_fat_sdcard_unmount(mount_point, card);
+
+    spi_bus_free(BSP_SD_SPI_HOST);
+
+    // ret_val = sd_pwr_ctrl_del_on_chip_ldo(card->host.pwr_ctrl_handle);
+    // if (ret_val != ESP_OK) {
+    //     ESP_LOGE(TAG, "Failed to delete on-chip ldo power control driver");
+    // }
+
+    /* Make SD/MMC card information structure pointer NULL */
+    card = NULL;
+
+    return ret_val;
+}
+
+//==================================================================================
+// spiffs
+//==================================================================================
+esp_err_t bsp_spiffs_mount(void)
+{
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path       = CONFIG_BSP_SPIFFS_MOUNT_POINT,
+        .partition_label = CONFIG_BSP_SPIFFS_PARTITION_LABEL,
+        .max_files       = CONFIG_BSP_SPIFFS_MAX_FILES,
+#ifdef CONFIG_BSP_SPIFFS_FORMAT_ON_MOUNT_FAIL
+        .format_if_mount_failed = true,
+#else
+        .format_if_mount_failed = false,
+#endif
+    };
+
+    esp_err_t ret_val = esp_vfs_spiffs_register(&conf);
+
+    BSP_ERROR_CHECK_RETURN_ERR(ret_val);
+
+    size_t total = 0, used = 0;
+    ret_val = esp_spiffs_info(conf.partition_label, &total, &used);
+    if (ret_val != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret_val));
+    } else {
+        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+    }
+
+    return ret_val;
+}
+
+esp_err_t bsp_spiffs_unmount(void)
+{
+    return esp_vfs_spiffs_unregister(CONFIG_BSP_SPIFFS_PARTITION_LABEL);
+}
+
+//==================================================================================
+// audio es7210 + es8388
+//==================================================================================
+static esp_codec_dev_handle_t play_dev_handle;
+static esp_codec_dev_handle_t record_dev_handle;
+static bsp_codec_config_t g_codec_handle;
+static int volume;
+
+/* Can be used for `i2s_std_gpio_config_t` and/or `i2s_std_config_t` initialization */
+#define BSP_I2S_GPIO_CFG                                                                                           \
+    {                                                                                                              \
+        .mclk = BSP_I2S_MCLK, .bclk = BSP_I2S_SCLK, .ws = BSP_I2S_LCLK, .dout = BSP_I2S_DOUT, .din = BSP_I2S_DSIN, \
+        .invert_flags = {                                                                                          \
+            .mclk_inv = false,                                                                                     \
+            .bclk_inv = false,                                                                                     \
+            .ws_inv   = false,                                                                                     \
+        },                                                                                                         \
+    }
+
+/* This configuration is used by default in `bsp_extra_audio_init()` */
+#define BSP_I2S_DUPLEX_MONO_CFG(_sample_rate)                                                         \
+    {                                                                                                 \
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(_sample_rate),                                         \
+        .slot_cfg = I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO), \
+        .gpio_cfg = BSP_I2S_GPIO_CFG,                                                                 \
+    }
+
+esp_err_t bsp_audio_init(const i2s_std_config_t* i2s_config)
+{
+    if (i2s_tx_chan && i2s_rx_chan) {
+        /* Audio was initialized before */
+        return ESP_OK;
+    }
+
+    /* Setup I2S peripheral */
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(CONFIG_BSP_I2S_NUM, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear        = true;  // Auto clear the legacy data in the DMA buffer
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &i2s_tx_chan, &i2s_rx_chan));
+
+    /* Setup I2S channels */
+    // const i2s_std_config_t std_cfg_default = BSP_I2S_DUPLEX_MONO_CFG(16000);
+    const i2s_std_config_t std_cfg_default = BSP_I2S_DUPLEX_MONO_CFG(48000);
+    const i2s_std_config_t* p_i2s_cfg      = &std_cfg_default;
+    if (i2s_config != NULL) {
+        p_i2s_cfg = i2s_config;
+    }
+
+    if (i2s_tx_chan != NULL) {
+        ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_tx_chan, p_i2s_cfg));
+        ESP_ERROR_CHECK(i2s_channel_enable(i2s_tx_chan));
+    }
+
+    // if (i2s_rx_chan != NULL) {
+    //     ESP_ERROR_CHECK(i2s_channel_init_std_mode(i2s_rx_chan, p_i2s_cfg));
+    //     ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx_chan));
+    // }
+
+    i2s_tdm_config_t tdm_cfg = {
+        .clk_cfg =
+            {
+                .sample_rate_hz  = (uint32_t)48000,
+                .clk_src         = I2S_CLK_SRC_DEFAULT,
+                .ext_clk_freq_hz = 0,
+                .mclk_multiple   = I2S_MCLK_MULTIPLE_256,
+                .bclk_div        = 8,
+            },
+        .slot_cfg = {.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+                     .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                     .slot_mode      = I2S_SLOT_MODE_STEREO,
+                     .slot_mask      = (I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3),
+                     .ws_width       = I2S_TDM_AUTO_WS_WIDTH,
+                     .ws_pol         = false,
+                     .bit_shift      = true,
+                     .left_align     = false,
+                     .big_endian     = false,
+                     .bit_order_lsb  = false,
+                     .skip_mask      = false,
+                     .total_slot     = I2S_TDM_AUTO_SLOT_NUM},
+        .gpio_cfg = BSP_I2S_GPIO_CFG,
+    };
+
+    if (i2s_rx_chan != NULL) {
+        ESP_ERROR_CHECK(i2s_channel_init_tdm_mode(i2s_rx_chan, &tdm_cfg));
+        ESP_ERROR_CHECK(i2s_channel_enable(i2s_rx_chan));
+    }
+
+    audio_codec_i2s_cfg_t i2s_cfg = {
+        .port      = CONFIG_BSP_I2S_NUM,
+        .tx_handle = i2s_tx_chan,
+        .rx_handle = i2s_rx_chan,
+    };
+    i2s_data_if = audio_codec_new_i2s_data(&i2s_cfg);
+
+    return ESP_OK;
+}
+
+esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
+{
+    static esp_codec_dev_handle_t codec = NULL;
+    if (codec) {
+        return codec;
+    }
+
+    if (i2s_data_if == NULL) {
+        /* Initilize I2C */
+        bsp_i2c_init();
+        /* Configure I2S peripheral and Power Amplifier */
+        bsp_audio_init(NULL);
+    }
+    assert(i2s_data_if);
+
+    const audio_codec_gpio_if_t* gpio_if = audio_codec_new_gpio();
+    (void)gpio_if;
+
+    i2c_master_bus_handle_t i2c_bus_handle = bsp_i2c_get_handle();
+    audio_codec_i2c_cfg_t i2c_cfg          = {
+                 .port       = BSP_I2C_NUM,
+                 .addr       = ES8388_CODEC_DEFAULT_ADDR,
+                 .bus_handle = i2c_bus_handle,
+    };
+    const audio_codec_ctrl_if_t* i2c_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    BSP_NULL_CHECK(i2c_ctrl_if, NULL);
+
+    esp_codec_dev_hw_gain_t gain = {
+        .pa_voltage        = 5.0,
+        .codec_dac_voltage = 3.3,
+    };
+    (void)gain;
+
+    es8388_codec_cfg_t es8388_cfg = {
+        .codec_mode  = ESP_CODEC_DEV_WORK_MODE_DAC,
+        .master_mode = false,
+        .ctrl_if     = i2c_ctrl_if,
+        .pa_pin      = -1,  // PI4IOE1 P1 æŽ§åˆ¶
+    };
+    const audio_codec_if_t* es8388_dev = es8388_codec_new(&es8388_cfg);
+    BSP_NULL_CHECK(es8388_dev, NULL);
+
+    esp_codec_dev_cfg_t codec_dev_cfg = {
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT,
+        .codec_if = es8388_dev,
+        .data_if  = i2s_data_if,
+    };
+    codec = esp_codec_dev_new(&codec_dev_cfg);
+    BSP_NULL_CHECK(codec, NULL);
+
+    return codec;
+}
+
+esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
+{
+    if (i2s_data_if == NULL) {
+        /* Initilize I2C */
+        ESP_ERROR_CHECK(bsp_i2c_init());
+        /* Configure I2S peripheral and Power Amplifier */
+        ESP_ERROR_CHECK(bsp_audio_init(NULL));
+        // i2s_data_if = bsp_get_codec_data_if();
+    }
+    assert(i2s_data_if);
+
+    i2c_master_bus_handle_t i2c_bus_handle = bsp_i2c_get_handle();
+    audio_codec_i2c_cfg_t i2c_cfg          = {
+                 .port       = BSP_I2C_NUM,
+                 .addr       = ES7210_CODEC_DEFAULT_ADDR,
+                 .bus_handle = i2c_bus_handle,
+    };
+    const audio_codec_ctrl_if_t* i2c_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    BSP_NULL_CHECK(i2c_ctrl_if, NULL);
+
+    es7210_codec_cfg_t es7210_cfg = {
+        .ctrl_if = i2c_ctrl_if,  // Codec Control interface
+    };
+    es7210_cfg.mic_selected            = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
+    const audio_codec_if_t* es7210_dev = es7210_codec_new(&es7210_cfg);
+    BSP_NULL_CHECK(es7210_dev, NULL);
+
+    esp_codec_dev_cfg_t codec_es7210_dev_cfg = {
+        .dev_type =
+            ESP_CODEC_DEV_TYPE_IN,  // Codec device type: Codec input device like ADC (capture data from microphone)
+        .codec_if = es7210_dev,     // Codec interface
+        .data_if  = i2s_data_if,    // Codec data interface
+    };
+
+    return esp_codec_dev_new(&codec_es7210_dev_cfg);
+}
+
+static esp_err_t bsp_i2s_read(void* audio_buffer, size_t len, size_t* bytes_read, uint32_t timeout_ms)
+{
+    esp_err_t ret = ESP_OK;
+    ret           = esp_codec_dev_read(record_dev_handle, audio_buffer, len);
+    *bytes_read   = len;
+    return ret;
+}
+
+static esp_err_t bsp_i2s_write(void* audio_buffer, size_t len, size_t* bytes_written, uint32_t timeout_ms)
+{
+    esp_err_t ret  = ESP_OK;
+    ret            = esp_codec_dev_write(play_dev_handle, audio_buffer, len);
+    *bytes_written = len;
+    return ret;
+}
+
+static esp_err_t bsp_codec_set_in_gain(float gain)
+{
+    return esp_codec_dev_set_in_gain(record_dev_handle, gain);
+}
+
+static esp_err_t bsp_codec_set_mute(bool enable)
+{
+    esp_err_t ret = ESP_OK;
+    ret           = esp_codec_dev_set_out_mute(play_dev_handle, enable);
+    return ret;
+}
+
+static esp_err_t bsp_codec_set_volume(int v)
+{
+    esp_err_t ret = ESP_OK;
+
+    if (v <= 0) {
+        volume = 0;
+        ret    = esp_codec_dev_set_out_mute(play_dev_handle, true);
+    } else {
+        volume = v;
+        ret    = esp_codec_dev_set_out_mute(play_dev_handle, false);
+        ret |= esp_codec_dev_set_out_vol(play_dev_handle, volume);
+    }
+
+    return ret;
+}
+
+static int bsp_codec_get_volume(void)
+{
+    return volume;
+}
+
+bsp_codec_config_t* bsp_get_codec_handle(void)
+{
+    return &g_codec_handle;
+}
+
+static esp_err_t bsp_codec_es8388_set(uint32_t rate, uint32_t bps, i2s_slot_mode_t ch)
+{
+    esp_err_t ret = ESP_OK;
+
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate     = rate,
+        .channel         = ch,
+        .bits_per_sample = bps,
+    };
+
+    if (play_dev_handle) {
+        ret = esp_codec_dev_close(play_dev_handle);
+    }
+    ret = esp_codec_dev_open(play_dev_handle, &fs);
+
+    return ret;
+}
+
+static esp_err_t bsp_codec_es7210_set(uint32_t rate, uint32_t bps, i2s_slot_mode_t ch)
+{
+    esp_err_t ret = ESP_OK;
+
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate     = rate,
+        .channel         = ch,
+        .bits_per_sample = bps,
+    };
+
+    if (record_dev_handle) {
+        ret = esp_codec_dev_close(record_dev_handle);
+    }
+    ret = esp_codec_dev_open(record_dev_handle, &fs);
+
+    // esp_codec_dev_set_in_gain(record_dev_handle, 80.0); // Set codec input gain
+
+    return ret;
+}
+
+void bsp_codec_init(void)
+{
+    play_dev_handle = bsp_audio_codec_speaker_init();
+    assert((play_dev_handle) && "play_dev_handle not initialized");
+
+    record_dev_handle = bsp_audio_codec_microphone_init();
+    assert((record_dev_handle) && "record_dev_handle not initialized");
+
+    // bsp_codec_es7210_set(16000, 16, 2);
+    // bsp_codec_es8388_set(16000, 16, 2);
+    // bsp_codec_es7210_set(48000, 16, 2);
+    bsp_codec_es7210_set(48000, 16, 4);
+    bsp_codec_es8388_set(48000, 16, 2);
+
+    /* åˆå§‹åŒ– codec handle */
+    bsp_codec_config_t* codec_cfg  = bsp_get_codec_handle();  // èŽ·å– codec handle
+    codec_cfg->i2s_read            = bsp_i2s_read;            // I2S è¯»æ•°æ®
+    codec_cfg->i2s_write           = bsp_i2s_write;           // I2S å†™æ•°æ®
+    codec_cfg->set_mute            = bsp_codec_set_mute;      // é™éŸ³è®¾ç½®
+    codec_cfg->set_volume          = bsp_codec_set_volume;    // éŸ³é‡è®¾ç½®
+    codec_cfg->get_volume          = bsp_codec_get_volume;
+    codec_cfg->set_in_gain         = bsp_codec_set_in_gain;  // éº¦å…‹é£Žè¾“å…¥å¢žç›Šè®¾ç½®
+    codec_cfg->codec_reconfig_fn   = bsp_codec_es7210_set;
+    codec_cfg->i2s_reconfig_clk_fn = bsp_codec_es8388_set;
+
+    codec_cfg->set_volume(80);
+}
+
+uint8_t bsp_codec_feed_channel(void)
+{
+    return 3;  // 2*mic_num + ref_num
+}
+
+//==================================================================================
+// æ˜¾ç¤ºå±ç±»åž‹æ£€æµ‹
+//==================================================================================
+typedef enum {
+    BSP_DISPLAY_TYPE_UNKNOWN = 0,
+    BSP_DISPLAY_TYPE_ST7703_GT911,
+    BSP_DISPLAY_TYPE_ST7121,
+    BSP_DISPLAY_TYPE_ST7123
+} bsp_display_type_t;
+
+static bsp_display_type_t s_detected_display_type = BSP_DISPLAY_TYPE_UNKNOWN;
+
+static bsp_display_type_t bsp_detect_display_type(void)
+{
+    // Return cached result — bsp_display_start_with_config calls this twice
+    // (once inside bsp_display_lcd_init, once for touch init). The second probe
+    // fires after the 800 ms DISPON delay and would interfere with touch init.
+    if (s_detected_display_type != BSP_DISPLAY_TYPE_UNKNOWN) {
+        return s_detected_display_type;
+    }
+
+    esp_err_t ret;
+
+    // ç¡®ä¿I2Cå·²åˆå§‹åŒ–
+    if (bsp_i2c_init() != ESP_OK) {
+        ESP_LOGE(TAG, "I2C init failed for display detection");
+        return BSP_DISPLAY_TYPE_UNKNOWN;
+    }
+
+    // æ£€æµ‹GT911è§¦æ‘¸å± (ST7703é…å¥—)
+    ret = i2c_master_probe(i2c_handle, ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP, 50);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Detected GT911 touch controller, using ST7703 display");
+        s_detected_display_type = BSP_DISPLAY_TYPE_ST7703_GT911;
+        return s_detected_display_type;
+    }
+
+    // æ£€æµ‹ST7123è§¦æ‘¸å±
+    // Detect ST7121 vs ST7123 by reading touch FW version (both at I2C 0x55)
+    ret = i2c_master_probe(i2c_handle, 0x55, 50);
+    if (ret == ESP_OK) {
+        // Read FW version: 1 = ST7121, 3 = ST7123
+        esp_lcd_panel_io_handle_t tp_io = NULL;
+        esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_ST7123_CONFIG();
+        tp_io_cfg.scl_speed_hz = 100000;
+        if (esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_cfg, &tp_io) == ESP_OK) {
+            uint8_t fw_version = 0;
+            if (esp_lcd_panel_io_rx_param(tp_io, 0x0000, &fw_version, 1) == ESP_OK && fw_version == 1) {
+                ESP_LOGI(TAG, "Detected ST7121 touch (FW=%u), using ST7121 display", fw_version);
+                esp_lcd_panel_io_del(tp_io);
+                s_detected_display_type = BSP_DISPLAY_TYPE_ST7121;
+                return s_detected_display_type;
+            }
+            esp_lcd_panel_io_del(tp_io);
+        }
+        ESP_LOGI(TAG, "Detected ST7123 touch controller, using ST7123 display");
+        s_detected_display_type = BSP_DISPLAY_TYPE_ST7123;
+        return s_detected_display_type;
+    }
+
+    ESP_LOGW(TAG, "No known touch controller detected, defaulting to ST7703");
+    s_detected_display_type = BSP_DISPLAY_TYPE_ST7703_GT911;
+    return s_detected_display_type;
+}
+
+// Names for the DETECTED hardware, for diagnostics (bsp_info.c). These read
+// only the cached detection result and never re-probe: bsp_detect_display_type()
+// must not run a second time per boot (a probe after the 800 ms DISPON delay
+// dirties the bus and breaks touch init). Returns "unknown" if called before
+// display bring-up has run the detection. Reported by Paul VE3PIK: bsp_info
+// used to identify the touch IC by a bare 0x55 address probe, which cannot
+// tell ST7121 from ST7123, so its block said ST7123 on every ST7121 unit.
+const char *bsp_display_panel_name(void)
+{
+    switch (s_detected_display_type) {
+        case BSP_DISPLAY_TYPE_ST7121:       return "ST7121";
+        case BSP_DISPLAY_TYPE_ST7123:       return "ST7123";
+        case BSP_DISPLAY_TYPE_ST7703_GT911: return "ST7703";
+        default:                            return "unknown";
+    }
+}
+
+const char *bsp_touch_controller_name(void)
+{
+    switch (s_detected_display_type) {
+        case BSP_DISPLAY_TYPE_ST7121:       return "ST7121";
+        case BSP_DISPLAY_TYPE_ST7123:       return "ST7123";
+        case BSP_DISPLAY_TYPE_ST7703_GT911: return "GT911";
+        default:                            return "unknown";
+    }
+}
+
+//==================================================================================
+// lcd st7703 1280x720  gt911
+//==================================================================================
+// Bit number used to represent command and parameter
+#define LCD_LEDC_CH LEDC_CHANNEL_1  // CONFIG_BSP_DISPLAY_BRIGHTNESS_LEDC_CH
+esp_err_t bsp_display_brightness_init(void)
+{
+    // gpio_config_t io_conf = {};
+
+    // io_conf.intr_type = GPIO_INTR_DISABLE;   //disable interrupt
+    // io_conf.mode = GPIO_MODE_OUTPUT;         //set as output mode
+    // io_conf.pin_bit_mask = 1 << BSP_LCD_BACKLIGHT; //select pin
+    // io_conf.pull_down_en = 0;                //disable pull-down mode
+    // io_conf.pull_up_en = 0;                  //disable pull-up mode
+    // gpio_config(&io_conf);                   //configure GPIO with the given settings
+
+    // gpio_set_level(BSP_LCD_BACKLIGHT, 1);
+
+    // Setup LEDC peripheral for PWM backlight control
+    const ledc_timer_config_t lcd_backlight_timer = {.speed_mode = LEDC_LOW_SPEED_MODE,
+                                                     //  .duty_resolution = LEDC_TIMER_10_BIT,
+                                                     .duty_resolution = LEDC_TIMER_12_BIT,
+                                                     .timer_num       = LEDC_TIMER_0,
+                                                     .freq_hz         = 5000,
+                                                     // .freq_hz = 20000,
+                                                     .clk_cfg = LEDC_AUTO_CLK};
+    ESP_ERROR_CHECK(ledc_timer_config(&lcd_backlight_timer));
+
+    const ledc_channel_config_t lcd_backlight_channel = {.gpio_num   = BSP_LCD_BACKLIGHT,
+                                                         .speed_mode = LEDC_LOW_SPEED_MODE,
+                                                         .channel    = LCD_LEDC_CH,
+                                                         .intr_type  = LEDC_INTR_DISABLE,
+                                                         .timer_sel  = LEDC_TIMER_0,
+                                                         .duty       = 0,
+                                                         .hpoint     = 0};
+
+    ESP_ERROR_CHECK(ledc_channel_config(&lcd_backlight_channel));
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_display_brightness_set(int brightness_percent)
+{
+    if (brightness_percent > 100) {
+        brightness_percent = 100;
+    }
+    if (brightness_percent < 0) {
+        brightness_percent = 0;
+    }
+
+    ESP_LOGI(TAG, "Setting LCD backlight: %d%%", brightness_percent);
+    // uint32_t duty_cycle = (1023 * brightness_percent) / 100; // LEDC resolution set to 10bits, thus: 100% = 1023
+    uint32_t duty_cycle = (4095 * brightness_percent) / 100;  // LEDC resolution set to 12bits, thus: 100% = 4095
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_set_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH, duty_cycle));
+    BSP_ERROR_CHECK_RETURN_ERR(ledc_update_duty(LEDC_LOW_SPEED_MODE, LCD_LEDC_CH));
+    return ESP_OK;
+}
+
+esp_err_t bsp_display_backlight_off(void)
+{
+    return bsp_display_brightness_set(0);
+}
+
+esp_err_t bsp_display_backlight_on(void)
+{
+    return bsp_display_brightness_set(100);
+}
+
+static esp_err_t bsp_enable_dsi_phy_power(void)
+{
+#if BSP_MIPI_DSI_PHY_PWR_LDO_CHAN > 0
+    // Turn on the power for MIPI DSI PHY, so it can go from "No Power" state to "Shutdown" state
+    static esp_ldo_channel_handle_t phy_pwr_chan = NULL;
+    esp_ldo_channel_config_t ldo_cfg             = {
+                    .chan_id    = BSP_MIPI_DSI_PHY_PWR_LDO_CHAN,
+                    .voltage_mv = BSP_MIPI_DSI_PHY_PWR_LDO_VOLTAGE_MV,
+    };
+    ESP_RETURN_ON_ERROR(esp_ldo_acquire_channel(&ldo_cfg, &phy_pwr_chan), TAG, "Acquire LDO channel for DPHY failed");
+    ESP_LOGI(TAG, "MIPI DSI PHY Powered on");
+#endif  // BSP_MIPI_DSI_PHY_PWR_LDO_CHAN > 0
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_display_new(const bsp_display_config_t* config, esp_lcd_panel_handle_t* ret_panel,
+                          esp_lcd_panel_io_handle_t* ret_io)
+{
+    esp_err_t ret = ESP_OK;
+    bsp_lcd_handles_t handles;
+    ret = bsp_display_new_with_handles(config, &handles);
+
+    *ret_panel = handles.panel;
+    *ret_io    = handles.io;
+
+    return ret;
+}
+
+#define LCD_MIPI_DSI_USE_ILI9881C
+
+#if defined(LCD_MIPI_DSI_USE_ILI9881C) && !defined(LCD_MIPI_DSI_USE_ST7703)
+#include "ili9881_init_data.c"
+#endif
+
+esp_err_t bsp_display_new_with_handles(const bsp_display_config_t* config, bsp_lcd_handles_t* ret_handles)
+{
+    esp_err_t ret                     = ESP_OK;
+    esp_lcd_panel_io_handle_t io      = NULL;
+    esp_lcd_panel_handle_t disp_panel = NULL;
+
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Brightness init failed");
+    ESP_RETURN_ON_ERROR(bsp_enable_dsi_phy_power(), TAG, "DSI PHY power failed");
+
+    /* create MIPI DSI bus first, it will initialize the DSI PHY as well */
+    esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+    esp_lcd_dsi_bus_config_t bus_config   = {
+          .bus_id             = 0,
+          .num_data_lanes     = BSP_LCD_MIPI_DSI_LANE_NUM,
+          .phy_clk_src        = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+          .lane_bit_rate_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus), TAG, "New DSI bus init failed");
+
+    ESP_LOGI(TAG, "Install MIPI DSI LCD control panel");
+    // we use DBI interface to send LCD commands and parameters
+    esp_lcd_dbi_io_config_t dbi_config = {
+        .virtual_channel = 0,
+        .lcd_cmd_bits    = 8,  // according to the LCD spec
+        .lcd_param_bits  = 8,  // according to the LCD spec
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &io), err, TAG, "New panel IO failed");
+
+#if defined(LCD_MIPI_DSI_USE_ILI9881C) && !defined(LCD_MIPI_DSI_USE_ST7703)
+    ESP_LOGI(TAG, "Install LCD driver of ili9881c");
+    esp_lcd_dpi_panel_config_t dpi_config = {
+        .virtual_channel    = 0,
+        .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 60,  // 720*1280 RGB24 60Hz RGB24 // 80,
+        .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs            = 1,
+        .video_timing =
+            {
+                .h_size            = BSP_LCD_H_RES,
+                .v_size            = BSP_LCD_V_RES,
+                .hsync_back_porch  = 140,
+                .hsync_pulse_width = 40,
+                .hsync_front_porch = 40,
+                .vsync_back_porch  = 20,
+                .vsync_pulse_width = 4,
+                .vsync_front_porch = 20,
+            },
+        .flags.use_dma2d = true,
+    };
+
+    ili9881c_vendor_config_t vendor_config = {
+        .init_cmds      = tab5_lcd_ili9881c_specific_init_code_default,
+        .init_cmds_size = sizeof(tab5_lcd_ili9881c_specific_init_code_default) /
+                          sizeof(tab5_lcd_ili9881c_specific_init_code_default[0]),
+        .mipi_config =
+            {
+                .dsi_bus    = mipi_dsi_bus,
+                .dpi_config = &dpi_config,
+                .lane_num   = 2,
+            },
+    };
+
+    const esp_lcd_panel_dev_config_t lcd_dev_config = {
+        .bits_per_pixel = 16,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .reset_gpio_num = -1,
+        .vendor_config  = &vendor_config,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9881c(io, &lcd_dev_config, &disp_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(disp_panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(disp_panel));
+    //  ESP_ERROR_CHECK(esp_lcd_panel_mirror(disp_panel, false, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(disp_panel, true));
+
+#elif defined(LCD_MIPI_DSI_USE_ST7703) && !defined(LCD_MIPI_DSI_USE_ILI9881C)
+    ESP_LOGI(TAG, "Install LCD driver of ST7703");
+    esp_lcd_dpi_panel_config_t dpi_config = {
+        .virtual_channel = 0,
+        .dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 60,                       // LCD_MIPI_DSI_DPI_CLK_MHZ_ST7703,
+        .pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565,  // LCD_COLOR_PIXEL_FORMAT_RGB888,
+        .num_fbs = 1,
+        .video_timing =
+            {
+                .h_size = BSP_LCD_H_RES,  // lcd_param.width,
+                .v_size = BSP_LCD_V_RES,  // lcd_param.height,
+                .hsync_back_porch = 40,
+                .hsync_pulse_width = 10,
+                .hsync_front_porch = 40,
+                .vsync_back_porch = 16,
+                .vsync_pulse_width = 4,
+                .vsync_front_porch = 16,
+            },
+        //.flags.use_dma2d = true, // ??? å¼€å¯åŽéœ€è¦ç­‰å¾… previous draw å®Œæˆ
+    };
+
+    st7703_vendor_config_t vendor_config = {
+        .flags.use_mipi_interface = 1,
+        .mipi_config =
+            {
+                .dsi_bus = mipi_dsi_bus,
+                .dpi_config = &dpi_config,
+            },
+    };
+    esp_lcd_panel_dev_config_t lcd_dev_config = {
+        .bits_per_pixel = 16,  // 24,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .reset_gpio_num = -1,
+        .vendor_config = &vendor_config,
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_st7703(io, &lcd_dev_config, &disp_panel), err, TAG,
+                      "New LCD panel EK79007 failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_init(disp_panel), err, TAG, "LCD panel init failed");
+#endif
+
+    /* Return all handles */
+    ret_handles->io           = io;
+    ret_handles->mipi_dsi_bus = mipi_dsi_bus;
+    ret_handles->panel        = disp_panel;
+    ret_handles->control      = NULL;
+
+    ESP_LOGI(TAG, "Display initialized with resolution %dx%d", BSP_LCD_H_RES, BSP_LCD_V_RES);
+
+    return ret;
+
+err:
+    if (disp_panel) {
+        esp_lcd_panel_del(disp_panel);
+    }
+    if (io) {
+        esp_lcd_panel_io_del(io);
+    }
+    if (mipi_dsi_bus) {
+        esp_lcd_del_dsi_bus(mipi_dsi_bus);
+    }
+    return ret;
+}
+
+#define LCD_MIPI_DSI_USE_ST7123
+#ifdef LCD_MIPI_DSI_USE_ST7123
+#include "esp_lcd_st7123.h"
+
+// ST7123 è§¦æ‘¸åæ ‡æ‰“å°å›žè°ƒå‡½æ•°
+static void st7123_touch_callback(esp_lcd_touch_handle_t tp)
+{
+    uint16_t touch_x[10];
+    uint16_t touch_y[10];
+    uint16_t touch_strength[10];
+    uint8_t touch_cnt = 0;
+
+    // è¯»å–è§¦æ‘¸æ•°æ®
+    esp_err_t ret = esp_lcd_touch_read_data(tp);
+    if (ret == ESP_OK) {
+        // èŽ·å–è§¦æ‘¸åæ ‡
+        bool pressed = esp_lcd_touch_get_coordinates(tp, touch_x, touch_y, touch_strength, &touch_cnt, 10);
+
+        if (pressed && touch_cnt > 0) {
+            for (int i = 0; i < touch_cnt; i++) {
+                printf("ST7123 Touch %d: x=%d, y=%d, strength=%d\n", i, touch_x[i], touch_y[i], touch_strength[i]);
+            }
+        }
+    }
+}
+
+// ST7123 vendor specific initialization commands
+static const st7123_lcd_init_cmd_t st7123_vendor_specific_init_default[] = {
+    {0x60, (uint8_t[]){0x71, 0x23, 0xa2}, 3, 0},
+    {0x60, (uint8_t[]){0x71, 0x23, 0xa3}, 3, 0},
+    {0x60, (uint8_t[]){0x71, 0x23, 0xa4}, 3, 0},
+    {0xA4, (uint8_t[]){0x31}, 1, 0},
+    {0xD7, (uint8_t[]){0x10, 0x0A, 0x10, 0x2A, 0x80, 0x80}, 6, 0},
+    {0x90, (uint8_t[]){0x71, 0x23, 0x5A, 0x20, 0x24, 0x09, 0x09}, 7, 0},
+    {0xA3, (uint8_t[]){0x80, 0x01, 0x88, 0x30, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46, 0x00, 0x00,
+                       0x1E, 0x5C, 0x1E, 0x80, 0x00, 0x4F, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+                       0x00, 0x00, 0x1E, 0x5C, 0x1E, 0x80, 0x00, 0x6F, 0x58, 0x00, 0x00, 0x00, 0xFF},
+     40, 0},
+    {0xA6, (uint8_t[]){0x03, 0x00, 0x24, 0x55, 0x36, 0x00, 0x39, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0x24,
+                       0x55, 0x38, 0x00, 0x37, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0x24, 0x11, 0x00, 0x00,
+                       0x00, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x00, 0xEC, 0x11, 0x00, 0x03, 0x00, 0x03, 0x6E,
+                       0x6E, 0xFF, 0xFF, 0x00, 0x08, 0x80, 0x08, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00},
+     55, 0},
+    {0xA7, (uint8_t[]){0x19, 0x19, 0x80, 0x64, 0x40, 0x07, 0x16, 0x40, 0x00, 0x44, 0x03, 0x6E, 0x6E, 0x91, 0xFF,
+                       0x08, 0x80, 0x64, 0x40, 0x25, 0x34, 0x40, 0x00, 0x02, 0x01, 0x6E, 0x6E, 0x91, 0xFF, 0x08,
+                       0x80, 0x64, 0x40, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x6E, 0x6E, 0x91, 0xFF, 0x08, 0x80,
+                       0x64, 0x40, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x6E, 0x6E, 0x84, 0xFF, 0x08, 0x80, 0x44},
+     60, 0},
+    {0xAC, (uint8_t[]){0x03, 0x19, 0x19, 0x18, 0x18, 0x06, 0x13, 0x13, 0x11, 0x11, 0x08, 0x08, 0x0A, 0x0A, 0x1C,
+                       0x1C, 0x07, 0x07, 0x00, 0x00, 0x02, 0x02, 0x01, 0x19, 0x19, 0x18, 0x18, 0x06, 0x12, 0x12,
+                       0x10, 0x10, 0x09, 0x09, 0x0B, 0x0B, 0x1C, 0x1C, 0x07, 0x07, 0x03, 0x03, 0x01, 0x01},
+     44, 0},
+    {0xAD, (uint8_t[]){0xF0, 0x00, 0x46, 0x00, 0x03, 0x50, 0x50, 0xFF, 0xFF, 0xF0, 0x40, 0x06, 0x01,
+                       0x07, 0x42, 0x42, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF},
+     25, 0},
+    {0xAE, (uint8_t[]){0xFE, 0x3F, 0x3F, 0xFE, 0x3F, 0x3F, 0x00}, 7, 0},
+    {0xB2,
+     (uint8_t[]){0x15, 0x19, 0x05, 0x23, 0x49, 0xAF, 0x03, 0x2E, 0x5C, 0xD2, 0xFF, 0x10, 0x20, 0xFD, 0x20, 0xC0, 0x00},
+     17, 0},
+    {0xE8, (uint8_t[]){0x20, 0x6F, 0x04, 0x97, 0x97, 0x3E, 0x04, 0xDC, 0xDC, 0x3E, 0x06, 0xFA, 0x26, 0x3E}, 15, 0},
+    {0x75, (uint8_t[]){0x03, 0x04}, 2, 0},
+    {0xE7, (uint8_t[]){0x3B, 0x00, 0x00, 0x7C, 0xA1, 0x8C, 0x20, 0x1A, 0xF0, 0xB1, 0x50, 0x00,
+                       0x50, 0xB1, 0x50, 0xB1, 0x50, 0xD8, 0x00, 0x55, 0x00, 0xB1, 0x00, 0x45,
+                       0xC9, 0x6A, 0xFF, 0x5A, 0xD8, 0x18, 0x88, 0x15, 0xB1, 0x01, 0x01, 0x77},
+     36, 0},
+    {0xEA, (uint8_t[]){0x13, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x2C}, 8, 0},
+    {0xB0, (uint8_t[]){0x22, 0x43, 0x11, 0x61, 0x25, 0x43, 0x43}, 7, 0},
+    {0xb7, (uint8_t[]){0x00, 0x00, 0x73, 0x73}, 0x04, 0},
+    {0xBF, (uint8_t[]){0xA6, 0XAA}, 2, 0},
+    {0xA9, (uint8_t[]){0x00, 0x00, 0x73, 0xFF, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03}, 10, 0},
+    {0xC8, (uint8_t[]){0x00, 0x00, 0x10, 0x1F, 0x36, 0x00, 0x5D, 0x04, 0x9D, 0x05, 0x10, 0xF2, 0x06,
+                       0x60, 0x03, 0x11, 0xAD, 0x00, 0xEF, 0x01, 0x22, 0x2E, 0x0E, 0x74, 0x08, 0x32,
+                       0xDC, 0x09, 0x33, 0x0F, 0xF3, 0x77, 0x0D, 0xB0, 0xDC, 0x03, 0xFF},
+     37, 0},
+    {0xC9, (uint8_t[]){0x00, 0x00, 0x10, 0x1F, 0x36, 0x00, 0x5D, 0x04, 0x9D, 0x05, 0x10, 0xF2, 0x06,
+                       0x60, 0x03, 0x11, 0xAD, 0x00, 0xEF, 0x01, 0x22, 0x2E, 0x0E, 0x74, 0x08, 0x32,
+                       0xDC, 0x09, 0x33, 0x0F, 0xF3, 0x77, 0x0D, 0xB0, 0xDC, 0x03, 0xFF},
+     37, 0},
+    {0x36, (uint8_t[]){0x00}, 1, 0},
+    {0x11, (uint8_t[]){0x00}, 1, 100},
+    {0x29, (uint8_t[]){0x00}, 1, 0},
+    {0x35, (uint8_t[]){0x00}, 1, 100},
+};
+
+// é€‚é…st7123 tab5 å±å¹•
+esp_err_t bsp_display_new_with_handles_to_st7121(const bsp_display_config_t* config, bsp_lcd_handles_t* ret_handles)
+{
+    esp_err_t ret                         = ESP_OK;
+    esp_lcd_panel_io_handle_t io          = NULL;
+    esp_lcd_panel_handle_t disp_panel     = NULL;
+    esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Brightness init failed");
+    ESP_RETURN_ON_ERROR(bsp_enable_dsi_phy_power(), TAG, "DSI PHY power failed");
+    esp_lcd_dsi_bus_config_t bus_config = {
+        .bus_id             = 0,
+        .num_data_lanes     = 2,
+        .phy_clk_src        = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+        .lane_bit_rate_mbps = 1300,
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus), TAG, "New DSI bus init failed");
+    ESP_LOGI(TAG, "Install MIPI DSI LCD control panel for ST7121");
+    esp_lcd_dbi_io_config_t dbi_config = {
+        .virtual_channel = 0,
+        .lcd_cmd_bits    = 8,
+        .lcd_param_bits  = 8,
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &io), err, TAG, "New panel IO failed");
+    ESP_LOGI(TAG, "Install LCD driver of ST7121");
+    esp_lcd_dpi_panel_config_t dpi_config = {
+        .virtual_channel    = 0,
+        .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 70,
+        .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs            = 1,
+        .video_timing = {
+            .h_size            = 720,
+            .v_size            = 1280,
+            .hsync_pulse_width = 2,
+            .hsync_back_porch  = 40,
+            .hsync_front_porch = 40,
+            .vsync_pulse_width = 20,
+            .vsync_back_porch  = 24,
+            .vsync_front_porch = 200,
+        },
+        // use_dma2d was A/B-tested false during the FT4 cyan-flash
+        // investigation (2026-07-13): flashes persisted unchanged and the
+        // CPU-copy path visibly cost panadapter smoothness, so DMA2D is
+        // exonerated and stays on.
+        .flags = { .use_dma2d = true },
+    };
+    st7121_vendor_config_t vendor_config = {
+        .init_cmds      = NULL,
+        .init_cmds_size = 0,
+        .mipi_config = {
+            .dsi_bus    = mipi_dsi_bus,
+            .dpi_config = &dpi_config,
+        },
+    };
+    const esp_lcd_panel_dev_config_t lcd_dev_config = {
+        .reset_gpio_num = -1,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .data_endian    = LCD_RGB_DATA_ENDIAN_LITTLE,
+        .bits_per_pixel = 24,
+        .vendor_config  = &vendor_config,
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_st7121(io, &lcd_dev_config, &disp_panel), err, TAG,
+                      "New LCD panel ST7121 failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_reset(disp_panel), err, TAG, "LCD panel reset failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_init(disp_panel), err, TAG, "LCD panel init failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_disp_on_off(disp_panel, true), err, TAG, "LCD panel display on failed");
+    ret_handles->io           = io;
+    ret_handles->mipi_dsi_bus = mipi_dsi_bus;
+    ret_handles->panel        = disp_panel;
+    ret_handles->control      = NULL;
+    return ESP_OK;
+err:
+    if (disp_panel) { esp_lcd_panel_del(disp_panel); }
+    if (io)         { esp_lcd_panel_io_del(io); }
+    if (mipi_dsi_bus) { esp_lcd_del_dsi_bus(mipi_dsi_bus); }
+    return ret;
+}
+
+esp_err_t bsp_display_new_with_handles_to_st7123(const bsp_display_config_t* config, bsp_lcd_handles_t* ret_handles)
+{
+    esp_err_t ret                         = ESP_OK;
+    esp_lcd_panel_io_handle_t io          = NULL;
+    esp_lcd_panel_handle_t disp_panel     = NULL;
+    esp_lcd_dsi_bus_handle_t mipi_dsi_bus = NULL;
+
+    ESP_RETURN_ON_ERROR(bsp_display_brightness_init(), TAG, "Brightness init failed");
+    ESP_RETURN_ON_ERROR(bsp_enable_dsi_phy_power(), TAG, "DSI PHY power failed");
+
+    /* create MIPI DSI bus first, it will initialize the DSI PHY as well */
+    esp_lcd_dsi_bus_config_t bus_config = {
+        .bus_id             = 0,
+        .num_data_lanes     = 2,  // ST7123 uses 2 data lanes
+        .phy_clk_src        = MIPI_DSI_PHY_CLK_SRC_DEFAULT,
+        .lane_bit_rate_mbps = 965,  // ST7123 lane bitrate
+    };
+    ESP_RETURN_ON_ERROR(esp_lcd_new_dsi_bus(&bus_config, &mipi_dsi_bus), TAG, "New DSI bus init failed");
+
+    ESP_LOGI(TAG, "Install MIPI DSI LCD control panel for ST7123");
+    // we use DBI interface to send LCD commands and parameters
+    esp_lcd_dbi_io_config_t dbi_config = {
+        .virtual_channel = 0,
+        .lcd_cmd_bits    = 8,  // according to the LCD spec
+        .lcd_param_bits  = 8,  // according to the LCD spec
+    };
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_io_dbi(mipi_dsi_bus, &dbi_config, &io), err, TAG, "New panel IO failed");
+
+    ESP_LOGI(TAG, "Install LCD driver of ST7123");
+    esp_lcd_dpi_panel_config_t dpi_config = {
+        .virtual_channel    = 0,
+        .dpi_clk_src        = MIPI_DSI_DPI_CLK_SRC_DEFAULT,
+        .dpi_clock_freq_mhz = 70,  // ST7123 DPI clock frequency
+        .pixel_format       = LCD_COLOR_PIXEL_FORMAT_RGB565,
+        .num_fbs            = 1,
+        .video_timing =
+            {
+                .h_size            = 720,
+                .v_size            = 1280,
+                .hsync_pulse_width = 2,
+                .hsync_back_porch  = 40,
+                .hsync_front_porch = 40,
+                .vsync_pulse_width = 2,
+                .vsync_back_porch  = 8,
+                .vsync_front_porch = 220,
+            },
+        .flags =
+            {
+                // DMA2D A/B-tested off and exonerated for the FT4 cyan flash
+                // (see the ST7121 config above) - keep it on.
+                .use_dma2d = true,
+            },
+    };
+
+    st7123_vendor_config_t vendor_config = {
+        .init_cmds      = st7123_vendor_specific_init_default,
+        .init_cmds_size = sizeof(st7123_vendor_specific_init_default) / sizeof(st7123_vendor_specific_init_default[0]),
+        .mipi_config =
+            {
+                .dsi_bus    = mipi_dsi_bus,
+                .dpi_config = &dpi_config,
+                .lane_num   = 2,
+            },
+    };
+
+    const esp_lcd_panel_dev_config_t lcd_dev_config = {
+        .reset_gpio_num = -1,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
+        .data_endian    = LCD_RGB_DATA_ENDIAN_LITTLE,
+        .bits_per_pixel = 24,
+        .vendor_config  = &vendor_config,
+    };
+
+    // ä½¿ç”¨å®žé™…çš„ ST7123 é©±åŠ¨å‡½æ•°
+    ESP_GOTO_ON_ERROR(esp_lcd_new_panel_st7123(io, &lcd_dev_config, &disp_panel), err, TAG,
+                      "New LCD panel ST7123 failed");
+
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_reset(disp_panel), err, TAG, "LCD panel reset failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_init(disp_panel), err, TAG, "LCD panel init failed");
+    ESP_GOTO_ON_ERROR(esp_lcd_panel_disp_on_off(disp_panel, true), err, TAG, "LCD panel display on failed");
+
+    /* Return all handles */
+    ret_handles->io           = io;
+    ret_handles->mipi_dsi_bus = mipi_dsi_bus;
+    ret_handles->panel        = disp_panel;
+    ret_handles->control      = NULL;
+
+    ESP_LOGI(TAG, "ST7123 Display initialized with resolution %dx%d", 720, 1280);
+
+    return ret;
+
+err:
+    if (disp_panel) {
+        esp_lcd_panel_del(disp_panel);
+    }
+    if (io) {
+        esp_lcd_panel_io_del(io);
+    }
+    if (mipi_dsi_bus) {
+        esp_lcd_del_dsi_bus(mipi_dsi_bus);
+    }
+    return ret;
+}
+
+#endif  // LCD_MIPI_DSI_USE_ST7123
+
+esp_err_t bsp_touch_new(const bsp_touch_config_t* config, esp_lcd_touch_handle_t* ret_touch)
+{
+    /* Initilize I2C */
+    BSP_ERROR_CHECK_RETURN_ERR(bsp_i2c_init());
+
+    /* Initialize touch */
+    const esp_lcd_touch_config_t tp_cfg = {
+        .x_max        = BSP_LCD_H_RES,
+        .y_max        = BSP_LCD_V_RES,
+        .rst_gpio_num = -1,  // BSP_LCD_TOUCH_RST, // NC
+        .int_gpio_num = 23,  // BSP_LCD_TOUCH_INT,
+        .levels =
+            {
+                .reset     = 0,
+                .interrupt = 0,
+            },
+        .flags =
+            {
+                .swap_xy  = 0,
+                .mirror_x = 0,
+                .mirror_y = 0,
+            },
+    };
+    esp_lcd_panel_io_handle_t tp_io_handle     = NULL;
+    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+    tp_io_config.dev_addr                      = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS_BACKUP;  // æ›´æ”¹ GT911 åœ°å€
+    tp_io_config.scl_speed_hz                  = CONFIG_BSP_I2C_CLK_SPEED_HZ;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle), TAG, "");
+    return esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, ret_touch);
+}
+
+#if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
+/* The DSI panel handle, kept so a caller can reach the panel's own frame
+ * buffer. screenshot.c streams /ss.bmp straight out of it: a full-screen
+ * snapshot is 1280x720x2 = 1.8 MB and lv_snapshot_take_to_buf() needs that
+ * CONTIGUOUS, which on the WSPR page simply is not available - measured
+ * 2026-09-12, 2.26 MB free but a 1.31 MB largest block. The frame buffer
+ * already exists and already holds exactly what is on the glass. */
+static esp_lcd_panel_handle_t s_bsp_panel = NULL;
+
+esp_lcd_panel_handle_t bsp_display_get_panel_handle(void)
+{
+    return s_bsp_panel;
+}
+
+static lv_display_t* bsp_display_lcd_init(const bsp_display_cfg_t* cfg)
+{
+    assert(cfg != NULL);
+    bsp_lcd_handles_t lcd_panels;
+
+    // åŠ¨æ€æ£€æµ‹æ˜¾ç¤ºå±ç±»åž‹
+    bsp_display_type_t display_type = bsp_detect_display_type();
+
+    if (display_type == BSP_DISPLAY_TYPE_ST7121) {
+        BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new_with_handles_to_st7121(NULL, &lcd_panels));
+    } else if (display_type == BSP_DISPLAY_TYPE_ST7123) {
+        BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new_with_handles_to_st7123(NULL, &lcd_panels));
+    } else {
+        BSP_ERROR_CHECK_RETURN_NULL(bsp_display_new_with_handles(NULL, &lcd_panels));
+    }
+
+    s_bsp_panel = lcd_panels.panel;
+
+    /* Add LCD screen */
+    ESP_LOGD(TAG, "Add LCD screen");
+    const lvgl_port_display_cfg_t disp_cfg =
+    {.io_handle      = lcd_panels.io,
+     .panel_handle   = lcd_panels.panel,
+     .control_handle = lcd_panels.control,
+     .buffer_size    = cfg->buffer_size,
+     .double_buffer  = cfg->double_buffer,
+     .hres           = BSP_LCD_H_RES,
+     .vres           = BSP_LCD_V_RES,
+     .monochrome     = false,
+     /* Rotation values must be same as used in esp_lcd for initial settings of the screen */
+     .rotation =
+         {
+             .swap_xy  = false,
+             .mirror_x = false,
+             .mirror_y = false,
+         },
+#if LVGL_VERSION_MAJOR >= 9
+#if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
+     .color_format = LV_COLOR_FORMAT_RGB888,
+#else
+     .color_format = LV_COLOR_FORMAT_RGB565,
+#endif
+#endif
+     .flags = {
+         .buff_dma    = cfg->flags.buff_dma,
+         .buff_spiram = cfg->flags.buff_spiram,
+#if LVGL_VERSION_MAJOR >= 9
+         .swap_bytes = (BSP_LCD_BIGENDIAN ? true : false),
+#endif
+#if CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR
+         .sw_rotate = false, /* Avoid tearing is not supported for SW rotation */
+#else
+         .sw_rotate   = cfg->flags.sw_rotate, /* Only SW rotation is supported for 90Â° and 270Â° */
+#endif
+#if CONFIG_BSP_DISPLAY_LVGL_FULL_REFRESH
+         .full_refresh = true,
+#elif CONFIG_BSP_DISPLAY_LVGL_DIRECT_MODE
+         .direct_mode = true,
+#endif
+     } };
+
+    const lvgl_port_display_dsi_cfg_t dpi_cfg = {.flags = {
+#if CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR
+                                                     .avoid_tearing = true,
+#else
+                                                     .avoid_tearing = false,
+#endif
+                                                 }};
+
+    return lvgl_port_add_disp_dsi(&disp_cfg, &dpi_cfg);
+}
+
+esp_lcd_touch_handle_t _lcd_touch_handle;
+
+esp_lcd_touch_handle_t bsp_display_get_touch_handle(void)
+{
+    return _lcd_touch_handle;
+}
+
+static void lvgl_read_cb(lv_indev_t* indev, lv_indev_data_t* data)
+{
+    if (_lcd_touch_handle == NULL) {
+        data->state = LV_INDEV_STATE_REL;
+        return;
+    }
+
+    uint16_t touch_x[1];
+    uint16_t touch_y[1];
+    uint16_t touch_strength[1];
+    uint8_t touch_cnt = 0;
+
+    esp_lcd_touch_read_data(_lcd_touch_handle);
+    bool touchpad_pressed =
+        esp_lcd_touch_get_coordinates(_lcd_touch_handle, touch_x, touch_y, touch_strength, &touch_cnt, 1);
+
+    if (!touchpad_pressed) {
+        data->state = LV_INDEV_STATE_REL;
+    } else {
+        data->state   = LV_INDEV_STATE_PR;
+        data->point.x = touch_x[0];
+        data->point.y = touch_y[0];
+    }
+}
+
+static lv_indev_t* bsp_display_indev_init(lv_display_t* disp)
+{
+    esp_lcd_touch_handle_t tp;
+    BSP_ERROR_CHECK_RETURN_NULL(bsp_touch_new(NULL, &tp));
+    esp_lcd_touch_exit_sleep(tp);  // !!!
+    assert(tp);
+    _lcd_touch_handle = tp;
+
+    disp_indev = lv_indev_create();
+    lv_indev_set_type(disp_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(disp_indev, lvgl_read_cb);
+    lv_indev_set_display(disp_indev, disp);
+
+    return disp_indev;
+}
+
+static lv_indev_t* bsp_display_indev_init_to_st7123(lv_display_t* disp)
+{
+    esp_err_t ret             = ESP_OK;
+    esp_lcd_touch_handle_t tp = NULL;
+
+    /* Initialize I2C for ST7123 touch */
+    BSP_ERROR_CHECK_RETURN_NULL(bsp_i2c_init());
+
+    // bsp_io_expander_pi4ioe_restart_touch();
+
+    /* Initialize ST7123 touch panel */
+    esp_lcd_panel_io_handle_t tp_io_handle     = NULL;
+    esp_lcd_panel_io_i2c_config_t tp_io_config = {
+        .dev_addr            = 0x55,  // ST7123 touch I2C address
+        .control_phase_bytes = 1,
+        .dc_bit_offset       = 0,
+        .lcd_cmd_bits        = 16,
+        .flags =
+            {
+                .disable_control_phase = 1,
+            },
+    };
+    // Use 100 kHz to match the speed used during detection — ST7121 touch chip
+    // does not reliably respond at 400 kHz (CONFIG_BSP_I2C_CLK_SPEED_HZ).
+    tp_io_config.scl_speed_hz = 100000;
+
+    ret = esp_lcd_new_panel_io_i2c_v2(bsp_i2c_get_handle(), &tp_io_config, &tp_io_handle);
+    // ret = esp_lcd_new_panel_io_i2c(bsp_i2c_get_handle(), &tp_io_config, &tp_io_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to create ST7123 touch I2C IO: %s", esp_err_to_name(ret));
+        return NULL;
+    }
+
+    const esp_lcd_touch_config_t tp_cfg = {
+        .x_max        = BSP_LCD_H_RES,
+        .y_max        = BSP_LCD_V_RES,
+        .rst_gpio_num = -1,  // BSP_LCD_TOUCH_RST, // NC
+        .int_gpio_num = 23,  // BSP_LCD_TOUCH_INT,
+        .levels =
+            {
+                .reset     = 0,
+                .interrupt = 0,
+            },
+        .flags =
+            {
+                .swap_xy  = 0,
+                .mirror_x = 0,
+                .mirror_y = 0,
+            },
+    };
+
+    ret = esp_lcd_touch_new_i2c_st7123(tp_io_handle, &tp_cfg, &tp);
+    if (ret != ESP_OK || tp == NULL) {
+        ESP_LOGE(TAG, "Failed to create ST7123 touch panel: %s", esp_err_to_name(ret));
+        esp_lcd_panel_io_del(tp_io_handle);
+        return NULL;
+    }
+
+    // Exit sleep mode for touch panel
+    // esp_lcd_touch_exit_sleep(tp);
+
+    // Store the touch handle globally
+    _lcd_touch_handle = tp;
+
+    /* Add touch input to LVGL */
+    const lvgl_port_touch_cfg_t touch_cfg = {
+        .disp   = disp,
+        .handle = tp,
+    };
+
+    lv_indev_t* indev = lvgl_port_add_touch(&touch_cfg);
+    if (indev == NULL) {
+        ESP_LOGE(TAG, "Failed to add ST7123 touch to LVGL");
+        esp_lcd_panel_io_del(tp_io_handle);
+        return NULL;
+    }
+
+    ESP_LOGI(TAG, "ST7123 touch panel initialized successfully");
+    return indev;
+}
+
+lv_display_t* bsp_display_start(void)
+{
+    bsp_display_cfg_t cfg = {.lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
+                             .buffer_size   = BSP_LCD_DRAW_BUFF_SIZE,
+                             .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
+                             .flags         = {
+#if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
+                                 .buff_dma = false,
+#else
+                                 .buff_dma = true,
+#endif
+                                 .buff_spiram = false,
+                                 .sw_rotate   = true,
+                             }};
+    return bsp_display_start_with_config(&cfg);
+}
+
+lv_display_t* bsp_display_start_with_config(const bsp_display_cfg_t* cfg)
+{
+    lv_display_t* disp;
+
+    assert(cfg != NULL);
+    BSP_ERROR_CHECK_RETURN_NULL(lvgl_port_init(&cfg->lvgl_port_cfg));
+
+    BSP_ERROR_CHECK_RETURN_NULL(bsp_display_brightness_init());
+
+    BSP_NULL_CHECK(disp = bsp_display_lcd_init(cfg), NULL);
+
+    // åŠ¨æ€æ£€æµ‹æ˜¾ç¤ºå±ç±»åž‹å¹¶åˆå§‹åŒ–å¯¹åº”çš„è§¦æ‘¸å±
+    bsp_display_type_t display_type = bsp_detect_display_type();
+
+    if (display_type == BSP_DISPLAY_TYPE_ST7121 || display_type == BSP_DISPLAY_TYPE_ST7123) {
+        BSP_NULL_CHECK(disp_indev = bsp_display_indev_init_to_st7123(disp), NULL);
+    } else {
+        BSP_NULL_CHECK(disp_indev = bsp_display_indev_init(disp), NULL);
+    }
+
+    return disp;
+}
+
+lv_indev_t* bsp_display_get_input_dev(void)
+{
+    return disp_indev;
+}
+
+void bsp_display_rotate(lv_display_t* disp, lv_disp_rotation_t rotation)
+{
+    lv_disp_set_rotation(disp, rotation);
+}
+
+bool bsp_display_lock(uint32_t timeout_ms)
+{
+    return lvgl_port_lock(timeout_ms);
+}
+
+void bsp_display_unlock(void)
+{
+    lvgl_port_unlock();
+}
+#endif  // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
+
+//==================================================================================
+// usb
+//==================================================================================
+static void usb_lib_task(void* arg)
+{
+    while (1) {
+        // Start handling system events
+        uint32_t event_flags;
+        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
+            ESP_ERROR_CHECK(usb_host_device_free_all());
+        }
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
+            ESP_LOGI(TAG, "USB: All devices freed");
+            // Continue handling USB events to allow device reconnection
+            // The only way this task can be stopped is by calling bsp_usb_host_stop()
+        }
+    }
+}
+
+esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
+{
+    // Install USB Host driver. Should only be called once in entire application
+    ESP_LOGI(TAG, "Installing USB Host");
+    const usb_host_config_t host_config = {
+        .skip_phy_setup = false,
+        .intr_flags     = ESP_INTR_FLAG_LEVEL1,
+    };
+    BSP_ERROR_CHECK_RETURN_ERR(usb_host_install(&host_config));
+
+    // Create a task that will handle USB library events
+    // 2560, not 4096: measured peak use 920 B (hwm 3,432 free of a 4,352 B
+    // block, 2026-08-28, #284). Internal RAM on purpose - this is the USB host
+    // library event task.
+    if (xTaskCreate(usb_lib_task, "usb_lib", 2560, NULL, 10, &usb_host_task) != pdTRUE) {
+        ESP_LOGE(TAG, "Creating USB host lib task failed");
+        abort();
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_usb_host_stop(void)
+{
+    usb_host_uninstall();
+    if (usb_host_task) {
+        vTaskSuspend(usb_host_task);
+        vTaskDelete(usb_host_task);
+    }
+    return ESP_OK;
+}
