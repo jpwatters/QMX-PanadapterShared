@@ -12,6 +12,7 @@
 #include "nvs.h"
 #include "cJSON.h"
 
+#include "status.h"           // status_battery_display_level
 #include "battery.h"          // battery_get_level, battery_is_charging
 #include "util/status.h"      // status_charge_limit_active
 #include "wifi.h"             // wifi_get_ssid, wifi_get_rssi_dbm, wifi_get_ip
@@ -19,10 +20,15 @@
 #include "cw_decode.h"              // cat_get_frequency, cat_get_band_list, cat_set_*
 #include "ui.h"
 #include "audio.h"          // audio_ring_backlog_pairs - spectrum staleness               // ui_get_*, ui_set_zoom
+#include "line_in.h"        // running state, live gain and the level meter
 #include "qmx_term.h"         // /api/term
 #include "ui/qmx_term_view.h" // the dev "term_view" action
+#include "ui/gps_status_view.h" // the dev "gps_view" action
 #include "ft8_screen_view.h"  // ft8_screen_view_is_active
-#include "ft8_tx.h"           // ft8_tx_get_status (web TX-status banner)
+#include "js8_chat.h"      // the JS8 conversation store, reported in /api/status
+#include "ui/js8_page.h"   // the conversation grid, composed for /api/js8
+#include "ft8_tx.h"
+#include "js8_ftx.h"           // JS8 free-text run (J8)
 #include "wspr_tx.h"          // the dev "wspr_tx_test" action
 #include "ui/wspr_screen_view.h" // wspr_bands - ONE band table for both screens
 #include "wspr_selftest.h"    // the dev "wspr_selftest" action
@@ -64,6 +70,7 @@
 #include "hid_cursor.h"
 #include "iq_balance.h"        // iq_balance_set_enabled - /api/settings
 #include "rx_audio.h"          // live AGC/clip tuning - /api/cmd "rxaudio"
+#include "util/mic_probe.h"    // /api/cmd "mic_probe" - GitHub #17
 #include "spur_map.h"          // spur_map_set_enabled - /api/settings
 #include "mem_channels.h"      // memory channels - /api/memory
 #include "render_waterfall.h"  // live waterfall tuning - /api/settings display group
@@ -234,6 +241,22 @@ static void add_ft8_tx_status(cJSON *root)
     // source of truth waiting to drift from the Tab5's own button.
     cJSON_AddNumberToObject(f, "cq_parity", ft8_screen_view_get_cq_parity());
 
+    /* ⭐ THE FREE-TEXT RUN, because it is the one transmission that lasts
+     * MINUTES rather than one slot. A browser operator who cannot see how far
+     * through it is, and cannot tell whether their send was accepted, has no
+     * way to decide whether to cancel - and cancelling is the whole reason the
+     * progress is worth showing. */
+    {
+        int sent = 0, total = 0;
+        bool run = js8_ftx_active(&sent, &total);
+        cJSON_AddBoolToObject(f,   "ftx_active", run);
+        cJSON_AddNumberToObject(f, "ftx_sent",   run ? sent + 1 : 0);
+        cJSON_AddNumberToObject(f, "ftx_total",  total);
+        char res[64];
+        ft8_screen_view_freetext_result(res, sizeof(res));
+        cJSON_AddStringToObject(f, "ftx_result", res);
+    }
+
     /* ⭐ THE BROWSER MUST BE ABLE TO SEE THE PAUSE, NOT JUST SET IT - the same
      * argument as cq_parity above, and I shipped the web Pause button without
      * it (operator, 2026-09-22: "clicking the web Pause does what it should do
@@ -248,7 +271,7 @@ static void add_ft8_tx_status(cJSON *root)
      * device is the only thing that has it. Same rule the FT4 preset list had
      * to learn the hard way this week - one accessor, both screens. */
     cJSON_AddStringToObject(f, "proto",
-        ft8_op_mode_get() == FT8_OP_MODE_FT4 ? "FT4" : "FT8");
+        ft8_op_mode_name());
 
     /* ⭐ THE MINI OCCUPANCY STRIP AND THE SLOT CLOCK, so the browser can show
      * what the Tab5's left pane shows. Operator, 2026-09-02: "I want to have
@@ -296,6 +319,80 @@ static void add_ft8_tx_status(cJSON *root)
         /* Which window this slot is, on the SAME grid the decode list's E/O
          * column uses - so the strip's highlight and the rows agree. */
         cJSON_AddBoolToObject(f, "slot_even", ((ms / slot_ms) % 2) == 0);
+
+        /* Which JS8 pane the screen is showing. Here so a question about the
+         * screen can be answered from the API instead of by interrupting the
+         * operator - 2026-10-09, chasing an internal-heap regression. */
+        cJSON_AddStringToObject(f, "tab",
+                                ft8_screen_view_js8_tab_is_conversation()
+                                    ? "conversation" : "stations");
+
+        /* The newest few conversation entries - what the JS8 screen's
+         * Conversation pane is showing.
+         *
+         * ⛔ IT EXISTS SO THE PANE CAN BE VERIFIED WITHOUT THE OPERATOR'S
+         * EYES. The tab name was added for the same reason an hour earlier,
+         * and the contents were still invisible: checking whether a decode had
+         * reached the screen meant asking him to look, while he was working in
+         * the shack.
+         *
+         * ⚠ EIGHT, not JS8_CHAT_MAX_MSGS. The store holds 32 and each carries
+         * up to 240 characters of text, which is about 8 KB of JSON on a
+         * response that a browser polls every second. Eight is enough to see
+         * that the pane is alive and what is on top of it. */
+        if (ft8_op_mode_get() == FT8_OP_MODE_JS8) {
+            int n_chat = js8_chat_count();
+            if (n_chat > 8) n_chat = 8;
+            if (n_chat > 0) {
+                cJSON *carr = cJSON_AddArrayToObject(f, "chat");
+                for (int i = 0; i < n_chat && carr; i++) {
+                    js8_chat_msg_t cm;
+                    if (!js8_chat_at(i, &cm)) continue;
+                    cJSON *o = cJSON_CreateObject();
+                    cJSON_AddStringToObject(o, "kind",
+                                            cm.kind == JS8_CHAT_FREETEXT ? "freetext"
+                                                                         : "directed");
+                    cJSON_AddStringToObject(o, "sender", cm.sender);
+                    cJSON_AddStringToObject(o, "text",   cm.text);
+                    cJSON_AddNumberToObject(o, "hz",     cm.freq_hz);
+                    /* ⛔ THE BAND THE CONVERSATION RAN ON. "hz" above is the
+                     * AUDIO OFFSET, so the client cannot work the band out
+                     * from this response, and /api/log DRAINS on read - it
+                     * cannot be reconstructed later either. It has to be in
+                     * the JSON. Emitted even when empty, so a client can tell
+                     * "not known" from "field missing in an old build". */
+                    cJSON_AddStringToObject(o, "band",   cm.band);
+                    cJSON_AddNumberToObject(o, "dial_hz", cm.dial_hz);
+                    cJSON_AddNumberToObject(o, "utc",    (double)cm.first_utc);
+                    cJSON_AddNumberToObject(o, "frames", cm.frames);
+                    cJSON_AddBoolToObject(o,   "active", cm.active);
+                    cJSON_AddBoolToObject(o,   "truncated", cm.truncated);
+                    cJSON_AddItemToArray(carr, o);
+                }
+            }
+        }
+
+        /* JS8 free text in flight (J7). Omitted entirely when nothing is in
+         * flight, so a client cannot mistake an empty array for a decoder
+         * that broke. ⚠ "text" can be empty while "frames" is not - see
+         * ft8_js8_freetext_t. */
+        int n_ft = ft8_js8_freetext_count();
+        if (n_ft > 0) {
+            cJSON *arr = cJSON_AddArrayToObject(f, "freetext");
+            for (int i = 0; i < n_ft && arr; i++) {
+                ft8_js8_freetext_t ft;
+                if (!ft8_js8_freetext_at(i, &ft)) continue;
+                cJSON *o = cJSON_CreateObject();
+                cJSON_AddStringToObject(o, "sender", ft.sender);
+                cJSON_AddStringToObject(o, "text",   ft.text);
+                cJSON_AddNumberToObject(o, "hz",     ft.freq_hz);
+                cJSON_AddNumberToObject(o, "frames", ft.frames);
+                cJSON_AddNumberToObject(o, "secs",   ft.secs);
+                cJSON_AddBoolToObject(o, "compressed", ft.compressed);
+                cJSON_AddBoolToObject(o, "truncated",  ft.truncated);
+                cJSON_AddItemToArray(arr, o);
+            }
+        }
     }
 
     char tx_text[32];
@@ -490,7 +587,11 @@ static esp_err_t status_handler(httpd_req_t *req)
     if (!root) return httpd_resp_send_500(req);
 
     cJSON *batt = cJSON_AddObjectToObject(root, "battery");
-    cJSON_AddNumberToObject(batt, "level",    battery_get_level());
+    /* status_battery_display_level(), not battery_get_level(): the browser must
+     * show the same number as the Tab5 bar, including the charge-limit cap.
+     * Two screens reading one quantity differently is the exact fault reported
+     * for DT and for the S-meter earlier on 2026-10-09. */
+    cJSON_AddNumberToObject(batt, "level",    status_battery_display_level());
     cJSON_AddNumberToObject(batt, "mv",       battery_get_mv());
     cJSON_AddBoolToObject  (batt, "charging", battery_is_charging());
     // The Tab5's own bottom bar has honoured battery_present() since the
@@ -788,10 +889,20 @@ static esp_err_t status_handler(httpd_req_t *req)
         char q[96];
         if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
             httpd_query_key_value(q, "presets", (char[4]){0}, 4) == ESP_OK) {
-            for (int k = 0; k < 2; k++) {
+            /* One array per sub-mode. JS8's is sent only when the protocol is
+             * implemented, so a build that cannot do JS8 does not offer it -
+             * the same rule the Tab5's own column follows. */
+            static const struct { ft8_op_mode_t mode; const char *key; } kPresetSets[] = {
+                { FT8_OP_MODE_FT8, "ft8_presets" },
+                { FT8_OP_MODE_FT4, "ft4_presets" },
+                { FT8_OP_MODE_JS8, "js8_presets" },
+            };
+            for (unsigned k = 0; k < sizeof(kPresetSets)/sizeof(kPresetSets[0]); k++) {
+                if (kPresetSets[k].mode == FT8_OP_MODE_JS8 &&
+                    !ftx_protocol_is_implemented(FTX_PROTOCOL_JS8)) continue;
                 int n = 0;
-                const ft8_preset_t *pl = ft8_preset_list(k == 1, &n);
-                cJSON *arr = cJSON_AddArrayToObject(root, k ? "ft4_presets" : "ft8_presets");
+                const ft8_preset_t *pl = ft8_preset_list(kPresetSets[k].mode, &n);
+                cJSON *arr = cJSON_AddArrayToObject(root, kPresetSets[k].key);
                 for (int i = 0; i < n; i++) {
                     /* ⛔ ONLY BANDS THE RADIO HAS (Brian WA6JFK, 2026-10-04).
                      * The Tab5's own column does this already
@@ -890,7 +1001,13 @@ static esp_err_t status_handler(httpd_req_t *req)
         // these two labels "can never disagree" - they had already diverged,
         // which is the argument for deriving the string in ONE place.
         time_sync_source_t ts = time_sync_get_effective_source();
-        const char *tsn = ts == TIME_SOURCE_UNIT_GPS ? "GPS"
+        /* "U-GPS" for a receiver on the Tab5 (PORT.A Unit GPS or the M-Bus
+         * Module GPS), "GPS" only for the QMX's own - the operator asked for
+         * the two to be distinguishable, 2026-10-08. The browser prints this
+         * string verbatim inside UTC(...), so there is no JS side to change.
+         * The other two copies of this switch are in util/status.c (bottom
+         * bar) and ui/ft8_time_modal.c. */
+        const char *tsn = ts == TIME_SOURCE_UNIT_GPS ? "U-GPS"
                         : ts == TIME_SOURCE_SNTP   ? "NTP"
                         : ts == TIME_SOURCE_QMX    ? (time_sync_qmx_gps_confirmed() ? "GPS" : "QMX")
                         : ts == TIME_SOURCE_RTC    ? "RTC"
@@ -966,6 +1083,55 @@ static esp_err_t status_handler(httpd_req_t *req)
                 cJSON_AddItemToObject(port, "gps", gps);
             }
             cJSON_AddItemToObject(root, "port", port);
+        }
+
+        /* Which input this session is actually listening to, and - separately
+         * - which one is STORED. They differ exactly when the operator has
+         * changed the source and not yet restarted, and that is the case a
+         * page has to be able to show. Reporting only one of them is what
+         * would make a selector lie. */
+        {
+            cJSON *src = cJSON_CreateObject();
+            uint8_t stored = cfg.rx_source;
+            cJSON_AddStringToObject(src, "stored", rx_source_str(stored));
+            cJSON_AddStringToObject(src, "running",
+                line_in_running() ? "line_in" : "qmx_usb");
+            cJSON_AddBoolToObject(src, "restart_required",
+                (stored == RX_SOURCE_LINE_IN) != line_in_running());
+            cJSON_AddNumberToObject(src, "line_in_gain_db",
+                (double)cfg.line_in_gain_db);
+            /* Only while the jack is the running source: a peak level from a
+             * codec that is not open would be a number with no meaning. */
+            if (line_in_running()) {
+                cJSON_AddNumberToObject(src, "line_in_peak_dbfs",
+                    (double)line_in_peak_dbfs());
+                /* The peak alone cannot show clipping - past full scale it
+                 * parks at 0 dBFS and reads like a strong clean signal. */
+                cJSON_AddNumberToObject(src, "line_in_clipped",
+                    (double)line_in_clip_count());
+            }
+            cJSON_AddItemToObject(root, "rx_source", src);
+        }
+
+        /* M-Bus GNSS (Module GPS v2.1). It does not use port_a_mode, so it
+         * cannot live inside "port" - and until 2026-10-08 it was reported
+         * NOWHERE, which is the day it first went on hardware and the serial
+         * log was the only readout. Present only while the receiver is
+         * running, so a bench with no module attached says nothing rather
+         * than showing a fault the operator cannot act on.
+         *
+         * rx_bytes and rx_lines are the TEMPORARY INSTRUMENT from
+         * unit_gps.c: 0 bytes means nothing on the pin, bytes with 0 lines
+         * means the wrong baud. Drop them with the instrument. */
+        if (unit_gps_running()) {
+            cJSON *g = cJSON_CreateObject();
+            cJSON_AddStringToObject(g, "state", unit_gps_state_name(unit_gps_state()));
+            cJSON_AddNumberToObject(g, "age_ms", (double)unit_gps_age_ms());
+            cJSON_AddNumberToObject(g, "rx_gpio", unit_gps_rx_gpio());
+            cJSON_AddNumberToObject(g, "baud", unit_gps_baud());
+            cJSON_AddNumberToObject(g, "rx_bytes", (double)unit_gps_rx_bytes());
+            cJSON_AddNumberToObject(g, "rx_lines", (double)unit_gps_rx_lines());
+            cJSON_AddItemToObject(root, "gnss", g);
         }
 
         // Band-plan for the current band — whole-band strip on the web UI,
@@ -1473,19 +1639,76 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         // the Preset button, which made every FT4 test need the operator.
         //   {"action":"set_ft8_mode","mode":"ft4"}                 keep frequency
         //   {"action":"set_ft8_mode","mode":"ft8","freq_hz":14074000}
+        //   {"action":"set_ft8_mode","mode":"js8"}                 keep frequency
         const char *m  = cJSON_GetStringValue(cJSON_GetObjectItem(root, "mode"));
         cJSON      *fz = cJSON_GetObjectItem(root, "freq_hz");
-        bool ft4 = (m && (strcasecmp(m, "ft4") == 0));
-        bool ok  = (m && (ft4 || strcasecmp(m, "ft8") == 0));
+        ft8_op_mode_t mode = FT8_OP_MODE_FT8;
+        bool ok = false;
+        if (m && strcasecmp(m, "ft8") == 0)      { mode = FT8_OP_MODE_FT8; ok = true; }
+        else if (m && strcasecmp(m, "ft4") == 0) { mode = FT8_OP_MODE_FT4; ok = true; }
+        else if (m && strcasecmp(m, "js8") == 0) {
+            /* Refused HERE as well as in ft8_op_mode_set(), so the caller gets
+             * a reason instead of {"ok":true} followed by nothing happening. */
+            ok = ftx_protocol_is_implemented(FTX_PROTOCOL_JS8);
+            mode = FT8_OP_MODE_JS8;
+            if (!ok) {
+                cJSON_Delete(root);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_sendstr(req,
+                    "{\"ok\":false,\"error\":\"JS8 is not implemented in this build\"}");
+                return ESP_OK;
+            }
+        }
         if (ok) {
             ft8_screen_view_request_preset(
-                cJSON_IsNumber(fz) ? (uint32_t)fz->valuedouble : 0, ft4);
+                cJSON_IsNumber(fz) ? (uint32_t)fz->valuedouble : 0, mode);
         }
         cJSON_Delete(root);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, ok ? "{\"ok\":true}"
-                                   : "{\"ok\":false,\"error\":\"mode must be ft8 or ft4\"}");
+                                   : "{\"ok\":false,\"error\":\"mode must be ft8, ft4 or js8\"}");
         return ESP_OK;
+    } else if (action && strcmp(action, "js8_text_plan") == 0) {
+        /* What a message would COST, without transmitting any of it. The
+         * operator agrees to the air time before the radio is keyed, not
+         * after - a 3-frame message is 45 seconds of holding a frequency.
+         *   {"action":"js8_text_plan","text":"..."} */
+        const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+        int frames = 0, secs = 0;
+        char norm[256];
+        bool ok = js8_ftx_plan(txt ? txt : "", &frames, &secs, norm, sizeof(norm));
+        cJSON_Delete(root);
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "ok", ok);
+        cJSON_AddNumberToObject(o, "frames", frames);
+        cJSON_AddNumberToObject(o, "secs", secs);
+        /* The NORMALISED text, deliberately: upper-cased, whitespace
+         * collapsed, unsendable characters dropped. What will go out is not
+         * always what was typed, and the operator should see which. */
+        cJSON_AddStringToObject(o, "text", norm);
+        char *js = cJSON_PrintUnformatted(o);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, js ? js : "{\"ok\":false}");
+        cJSON_free(js);
+        cJSON_Delete(o);
+        return ESP_OK;
+    } else if (action && strcmp(action, "js8_text") == 0) {
+        /* Transmit free text. Deferred to the LVGL task exactly like cq_start
+         * - js8_ftx_start() encodes and arms, and ft8_tx_arm() blocks briefly,
+         * so neither may run here. The outcome returns via /api/status. */
+        const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+        if (!txt || !txt[0]) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"no text\"}");
+            return ESP_OK;
+        }
+        ft8_screen_view_request_freetext(txt);
+    } else if (action && strcmp(action, "js8_text_cancel") == 0) {
+        /* ⛔ Reachable while transmitting, on purpose. A run holds the
+         * frequency for up to three minutes and the operator must be able to
+         * stop it from wherever they are. */
+        js8_ftx_cancel();
     } else if (action && strcmp(action, "cq_start") == 0) {
         // Restart a CQ run from the browser (Dennis WN4FLA): a CQ that has timed out
         // or hit its call limit otherwise needs a walk back to the Tab5. Deferred to
@@ -1799,6 +2022,30 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             if (cJSON_IsBool(kbj)) qmx_term_view_set_keyboard(cJSON_IsTrue(kbj));
             display_unlock();
         }
+    } else if (action && strcmp(action, "gps_view") == 0) {
+        /* Hidden dev action, same reason as "term_view" above: open or close
+         * the GPS page from here, so its layout can be checked on a screenshot
+         * instead of asking the operator to tap the UTC field. The reply says
+         * whether it actually opened - it refuses when no GNSS receiver is
+         * disciplining the clock, and that refusal is the thing worth seeing.
+         *   {"action":"gps_view","open":true} */
+        cJSON *o = cJSON_GetObjectItem(root, "open");
+        bool want = cJSON_IsBool(o) ? cJSON_IsTrue(o) : true;
+        bool avail = gps_status_view_available();
+        bool open_now = false;
+        if (display_lock(500)) {
+            if (want) gps_status_view_open();
+            else      gps_status_view_close();
+            open_now = gps_status_view_is_open();
+            display_unlock();
+        }
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        char out[96];
+        snprintf(out, sizeof(out), "{\"ok\":true,\"open\":%s,\"source_available\":%s}",
+                 open_now ? "true" : "false", avail ? "true" : "false");
+        httpd_resp_sendstr(req, out);
+        return ESP_OK;
     } else if (action && strcmp(action, "time_redetect") == 0) {
         // Developer escape hatch: re-arm the once-per-boot QMX GPS auto-detection.
         // See time_sync_force_redetect() for why a reboot is not a usable way to
@@ -1938,10 +2185,11 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         /* TEMP INSTRUMENT 2026-10-04 - dev only, on demand, costs nothing.
          *
          * httpd + ws_push_task cost 21.6-23.1 KB of the DMA-capable pool
-         * (34bd189, measured over three boots), and 14336 B of that is just
-         * the two task stacks: config.stack_size = 10240 here and 4096 for
-         * ws_push_task. Both numbers were chosen, not measured against a
-         * loaded server.
+         * (34bd189, measured over three boots), of which the two task stacks
+         * are WEB_HTTPD_STACK_SIZE + WEB_WS_PUSH_STACK_SIZE (webserver.h).
+         * ⚠ That used to read "14336 B ... 10240 here and 4096 for
+         * ws_push_task" - hardcoded in prose, and both numbers changed on
+         * 2026-10-10. Name the constants, never restate their values here.
          *
          * This handler RUNS ON THE httpd TASK, so uxTaskGetStackHighWaterMark
          * (NULL) is exactly the figure wanted - no task-walk, no interrupts
@@ -1954,14 +2202,20 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         cJSON_Delete(root);
         unsigned httpd_free = (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t));
         unsigned ws_free    = webserver_ws_push_stack_headroom();
+        /* Report the REAL configured size. These were hardcoded 10240 literals
+         * while config.stack_size was raised to 14336, so the instrument would
+         * have kept reporting the old size and the headroom percentage would
+         * have been wrong in the one place anyone looks. */
         ESP_LOGW(TAG, "STACK HWM: httpd task %u B free of %u B configured; "
-                      "ws_push %u B free of 4096 B",
-                 httpd_free, (unsigned)10240, ws_free);
+                      "ws_push %u B free of %u B",
+                 httpd_free, (unsigned)WEB_HTTPD_STACK_SIZE,
+                 ws_free, (unsigned)WEB_WS_PUSH_STACK_SIZE);
         char buf[160];
         snprintf(buf, sizeof(buf),
-                 "{\"ok\":true,\"httpd_free\":%u,\"httpd_size\":10240,"
-                 "\"ws_push_free\":%u,\"ws_push_size\":4096}",
-                 httpd_free, ws_free);
+                 "{\"ok\":true,\"httpd_free\":%u,\"httpd_size\":%u,"
+                 "\"ws_push_free\":%u,\"ws_push_size\":%u}",
+                 httpd_free, (unsigned)WEB_HTTPD_STACK_SIZE,
+                 ws_free, (unsigned)WEB_WS_PUSH_STACK_SIZE);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
         return ESP_OK;
@@ -1975,25 +2229,44 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         dma_owners_report();
         return ESP_OK;
     } else if (action && strcmp(action, "gnss_mbus") == 0) {
-        /* Module GPS v2.1 on the M-Bus (GPIO2). Applied live AND stored, so it
+        /* Module GPS v2.1 on the M-Bus (GPIO38, DIP switch 6). Applied live AND
+         * stored, so it
          * survives a reboot without one being needed to turn it on:
          *   {"action":"gnss_mbus","on":true}
          * Starting is refused if PORT.A already owns the one GNSS instance -
          * the driver says so in the log and the reply carries the result. */
+        /* ⭐ TEMPORARY, 2026-10-08: optional "gpio" and "baud" so the DIP
+         * positions and 9600/115200 can be swept from here instead of one
+         * flash per attempt. Neither is stored - only the on/off flag is -
+         * so a reboot returns to the compiled-in GPIO2 @ 115200. Remove both
+         * with the instrument in unit_gps.c once the receiver is known good.
+         *   {"action":"gnss_mbus","on":true,"gpio":38,"baud":9600} */
         cJSON *jo = cJSON_GetObjectItem(root, "on");
+        cJSON *jg = cJSON_GetObjectItem(root, "gpio");
+        cJSON *jb = cJSON_GetObjectItem(root, "baud");
         bool on = (jo && (cJSON_IsTrue(jo) || (cJSON_IsNumber(jo) && jo->valueint)));
+        int  gpio = (jg && cJSON_IsNumber(jg)) ? jg->valueint : UNIT_GPS_MBUS_RX_GPIO;
+        int  baud = (jb && cJSON_IsNumber(jb)) ? jb->valueint : 0;
         bool ok = true;
         if (on) {
-            ok = unit_gps_start_on(UNIT_GPS_MBUS_RX_GPIO);
+            /* Restarting on a different pin or rate has to stop first: the
+             * driver refuses a second start rather than silently rebinding,
+             * which would leave a sweep reporting success on the old pin. */
+            if (unit_gps_running() &&
+                (gpio != unit_gps_rx_gpio() ||
+                 (baud > 0 && baud != unit_gps_baud()))) {
+                unit_gps_stop();
+            }
+            ok = unit_gps_start_on_baud(gpio, baud);
         } else {
             unit_gps_stop();
         }
         if (ok) settings_set_gnss_mbus_en(on);
-        char buf[128];
+        char buf[160];
         snprintf(buf, sizeof(buf),
-                 "{\"ok\":%s,\"gnss_mbus\":%s,\"rx_gpio\":%d}",
+                 "{\"ok\":%s,\"gnss_mbus\":%s,\"rx_gpio\":%d,\"baud\":%d}",
                  ok ? "true" : "false", (ok && on) ? "true" : "false",
-                 UNIT_GPS_MBUS_RX_GPIO);
+                 unit_gps_rx_gpio(), unit_gps_baud());
         cJSON_Delete(root);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
@@ -2031,6 +2304,28 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             vTaskDelay(pdMS_TO_TICKS(250));
             esp_restart();
         }
+        return ESP_OK;
+    } else if (action && strcmp(action, "slotcap") == 0) {
+        /* Arm/disarm the decoder-input slot recorder (M1 corpus).
+           {"action":"slotcap","on":true} then poll GET /api/slot.json and
+           fetch GET /api/slot.wav whenever `seq` changes.
+           tools/js8_corpus.py does exactly that. Omitting "on" just reads. */
+        cJSON *on = cJSON_GetObjectItem(root, "on");
+        if (cJSON_IsBool(on)) ft8_slotcap_set_enabled(cJSON_IsTrue(on));
+        uint32_t n = 0, seq = 0; int64_t sec = 0; int peak = 0; float fpeak = 0;
+        const char *proto = "";
+        ft8_slotcap_data(&n, &sec, &peak, &proto, &seq, &fpeak);
+        cJSON_Delete(root);
+        char body[192];
+        snprintf(body, sizeof(body),
+                 "{\"ok\":true,\"armed\":%s,\"seq\":%lu,\"samples\":%lu,"
+                 "\"slot_utc\":%lld,\"peak\":%d,\"peak_float\":%.3f,"
+                 "\"proto\":\"%s\",\"rate\":12000,\"normalised\":true}",
+                 ft8_slotcap_enabled() ? "true" : "false",
+                 (unsigned long)seq, (unsigned long)n, (long long)sec, peak,
+                 (double)fpeak, proto ? proto : "");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, body);
         return ESP_OK;
     } else if (action && strcmp(action, "rxcap") == 0) {
         /* Record what the codec is actually PLAYING, so the artefact can be
@@ -2109,6 +2404,29 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, out ? out : "{\"ok\":false}");
         if (out) cJSON_free(out);
         cJSON_Delete(resp);
+        return ESP_OK;
+    } else if (action && strcmp(action, "mic_probe") == 0) {
+        /* ⛔ DEV ONLY, AND IT REBOOTS TWICE. Arms the one-shot ES7210 channel
+         * probe and restarts into it; the probe restarts again when it is
+         * done. The QMX is wedged by both reboots (#74) and needs a power
+         * cycle afterwards.
+         *
+         * It exists because GitHub #17 turns on a question nobody can answer
+         * from the documentation: Tony reports the 3.5 mm socket is a 4-pole
+         * headset jack with the mic on the nearest ring, M5Stack's own page
+         * calls it a headphone jack and publishes no schematic, and a
+         * previous answer that GUESSED went out publicly and was wrong. Feed
+         * a tone into the mic ring, run this, and read the four per-channel
+         * RMS figures out of the serial log.
+         *
+         * See util/mic_probe.h for why it cannot be done without a reboot. */
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req,
+            "{\"ok\":true,\"note\":\"rebooting into the ES7210 probe; it reboots "
+            "again when done. Read the four per-channel RMS lines in the serial "
+            "log. The QMX will need a power cycle.\"}");
+        mic_probe_request();      /* does not return */
         return ESP_OK;
     } else if (action && strcmp(action, "cpu_owners") == 0) {
         // TEMP INSTRUMENT (#284) - dev only. Names the task eating a core.
@@ -3612,6 +3930,124 @@ static esp_err_t rxaudio_json_handler(httpd_req_t *req)
     return e;
 }
 
+/* GET /api/slot.wav - the LAST COMPLETE SLOT exactly as the decoder saw it.
+ *
+ * This is the M1 corpus endpoint. The 35 FT8 references in
+ * test/wav_reference are 12 kHz mono, 180000 frames, 15.0 s, named from the
+ * slot's UTC second; this emits the same thing for whatever sub-mode is
+ * running, so a JS8 corpus drops straight into the existing harness shape.
+ *
+ * ⛔ NOT /api/rxaudio.wav. That one records the codec OUTPUT at 48 kHz after
+ * the AGC and the audio filters. It is the right instrument for "why does the
+ * speaker click" and the wrong one for a decoder corpus, because the decoder
+ * never hears it. See the note on ft8_slotcap_set_enabled().
+ *
+ * Arm first: POST /api/cmd {"action":"slotcap","on":true}. Unarmed it spends
+ * no PSRAM and returns 404.
+ *
+ * The WS pause and the hold flag are both deliberate: the pause keeps the
+ * 360 KB body off the same socket budget as the live frame, and the hold
+ * stops the capture task overwriting the buffer mid-body. */
+static esp_err_t slot_wav_handler(httpd_req_t *req)
+{
+    uint32_t n = 0, seq = 0; int64_t sec = 0; int peak = 0; float fpeak = 0;
+    const char *proto = "";
+    const int16_t *pcm = ft8_slotcap_data(&n, &sec, &peak, &proto, &seq, &fpeak);
+    if (!pcm || !n) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND,
+            "no slot held - POST /api/cmd {\"action\":\"slotcap\",\"on\":true} "
+            "and wait for one slot");
+        return ESP_FAIL;
+    }
+    const uint32_t rate = 12000, ch = 1, bits = 16;
+    const uint32_t data_bytes = n * sizeof(int16_t);
+    uint8_t hdr[44];
+    #define W32(o,v) do{ hdr[o]=(uint8_t)((v)&0xff); hdr[o+1]=(uint8_t)(((v)>>8)&0xff);                          hdr[o+2]=(uint8_t)(((v)>>16)&0xff); hdr[o+3]=(uint8_t)(((v)>>24)&0xff);}while(0)
+    #define W16(o,v) do{ hdr[o]=(uint8_t)((v)&0xff); hdr[o+1]=(uint8_t)(((v)>>8)&0xff);}while(0)
+    memcpy(hdr, "RIFF", 4);         W32(4, 36 + data_bytes);
+    memcpy(hdr + 8, "WAVEfmt ", 8); W32(16, 16); W16(20, 1);
+    W16(22, ch); W32(24, rate); W32(28, rate * ch * bits / 8);
+    W16(32, ch * bits / 8); W16(34, bits);
+    memcpy(hdr + 36, "data", 4);    W32(40, data_bytes);
+    #undef W32
+    #undef W16
+
+    /* Named the way the FT8 corpus is named - YYMMDD_HHMMSS from the slot's
+     * own UTC boundary - so the downloaded file needs no renaming to sit
+     * beside the existing references. */
+    char fname[64];
+    {
+        time_t t = (time_t)sec;
+        struct tm g;
+        gmtime_r(&t, &g);
+        snprintf(fname, sizeof(fname),
+                 "attachment; filename=%02d%02d%02d_%02d%02d%02d.wav",
+                 (g.tm_year + 1900) % 100, g.tm_mon + 1, g.tm_mday,
+                 g.tm_hour, g.tm_min, g.tm_sec);
+    }
+
+    httpd_resp_set_type(req, "audio/wav");
+    httpd_resp_set_hdr(req, "Content-Disposition", fname);
+    ft8_slotcap_hold(true);
+    webserver_ws_set_paused(true);
+    esp_err_t err = httpd_resp_send_chunk(req, (const char *)hdr, sizeof(hdr));
+    const uint8_t *p = (const uint8_t *)pcm;
+    for (uint32_t off = 0; off < data_bytes && err == ESP_OK; off += 4096) {
+        uint32_t len = (data_bytes - off < 4096) ? (data_bytes - off) : 4096;
+        err = httpd_resp_send_chunk(req, (const char *)(p + off), (ssize_t)len);
+    }
+    /* Same rule as every other download here: do NOT cap a failed body with a
+       valid terminator, or a short file looks complete. */
+    if (err != ESP_OK) {
+        webserver_ws_set_paused(false); ft8_slotcap_hold(false); return ESP_FAIL;
+    }
+    httpd_resp_send_chunk(req, NULL, 0);
+    webserver_ws_set_paused(false);
+    ft8_slotcap_hold(false);
+    return ESP_OK;
+}
+
+/* GET /api/slot.json - what is held, without downloading 360 KB.
+ *
+ * `seq` is the whole point: a corpus loop polls this and downloads only when
+ * seq changes, so it never re-fetches the same slot and never has to guess at
+ * slot timing from its own clock. `peak` makes a dead or clipped capture
+ * visible from the metadata alone. */
+static esp_err_t slot_json_handler(httpd_req_t *req)
+{
+    uint32_t n = 0, seq = 0; int64_t sec = 0; int peak = 0; float fpeak = 0;
+    const char *proto = "";
+    const int16_t *pcm = ft8_slotcap_data(&n, &sec, &peak, &proto, &seq, &fpeak);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "armed", ft8_slotcap_enabled());
+    cJSON_AddBoolToObject(root, "held", pcm && n);
+    cJSON_AddNumberToObject(root, "seq", (double)seq);
+    cJSON_AddNumberToObject(root, "samples", (double)n);
+    cJSON_AddNumberToObject(root, "rate", 12000);
+    cJSON_AddNumberToObject(root, "slot_utc", (double)sec);
+    cJSON_AddNumberToObject(root, "peak", (double)peak);
+    /* The decoder's own float peak, BEFORE the normalisation that the stored
+     * int16 went through. Above ~2.4 (+7.5 dB) the live waterfall is clamping
+     * and the corpus is easier than the board - see slotcap_take(). */
+    cJSON_AddNumberToObject(root, "peak_float", (double)fpeak);
+    cJSON_AddBoolToObject(root, "normalised", true);
+    cJSON_AddStringToObject(root, "proto", proto ? proto : "");
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) { httpd_resp_send_500(req); return ESP_FAIL; }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t e = httpd_resp_sendstr(req, out);
+    free(out);
+    return e;
+}
+
+static const httpd_uri_t uri_slot_wav = {
+    .uri = "/api/slot.wav", .method = HTTP_GET, .handler = slot_wav_handler,
+};
+static const httpd_uri_t uri_slot_json = {
+    .uri = "/api/slot.json", .method = HTTP_GET, .handler = slot_json_handler,
+};
+
 static const httpd_uri_t uri_rxaudio_wav = {
     .uri = "/api/rxaudio.wav", .method = HTTP_GET, .handler = rxaudio_wav_handler,
 };
@@ -4311,6 +4747,286 @@ static const httpd_uri_t uri_log_saved = {
     .uri = "/api/log/saved", .method = HTTP_GET, .handler = saved_log_handler,
 };
 
+/* GET /api/gps - the GPS status page, as the GLASS composes it.
+ *
+ * ⭐ THE DEVICE RENDERS THE PAGE, THE BROWSER ONLY PAINTS IT. The 80x24 grid
+ * comes out of the same gps_page_compose() that ui/gps_status_view.c draws, so
+ * the web page cannot drift from the Tab5 page: there is one layout, not two.
+ * Sending raw satellite data and laying it out in JavaScript would have been a
+ * second implementation of a layout whose whole point (2026-10-08) is to look
+ * like the radio's own "Hardware tests | GPS viewer".
+ *
+ * The markers and the satellite rows come separately because they are COLOURED
+ * and the table SCROLLS - exactly as on the glass, and for the same reason: a
+ * receiver routinely sees twenty satellites and the grid has room for twelve.
+ * The cells they occupy are already blanked in `lines`.
+ *
+ * `src` is "none" when no GNSS receiver is disciplining the clock. The browser
+ * then says so instead of drawing a page of dashes, which reads as a receiver
+ * that has failed rather than as no receiver at all - the same rule the tap on
+ * the glass follows.
+ *
+ * `src` is "qmx" when the radio's own receiver is the source. It reports
+ * position and time over CAT and nothing else, so there is no page to draw:
+ * the glass hands that case to the radio's own viewer, and the browser sends
+ * the operator to Radio menus for the same reason.
+ */
+typedef struct {
+    unit_gps_info_t   info;
+    char              lines[GPS_PAGE_ROWS][GPS_PAGE_COLS + 1];
+    gps_page_marker_t marks[GPS_PAGE_MAX_MARKERS];
+    gps_page_satrow_t satrows[UNIT_GPS_MAX_SATS];
+} gps_api_scratch_t;
+
+static esp_err_t gps_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return httpd_resp_send_500(req);
+
+    gps_page_src_t src;
+    bool have = gps_status_source(&src);
+
+    cJSON_AddStringToObject(root, "src",
+        !have ? "none" : (src == GPS_PAGE_SRC_QMX ? "qmx" : "module"));
+    cJSON_AddNumberToObject(root, "cols", GPS_PAGE_COLS);
+    cJSON_AddNumberToObject(root, "rows", GPS_PAGE_ROWS);
+    cJSON_AddNumberToObject(root, "table_row0", GPS_PAGE_TABLE_ROW0);
+
+    if (have && src == GPS_PAGE_SRC_MODULE) {
+        /* ⛔ ~4.3 kB of scratch, and it may go NEITHER in .bss NOR on this
+         * stack. Internal .bss comes out of the DMA pool and stopped the SD
+         * card mounting (2026-10-08); 4 kB on the HTTPD stack is the stack
+         * protection fault that crashed this same task the same evening. See
+         * the identical note in ui/gps_status_view.c. PSRAM, for the length of
+         * one request. */
+        gps_api_scratch_t *sc = heap_caps_malloc(sizeof(*sc),
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!sc) {
+            cJSON_Delete(root);
+            return httpd_resp_send_500(req);
+        }
+        int n_marks = 0;
+        unit_gps_get_info(&sc->info);
+        gps_page_compose(&sc->info, src, sc->lines, sc->marks, &n_marks);
+
+        cJSON_AddStringToObject(root, "title",
+                                gps_page_title(src, unit_gps_rx_gpio()));
+
+        /* ⭐ THE ELEVATION RINGS AS GEOMETRY, NOT CHARACTERS. Three attempts
+         * to draw them in the grid were rejected on the glass; the browser
+         * draws a real thin faint-grey oval from these instead. Cell units,
+         * because that is the coordinate system the grid and the browser
+         * share - the page converts with its own measured cell size. Same
+         * numbers the Tab5 draws, from the same gps_page_rings(). */
+        {
+            gps_page_ring_t rg[GPS_PAGE_MAX_RINGS];
+            int nr = gps_page_rings(rg, GPS_PAGE_MAX_RINGS);
+            cJSON *arr = cJSON_AddArrayToObject(root, "rings");
+            for (int i = 0; arr && i < nr; i++) {
+                cJSON *o = cJSON_CreateObject();
+                if (!o) break;
+                cJSON_AddNumberToObject(o, "cx", rg[i].cx);
+                cJSON_AddNumberToObject(o, "cy", rg[i].cy);
+                cJSON_AddNumberToObject(o, "rx", rg[i].rx);
+                cJSON_AddNumberToObject(o, "ry", rg[i].ry);
+                cJSON_AddNumberToObject(o, "elev", rg[i].elev_deg);
+                cJSON_AddItemToArray(arr, o);
+            }
+        }
+
+        /* ⛔ THE N-S AND E-W AXES, and they belong HERE - in the handler the
+         * sky plot actually polls.
+         *
+         * This block existed and was correct, but it had been written into
+         * add_ft8_tx_status() in the /api/status handler instead: it put
+         * "axes" on the STATUS root, and only while the FT8 screen was up.
+         * The GPS modal polls /api/gps, so the key was never in the response
+         * it reads and the plot drew rings with no bearing reference.
+         * Measured 2026-10-11: "axes" present in /api/status on the FT8
+         * screen, absent on the panadapter, absent from /api/gps always.
+         * The browser painter (gpsDrawRings) had always iterated j.axes and
+         * needed no change - which is why this read as a missing feature
+         * rather than as a misplaced twenty lines.
+         *
+         * Same source and same cell units as the rings above, so the browser
+         * and the glass cannot disagree about where north is. The browser
+         * draws them UNDER the text, as the glass does: a line through the
+         * plot crosses satellites, and the satellite is what he reads. */
+        {
+            gps_page_axis_t ax[GPS_PAGE_MAX_AXES];
+            int na = gps_page_axes(ax, GPS_PAGE_MAX_AXES);
+            cJSON *arr2 = cJSON_AddArrayToObject(root, "axes");
+            for (int i = 0; arr2 && i < na; i++) {
+                cJSON *o = cJSON_CreateObject();
+                if (!o) break;
+                cJSON_AddNumberToObject(o, "x0", ax[i].x0);
+                cJSON_AddNumberToObject(o, "y0", ax[i].y0);
+                cJSON_AddNumberToObject(o, "x1", ax[i].x1);
+                cJSON_AddNumberToObject(o, "y1", ax[i].y1);
+                cJSON_AddItemToArray(arr2, o);
+            }
+        }
+
+        cJSON *lines = cJSON_AddArrayToObject(root, "lines");
+        for (int r = 0; lines && r < GPS_PAGE_ROWS; r++) {
+            /* Trailing blanks trimmed - the browser pads with CSS, and 24 rows
+             * of 80 columns is 2 kB of spaces on a link where the page load is
+             * already the slow part. */
+            int e = GPS_PAGE_COLS;
+            while (e > 0 && sc->lines[r][e - 1] == ' ') e--;
+            sc->lines[r][e] = '\0';
+            cJSON_AddItemToArray(lines, cJSON_CreateString(sc->lines[r]));
+        }
+
+        cJSON *marks = cJSON_AddArrayToObject(root, "marks");
+        for (int i = 0; marks && i < n_marks; i++) {
+            cJSON *m = cJSON_CreateObject();
+            if (!m) break;
+            cJSON_AddNumberToObject(m, "row", sc->marks[i].row);
+            cJSON_AddNumberToObject(m, "col", sc->marks[i].col);
+            cJSON_AddStringToObject(m, "text", sc->marks[i].text);
+            cJSON_AddNumberToObject(m, "snr", sc->marks[i].snr_db);
+            cJSON_AddBoolToObject  (m, "used", sc->marks[i].used);
+            cJSON_AddBoolToObject  (m, "compass", sc->marks[i].compass);
+            /* The colour the GLASS would use, resolved here. The browser must
+             * not own a second copy of the SNR thresholds: one satellite green
+             * in the plot and amber in the list is precisely the bug
+             * gps_page_snr_colour() exists to prevent. */
+            char col[8];
+            snprintf(col, sizeof(col), "#%06lx",
+                     (unsigned long)(sc->marks[i].compass
+                         ? 0x5B8DEFu
+                         : gps_page_snr_colour(sc->marks[i].snr_db)) & 0xFFFFFFu);
+            cJSON_AddStringToObject(m, "colour", col);
+            cJSON_AddItemToArray(marks, m);
+        }
+
+        int n_rows = gps_page_sat_rows(&sc->info, sc->satrows, UNIT_GPS_MAX_SATS);
+        cJSON *sats = cJSON_AddArrayToObject(root, "sats");
+        for (int i = 0; sats && i < n_rows; i++) {
+            cJSON *o = cJSON_CreateObject();
+            if (!o) break;
+            cJSON_AddStringToObject(o, "text", sc->satrows[i].text);
+            cJSON_AddNumberToObject(o, "snr",  sc->satrows[i].snr_db);
+            cJSON_AddBoolToObject  (o, "used", sc->satrows[i].used);
+            char col[8];
+            snprintf(col, sizeof(col), "#%06lx",
+                     (unsigned long)gps_page_snr_colour(sc->satrows[i].snr_db) & 0xFFFFFFu);
+            cJSON_AddStringToObject(o, "colour", col);
+            cJSON_AddItemToArray(sats, o);
+        }
+        heap_caps_free(sc);
+    }
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return err;
+}
+
+static const httpd_uri_t uri_gps = {
+    .uri = "/api/gps", .method = HTTP_GET, .handler = gps_get_handler,
+};
+
+/* GET /api/js8 - the JS8 conversation pane, as the GLASS composes it.
+ *
+ * ⭐ Same rule as /api/gps: js8_page_render() draws the grid, here and on the
+ * Tab5, and the browser only paints it. The JS8 screen's own layout notes -
+ * newest at the TOP, age not a wall clock, the flag column first so live and
+ * truncated marks line up down the left edge - are decisions that belong in
+ * one place, and that place is js8_page.c.
+ *
+ * `row_msg` rides along because A MESSAGE CAN WRAP ONTO SEVERAL ROWS: a tap at
+ * row r cannot be turned into a message by arithmetic, which is exactly why
+ * the glass asks for the map rather than computing it. The browser needs it
+ * for the same reason - the operator taps a row, not a message index.
+ *
+ * `mode` is the device's own word for what is running. When it is not JS8
+ * there is no conversation, and the browser says so rather than drawing an
+ * empty grid that reads as a decoder with nothing to show.
+ */
+static esp_err_t js8_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return httpd_resp_send_500(req);
+
+    bool is_js8 = (ft8_op_mode_get() == FT8_OP_MODE_JS8);
+    cJSON_AddStringToObject(root, "mode", is_js8 ? "js8" : "other");
+    cJSON_AddNumberToObject(root, "cols", JS8_PAGE_COLS);
+    cJSON_AddNumberToObject(root, "rows", JS8_PAGE_ROWS);
+
+    if (is_js8) {
+        /* ⛔ PSRAM, not .bss and not this stack. The grid plus the message
+         * snapshot is about 4 kB; internal .bss comes out of the DMA pool and
+         * 4 kB on the HTTPD stack is the stack-protection fault this task
+         * already took once. Same note as gps_get_handler(). */
+        typedef struct {
+            char           lines[JS8_PAGE_ROWS][JS8_PAGE_COLS + 1];
+            int            row_msg[JS8_PAGE_ROWS];
+            js8_chat_msg_t msgs[JS8_CHAT_MAX_MSGS];
+        } js8_api_scratch_t;
+
+        js8_api_scratch_t *sc = heap_caps_malloc(sizeof(*sc),
+                                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!sc) { cJSON_Delete(root); return httpd_resp_send_500(req); }
+
+        int n = js8_chat_count();
+        if (n > JS8_CHAT_MAX_MSGS) n = JS8_CHAT_MAX_MSGS;
+        int have = 0;
+        for (int i = 0; i < n; i++)
+            if (js8_chat_at(i, &sc->msgs[have])) have++;
+
+        /* AGE is measured against the CALLER's clock - js8_page.c has none,
+         * and the glass passes the same system time. */
+        int64_t now_utc = (int64_t)time(NULL);
+        int used = js8_page_render(sc->msgs, have, now_utc, sc->lines, sc->row_msg);
+
+        cJSON_AddNumberToObject(root, "used", used);
+        cJSON_AddNumberToObject(root, "count", have);
+
+        cJSON *lines = cJSON_AddArrayToObject(root, "lines");
+        for (int r = 0; lines && r < JS8_PAGE_ROWS; r++) {
+            int e = JS8_PAGE_COLS;
+            while (e > 0 && sc->lines[r][e - 1] == ' ') e--;
+            sc->lines[r][e] = 0;
+            cJSON_AddItemToArray(lines, cJSON_CreateString(sc->lines[r]));
+        }
+        cJSON *rmap = cJSON_AddArrayToObject(root, "row_msg");
+        for (int r = 0; rmap && r < JS8_PAGE_ROWS; r++)
+            cJSON_AddItemToArray(rmap, cJSON_CreateNumber(sc->row_msg[r]));
+
+        /* The senders, indexed the same way row_msg points, so a tap can name
+         * the station it would target without a second request. */
+        cJSON *who = cJSON_AddArrayToObject(root, "senders");
+        for (int i = 0; who && i < have; i++)
+            cJSON_AddItemToArray(who, cJSON_CreateString(sc->msgs[i].sender));
+
+        /* The band each message was heard on, indexed the same way `senders`
+         * and `row_msg` are. The rendered `lines` carry it too, but a client
+         * that wants to GROUP by band must not have to parse a text grid. */
+        cJSON *bands = cJSON_AddArrayToObject(root, "bands");
+        for (int i = 0; bands && i < have; i++)
+            cJSON_AddItemToArray(bands, cJSON_CreateString(sc->msgs[i].band));
+
+        heap_caps_free(sc);
+    }
+
+    char *out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!out) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(out);
+    return err;
+}
+
+static const httpd_uri_t uri_js8 = {
+    .uri = "/api/js8", .method = HTTP_GET, .handler = js8_get_handler,
+};
+
 // GET /api/upload_status — check result of last QRZ or eQSL upload
 static esp_err_t upload_status_handler(httpd_req_t *req)
 {
@@ -4620,6 +5336,15 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     // limit matters most when the Tab5 is somewhere you are not.
     cJSON_AddNumberToObject(root, "tune_snap_hz",   (double)settings_get_tune_snap_hz());
     cJSON_AddNumberToObject(root, "cw_pitch_hz",     (double)ui_get_cw_pitch_hz());
+    /* CW keyer speed (Ralph Hellmig, 2026-10-10). Live from the radio, not a
+     * stored setting - the QMX owns it and its front-panel encoder changes it
+     * behind our back. -1 means it has not answered yet (the link may be
+     * down), and is sent as -1 rather than as 0, because 0 is straight-key
+     * mode and would read as a real speed. The GET also ASKS, so a page that
+     * has just been opened shows the radio's current value instead of
+     * whatever it was when the link came up. */
+    cat_query_keyer_wpm();
+    cJSON_AddNumberToObject(root, "keyer_wpm",       (double)cat_get_keyer_wpm());
     /* CW PROFILES (#359, Uwe DL8UG). Four slots of {name, centre, filter mask}.
      * An empty slot is centre 0 and is sent as such, so the page renders it as
      * empty rather than inventing a default the operator never chose.
@@ -4661,6 +5386,25 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "psk_rx_en",         c.psk_rx_en);
     cJSON_AddBoolToObject(root, "bt_mouse_en",       c.bt_mouse_en);
     cJSON_AddNumberToObject(root, "swr_limit_x10",   c.swr_limit_x10);
+
+    /* RX audio - the Tab5's Resource Management sliders, which had no web
+     * equivalent at all until the parity sweep. Stored scaled exactly as
+     * settings.h documents (gain /10, width x10, blend and overlap x100);
+     * the browser shows the scaled number and the POST applies it live. */
+    {
+        cJSON *ra = cJSON_CreateObject();
+        if (ra) {
+            cJSON_AddNumberToObject(ra, "gain_d10",       settings_get_rxaud_gain_d10());
+            cJSON_AddNumberToObject(ra, "pan_width_x10",  settings_get_rxaud_pan_width_x10());
+            cJSON_AddNumberToObject(ra, "pan_blend_x100", settings_get_rxaud_pan_blend_x100());
+            cJSON_AddNumberToObject(ra, "pan_ovlp_x100",  settings_get_rxaud_pan_ovlp_x100());
+            cJSON_AddNumberToObject(ra, "agc_attack_ms",  settings_get_rxaud_agc_attack_ms());
+            cJSON_AddNumberToObject(ra, "agc_release_ms", settings_get_rxaud_agc_release_ms());
+            cJSON_AddBoolToObject  (ra, "agc_off",        settings_get_rxaud_agc_off());
+            cJSON_AddBoolToObject  (ra, "hp_mute_en",     settings_get_hp_mute_en());
+            cJSON_AddItemToObject(root, "rxaudio", ra);
+        }
+    }
     cJSON_AddBoolToObject(root, "pskreporter_en",    c.pskreporter_en);
     cJSON_AddBoolToObject(root, "greylist_en",       c.greylist_en);
     // #221 API AUDIT, read side: these were WRITE-ONLY - settable but not
@@ -4880,6 +5624,61 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                 "PORT.A mode not changed: a relay pulse or power cycle is running, or the Unit GPS UART failed to start");
             return ESP_FAIL;
+        }
+    }
+
+    /* RX input source. Unlike port_a_mode this switches NOTHING live: the
+     * source is latched at boot (rx_source_t), so the store always succeeds
+     * and the only honest answer is to say a restart is needed. The reply
+     * carries "restart_required" so a page cannot show the new source as if
+     * the board were already listening to it.
+     *
+     * A source this build does not implement is REFUSED with a 400 rather
+     * than silently coerced to the radio: over HTTP there is no dropdown to
+     * snap back, so a quiet substitution would leave a script believing it
+     * had selected the jack. */
+    {
+        /* CW keyer speed -> the radio, over CAT. Not persisted: the QMX owns
+         * it, and storing a copy here would fight the radio's own encoder.
+         * 0 is passed through, because 0 is straight-key mode (op manual
+         * 4.5) and clamping it away would remove the one setting that is
+         * genuinely useful for a tune-up. */
+        cJSON *it = cJSON_GetObjectItem(root, "keyer_wpm");
+        if (cJSON_IsNumber(it)) {
+            int wpm = it->valueint;
+            if (wpm < 0)   wpm = 0;
+            if (wpm > 999) wpm = 999;   /* the 3-digit CAT field, nothing more */
+            if (!cat_is_ready()) {
+                cJSON_Delete(root);
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                    "keyer speed: no CAT link to the radio");
+                return ESP_FAIL;
+            }
+            cat_request_keyer_wpm((uint16_t)wpm);
+        }
+    }
+
+    if ((s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "rx_source")))) {
+        uint8_t want = rx_source_parse(s);
+        if (strcasecmp(s, rx_source_str(want)) != 0) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                "rx_source: unknown or not implemented in this build "
+                "(qmx_usb and line_in are the working sources)");
+            return ESP_FAIL;
+        }
+        if (settings_set_rx_source(want))
+            ESP_LOGW(TAG, "rx_source -> %s over HTTP (restart required)",
+                     rx_source_str(want));
+    }
+    {
+        cJSON *it = cJSON_GetObjectItem(root, "line_in_gain_db");
+        if (cJSON_IsNumber(it)) {
+            uint8_t db = line_in_gain_db_normalize((uint8_t)it->valueint);
+            settings_set_line_in_gain_db(db);
+            /* Live on a running codec, so unlike the source this one really
+             * has taken effect by the time the reply is sent. */
+            if (line_in_running()) line_in_set_gain_db(db);
         }
     }
 
@@ -5265,6 +6064,72 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
       if (cJSON_IsBool(b)) settings_set_charge_limit_en(cJSON_IsTrue(b)); }
     if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "charge_limit_pct")))
         settings_set_charge_limit_pct((uint8_t)it->valuedouble);   // clamps 50..100
+
+    /* RX audio. ⛔ EACH ONE WRITES THE SETTING **AND** APPLIES IT LIVE, which
+     * is what ui/resource_mgmt_modal.c's sliders do and for the reason stated
+     * there: the DSP holds its own copy and would otherwise not hear the
+     * change until the next boot. Persisting alone would be a control that
+     * looks saved and does nothing - the same failure the SWR limit below had,
+     * and the reason that comment exists.
+     *
+     * ⚠ NOT /api/cmd's "rxaudio" action, which is the dev tuning path and is
+     * explicitly RAM-only. These are the operator's persisted settings.
+     *
+     * Values are clamped to the ranges settings.h documents before being
+     * applied, so a hand-written number cannot put the DSP somewhere it does
+     * not expect. */
+    {
+        cJSON *ra = cJSON_GetObjectItem(root, "rxaudio");
+        if (cJSON_IsObject(ra)) {
+            cJSON *v;
+            #define RA_CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : ((x) > (hi) ? (hi) : (x)))
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "gain_d10"))) {
+                int g = RA_CLAMP((int)v->valuedouble, 5, 150);
+                settings_set_rxaud_gain_d10((uint8_t)g);
+                rx_audio_set_agc_gain_max((float)g * 10.0f);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "pan_width_x10"))) {
+                int w = RA_CLAMP((int)v->valuedouble, 0, 30);
+                settings_set_rxaud_pan_width_x10((uint8_t)w);
+                rx_audio_set_pan_width((float)w / 10.0f);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "pan_blend_x100"))) {
+                int b = RA_CLAMP((int)v->valuedouble, 0, 50);
+                settings_set_rxaud_pan_blend_x100((uint8_t)b);
+                rx_audio_set_pan_blend((float)b / 100.0f);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "pan_ovlp_x100"))) {
+                int o = RA_CLAMP((int)v->valuedouble, 0, 100);
+                settings_set_rxaud_pan_ovlp_x100((uint8_t)o);
+                rx_audio_set_pan_overlap((float)o / 100.0f);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "agc_attack_ms"))) {
+                int a = RA_CLAMP((int)v->valuedouble, 1, 50);
+                settings_set_rxaud_agc_attack_ms((uint8_t)a);
+                rx_audio_set_agc_attack_ms((uint8_t)a);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "agc_release_ms"))) {
+                int r = RA_CLAMP((int)v->valuedouble, 10, 500);
+                settings_set_rxaud_agc_release_ms((uint16_t)r);
+                rx_audio_set_agc_release_ms((uint16_t)r);
+            }
+            if (cJSON_IsBool(v = cJSON_GetObjectItem(ra, "agc_off"))) {
+                bool off = cJSON_IsTrue(v);
+                settings_set_rxaud_agc_off(off);
+                rx_audio_set_agc_off(off);
+            }
+            /* ⛔ AN ESCAPE HATCH, NOT A PREFERENCE - two operators lost all
+             * audio to the headphone auto-mute after v1.16.4. It is on the
+             * Tab5 so a user with no sound can reach it there; it is here so
+             * they can reach it from a phone. Applies immediately. */
+            if (cJSON_IsBool(v = cJSON_GetObjectItem(ra, "hp_mute_en"))) {
+                settings_set_hp_mute_en(cJSON_IsTrue(v));
+                ESP_LOGI(TAG, "web: headphone auto-mute -> %s",
+                         cJSON_IsTrue(v) ? "ON" : "OFF (speaker always on)");
+            }
+            #undef RA_CLAMP
+        }
+    }
 
     // SWR protection limit. This was in the GET and in the browser's form but had
     // no case here, so the field looked editable, looked saved, and was dropped -
@@ -5908,10 +6773,30 @@ static esp_err_t decodes_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     if (!root) { heap_caps_free(snap); return httpd_resp_send_500(req); }
-    cJSON_AddStringToObject(root, "mode", ft8_op_mode_get() == FT8_OP_MODE_FT4 ? "FT4" : "FT8");
+    cJSON_AddStringToObject(root, "mode", ft8_op_mode_name());
     // So the browser can label the column MI or KM exactly as the Tab5 does.
     cJSON_AddBoolToObject(root, "miles", qs.distance_in_miles);
     cJSON_AddStringToObject(root, "working", pin);
+    /* The band timing consensus, so the browser can show the SAME corrected DT
+     * the Tab5 shows alongside the raw one.
+     *
+     * Until now the browser sent only the per-row raw dt and the Tab5 showed
+     * dt minus this consensus, both under a column headed "DT". The two
+     * therefore disagreed by the whole RX audio latency (~0.5 s) and there was
+     * nothing on either screen to say why - reported by Randy N4OPI on
+     * 2026-10-08 with a table of the two readings side by side.
+     *
+     * Sent once per response rather than folded into each row: it is a property
+     * of the slot, not of a station, and the browser needs the raw value too. */
+    {
+        int consensus = 0;
+        bool have = ft8_get_last_timing_ms(&consensus);
+        cJSON_AddNumberToObject(root, "dt_consensus", have ? consensus : 0);
+        /* DISTINCT STATIONS behind that consensus. <2 means the corrected
+           column is identically zero and must render "--" - same rule and same
+           accessor as the Tab5 list, so the two screens cannot disagree. */
+        cJSON_AddNumberToObject(root, "dt_stations", ft8_get_last_timing_stations());
+    }
     cJSON *arr = cJSON_AddArrayToObject(root, "rows");
 
     int64_t now = (int64_t)time(NULL);
@@ -6756,9 +7641,40 @@ static void upload_task(void *arg)
     }
 }
 
+/* ⛔ A FAILED REGISTRATION USED TO BE SILENT. httpd keeps a fixed array of
+ * max_uri_handlers, and once it is full every further httpd_register_uri_handler()
+ * returns ESP_ERR_HTTPD_HANDLERS_FULL - which the fifty call sites below all
+ * ignored. The symptom is not an error anywhere: it is one endpoint answering
+ * 404 and nothing in the log, and the endpoint that loses is whichever was
+ * added last.
+ *
+ * The comment on max_uri_handlers tried to hold the count in prose ("48 API + 5
+ * file-browser + headroom") and had rotted to 56-against-55 by 2026-10-09,
+ * which is the same rot CLAUDE.md records for the standing-patch count. A
+ * number in a comment cannot keep up with a list in code, so this counts them
+ * instead and says so at the end. Route through reg(), never
+ * httpd_register_uri_handler() directly. */
+/* Comfortably above the real list. filebrowser.c adds 5 of these and
+ * webserver_ws.c 1, neither through reg(), so the summary line below counts
+ * only this file's - which is why it names its own total rather than implying
+ * it is all of them. */
+#define WEB_MAX_URI_HANDLERS 80
+
+static int s_reg_ok, s_reg_fail;
+
+static void reg(const httpd_uri_t *u)
+{
+    esp_err_t e = httpd_register_uri_handler(s_server, u);
+    if (e == ESP_OK) { s_reg_ok++; return; }
+    s_reg_fail++;
+    ESP_LOGE(TAG, "register %s FAILED: %s - raise max_uri_handlers",
+             u->uri, esp_err_to_name(e));
+}
+
 esp_err_t webserver_start(void)
 {
     if (s_server != NULL) { ESP_LOGD(TAG, "Already running"); return ESP_OK; }
+    s_reg_ok = s_reg_fail = 0;   // webserver_stop()/start() may run again
 
     // Create background upload queue + task + mutex (priority 3: below audio/FT8, above idle)
     if (!s_upload_mutex) {
@@ -6797,28 +7713,41 @@ esp_err_t webserver_start(void)
 
     httpd_config_t config  = HTTPD_DEFAULT_CONFIG();
     config.server_port     = 80;
-    // 10240, not 12288: measured on hardware 2026-08-28 with util/dma_owners
-    // (#283/#284) the httpd task's stack high-water mark was 8,056 B FREE of a
-    // 12,800 B block - a peak use of ~4.7 KB - while the whole MALLOC_CAP_DMA
-    // pool had 1.9 KB left and the SD card could no longer be mounted. This
-    // still leaves ~5.5 KB spare.
+    // ⚠ 14336, RAISED 2026-10-10. The history matters, because the number was
+    // cut on a measurement that no longer holds:
+    //   2026-08-28 (util/dma_owners, #283/#284): HWM 8,056 B FREE of 12,800 B,
+    //     a peak use of ~4.7 KB, while the MALLOC_CAP_DMA pool had 1.9 KB left
+    //     and the SD card could no longer be mounted. 10240 was chosen then,
+    //     and this comment claimed it "still leaves ~5.5 KB spare".
+    //   2026-10-10 (action stack_hwm, v1.16.12-104): 1,412 B free at idle,
+    //     1,300 B free after serving 1.84 MB of /ss.bmp, 177 KB of /, 73 KB of
+    //     forge.min.js and three passes of every safe GET. Peak use is
+    //     therefore ~8.94 KB, NOT 4.7 KB. The "~5.5 KB spare" line was false by
+    //     a factor of four and is the reason this was nearly shipped at 87%
+    //     stack use.
+    // ⛔ 8.94 KB is a FLOOR, not the peak: the deepest handlers named below
+    // (/api/lotw_cert and the ADIF clear/delete SPIFFS writes) did NOT run in
+    // that session, and neither did any TLS upload. Overflow here is a crash,
+    // so the margin is deliberately generous rather than incremental.
+    // Cost is ~4 KB of the DMA-capable pool, which measured 29.7 KB free at
+    // T+120s settle - 25.6 KB after this, still far above the 1.9 KB at which
+    // the August SD-mount failure happened.
+    // ⛔ Do NOT "reclaim" it from ws_push_task because its watermark looks
+    // roomy (3,164 B free of 4,096 on the same run). A watermark only reports
+    // paths already taken - see the warning in the stack_hwm handler.
     // ⛔ Do NOT move this stack to PSRAM via config.task_caps. Several handlers
     // write SPIFFS on the httpd task itself (/api/lotw_cert, the ADIF clear and
     // delete paths), flash writes run with the cache off, and a task whose
     // stack is in PSRAM cannot run in that state - see the warning at the top
     // of util/psram_task.h, hardware-confirmed by the #218 OTA panic.
-    config.stack_size      = 10240;
-    // 38 registered here + 5 in filebrowser.c = 43, so 42 was ALREADY ONE SHORT
-    // the moment /api/shortcuts was added - and httpd fails the registration
-    // silently from the endpoint's point of view, so the symptom would have been
-    // "the shortcuts page 404s" with nothing obviously wrong. Counted, not
-    // guessed: grep -c httpd_register_uri_handler in both files.
-    // ⛔ AND AGAIN, 2026-10-04: the network radio's GET + POST /api/relay made
-    // it 50 here + 5 in filebrowser.c + 1 for /ws in webserver_ws.c = 56
-    // against 55. /ws registers LAST, so it was the one refused
-    // (ESP_ERR_HTTPD_HANDLERS_FULL) and the web page's live spectrum never
-    // connected. Count all three files. 64 leaves room for a few more.
-    config.max_uri_handlers = 64;   // 50 here + 5 file-browser + 1 /ws (= 56) + headroom
+    config.stack_size      = WEB_HTTPD_STACK_SIZE;
+    /* ⛔ DO NOT TRY TO KEEP THE EXACT COUNT IN THIS COMMENT. It said
+     * "48 API + 5 file-browser + headroom" against a 55 that the real list had
+     * already outgrown - 51 here + 5 in filebrowser.c + 1 for /ws is 57 - so
+     * one endpoint was being refused with nothing in the log. reg() below now
+     * counts and complains; this number only has to be comfortably above the
+     * list, and 80 costs 80 pointers of PSRAM-backed config. */
+    config.max_uri_handlers = WEB_MAX_URI_HANDLERS;
     config.lru_purge_enable = true;
     // LWIP_MAX_SOCKETS is 16; httpd reserves 3, so up to 13 sessions are safe.
     // Give the browser headroom (WS + /api polls + reconnect bursts) so a stale
@@ -6911,58 +7840,71 @@ esp_err_t webserver_start(void)
         return err;
     }
 
-    httpd_register_uri_handler(s_server, &uri_root);
-    httpd_register_uri_handler(s_server, &uri_status);
-    httpd_register_uri_handler(s_server, &uri_cmd);
-    httpd_register_uri_handler(s_server, &uri_ss_bmp);
-    httpd_register_uri_handler(s_server, &uri_log);
-    httpd_register_uri_handler(s_server, &uri_log_saved);
-    httpd_register_uri_handler(s_server, &uri_adif_get);
-    httpd_register_uri_handler(s_server, &uri_rxaudio_wav);
-    httpd_register_uri_handler(s_server, &uri_rxaudio_json);
-    httpd_register_uri_handler(s_server, &uri_adif_check);
-    httpd_register_uri_handler(s_server, &uri_adif_clear);
-    httpd_register_uri_handler(s_server, &uri_adif_import);
-    httpd_register_uri_handler(s_server, &uri_adif_import_sd);
-    httpd_register_uri_handler(s_server, &uri_adif_delete);
-    httpd_register_uri_handler(s_server, &uri_adif_edit);
-    httpd_register_uri_handler(s_server, &uri_qrz_key);
-    httpd_register_uri_handler(s_server, &uri_qrz_upload);
-    httpd_register_uri_handler(s_server, &uri_upload_status);
-    httpd_register_uri_handler(s_server, &uri_signal);
-    httpd_register_uri_handler(s_server, &uri_rxaudio_tune);
-    httpd_register_uri_handler(s_server, &uri_drawer_map_get);
-    httpd_register_uri_handler(s_server, &uri_drawer_map_post);
-    httpd_register_uri_handler(s_server, &uri_tone_get);
-    httpd_register_uri_handler(s_server, &uri_tone_post);
-    httpd_register_uri_handler(s_server, &uri_memory_get);
-    httpd_register_uri_handler(s_server, &uri_memory_post);
-    httpd_register_uri_handler(s_server, &uri_settings_get);
-    httpd_register_uri_handler(s_server, &uri_settings_post);
-    httpd_register_uri_handler(s_server, &uri_shortcuts_get);
-    httpd_register_uri_handler(s_server, &uri_shortcuts_post);
-    httpd_register_uri_handler(s_server, &uri_wspr);
-    httpd_register_uri_handler(s_server, &uri_decodes);
-    httpd_register_uri_handler(s_server, &uri_psk_rx);
-    httpd_register_uri_handler(s_server, &uri_help);
-    httpd_register_uri_handler(s_server, &uri_manual);
-    httpd_register_uri_handler(s_server, &uri_eqsl_creds);
-    httpd_register_uri_handler(s_server, &uri_relay_get);    // network radio (QMX on a NAS)
-    httpd_register_uri_handler(s_server, &uri_relay_post);
-    httpd_register_uri_handler(s_server, &uri_qrz_lookup_creds);
-    httpd_register_uri_handler(s_server, &uri_eqsl_upload);
-    httpd_register_uri_handler(s_server, &uri_cloudlog_creds);
-    httpd_register_uri_handler(s_server, &uri_cloudlog_upload);
-    httpd_register_uri_handler(s_server, &uri_lotw_cert);
-    httpd_register_uri_handler(s_server, &uri_lotw_upload);
-    httpd_register_uri_handler(s_server, &uri_lotw_tq8);
-    httpd_register_uri_handler(s_server, &uri_forge_js);
-    httpd_register_uri_handler(s_server, &uri_config_get);
-    httpd_register_uri_handler(s_server, &uri_config_post);
-    httpd_register_uri_handler(s_server, &uri_term_get);
-    httpd_register_uri_handler(s_server, &uri_term_post);
+    reg(&uri_root);
+    reg(&uri_status);
+    reg(&uri_cmd);
+    reg(&uri_ss_bmp);
+    reg(&uri_log);
+    reg(&uri_log_saved);
+    reg(&uri_gps);
+    reg(&uri_js8);
+    reg(&uri_adif_get);
+    reg(&uri_rxaudio_wav);
+    reg(&uri_slot_wav);
+    reg(&uri_slot_json);
+    reg(&uri_rxaudio_json);
+    reg(&uri_adif_check);
+    reg(&uri_adif_clear);
+    reg(&uri_adif_import);
+    reg(&uri_adif_import_sd);
+    reg(&uri_adif_delete);
+    reg(&uri_adif_edit);
+    reg(&uri_qrz_key);
+    reg(&uri_qrz_upload);
+    reg(&uri_upload_status);
+    reg(&uri_signal);
+    reg(&uri_rxaudio_tune);
+    reg(&uri_drawer_map_get);
+    reg(&uri_drawer_map_post);
+    reg(&uri_tone_get);
+    reg(&uri_tone_post);
+    reg(&uri_memory_get);
+    reg(&uri_memory_post);
+    reg(&uri_settings_get);
+    reg(&uri_settings_post);
+    reg(&uri_shortcuts_get);
+    reg(&uri_shortcuts_post);
+    reg(&uri_wspr);
+    reg(&uri_decodes);
+    reg(&uri_psk_rx);
+    reg(&uri_help);
+    reg(&uri_manual);
+    reg(&uri_eqsl_creds);
+    reg(&uri_relay_get);    // network radio (QMX on a NAS)
+    reg(&uri_relay_post);
+    reg(&uri_qrz_lookup_creds);
+    reg(&uri_eqsl_upload);
+    reg(&uri_cloudlog_creds);
+    reg(&uri_cloudlog_upload);
+    reg(&uri_lotw_cert);
+    reg(&uri_lotw_upload);
+    reg(&uri_lotw_tq8);
+    reg(&uri_forge_js);
+    reg(&uri_config_get);
+    reg(&uri_config_post);
+    reg(&uri_term_get);
+    reg(&uri_term_post);
     filebrowser_register(s_server);   // /files + /api/files + /api/file
     webserver_ws_start(s_server);
+
+    /* The count, measured. A nonzero fail here is an endpoint that will 404
+     * for no visible reason - see reg(). */
+    if (s_reg_fail)
+        ESP_LOGE(TAG, "%d of %d URI handlers were REFUSED - endpoints are missing",
+                 s_reg_fail, s_reg_ok + s_reg_fail);
+    else
+        ESP_LOGI(TAG, "%d URI handlers registered here, +5 files +1 /ws (max %d)",
+                 s_reg_ok, WEB_MAX_URI_HANDLERS);
 
     ESP_LOGI(TAG, "HTTP server started");
     MEM_LEDGER("httpd + ws start");   // DMA-pool bracket, 2026-10-04

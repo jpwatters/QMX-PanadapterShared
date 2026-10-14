@@ -390,3 +390,70 @@ const uint8_t kFTX_LDPC_Num_rows[FTX_LDPC_M] = {
     6, 6, 6, 7, 7, 6, 6, 7, 6, 6, 6, 6, 6, 6, 6, 7,
     6, 6, 6
 };
+
+const ftx_ldpc_code_t kFTX_LDPC_code_174_91 = {
+    .M = FTX_LDPC_M,
+    .Nm = kFTX_LDPC_Nm,
+    .Mn = kFTX_LDPC_Mn,
+    .Num_rows = kFTX_LDPC_Num_rows,
+};
+
+
+/* ---- protocol facts, in one place - see the note in constants.h ---------- */
+
+int ftx_protocol_slot_ms(ftx_protocol_t protocol)
+{
+    switch (protocol)
+    {
+    case FTX_PROTOCOL_FT4: return 7500;
+    case FTX_PROTOCOL_FT8: return 15000;
+    /* JS8 Normal shares FT8's whole timing - 12000 Hz, 1920 samples per
+     * symbol, 79 symbols, 15 s. Only the tables differ. The submodes that do
+     * NOT share it (Fast, Turbo, Slow, Ultra) are out of scope. */
+    case FTX_PROTOCOL_JS8: return 15000;
+    }
+    return 15000;
+}
+
+int ftx_protocol_num_tones(ftx_protocol_t protocol)
+{
+    return (protocol == FTX_PROTOCOL_FT4) ? 4 : 8;
+}
+
+const char* ftx_protocol_name(ftx_protocol_t protocol)
+{
+    switch (protocol)
+    {
+    case FTX_PROTOCOL_FT4: return "FT4";
+    case FTX_PROTOCOL_FT8: return "FT8";
+    case FTX_PROTOCOL_JS8: return "JS8";
+    }
+    return "?";
+}
+
+bool ftx_protocol_is_implemented(ftx_protocol_t protocol)
+{
+    /* JS8 Normal is implemented as of J5: js8_decode_candidate() in decode.c
+     * (its own post-LDPC half - 87 bits, CRC-12, colorder), js8_encode() for
+     * the tones, js8_text.c for the message text both ways, and the QSO ladder
+     * and UI reach it through ft8_op_mode_protocol().
+     *
+     * ⭐ RECEIVE IS PROVEN ON AIR (2026-10-08, 40 m 7.078): real JS8Call
+     * traffic decoded - 9A3SWO's heartbeat six times, and a Directed SNR frame
+     * carrying a portable callsign. That settles the Costas sync, LDPC(174,87),
+     * colorder, the payload layout, BOTH callsign codecs, packGrid, packNum and
+     * - the one link that had no arbiter at all - the CRC-12 engine, since
+     * js8_check_payload_crc() recomputes and compares.
+     *
+     * ⛔ TRANSMIT IS NOT PROVEN. No JS8 frame of ours has been decoded by
+     * anyone. The tone path is bit-exact against JS8Call's own genjs8.f90
+     * (tools/js8_tone_arbiter.py, 64 of 64), so the odds are good, but "they
+     * can decode us" has never been observed. Only a real JS8Call station
+     * settles it - never a second Tab5, which would share our mistakes
+     * exactly.
+     *
+     * Submodes Fast/Turbo/Slow/Ultra are each a different physical layer and
+     * are NOT implemented; only Normal is. */
+    return protocol == FTX_PROTOCOL_FT4 || protocol == FTX_PROTOCOL_FT8 ||
+           protocol == FTX_PROTOCOL_JS8;
+}

@@ -197,9 +197,40 @@ A peak limiter sits after the automatic gain, so a loud station cannot arrive at
 
 This is the part of the beta I most want reports on: which mode, roughly how strong the signal was, and whether more ceiling fixed it.
 
-## Future Work — Web Audio (IQ Streaming)
+## Where the receive signal comes from (new in v1.17.0)
 
-The next phase will stream **I/Q channels only** from the Tab5 to a PC browser, allowing the browser's own CPU to do the audio processing locally. This approach:
+Until now the panadapter always listened to the **radio's USB audio**. There is now a
+**receive source** selector, on the Tab5 and in the browser, with a level meter and a
+clip indicator beside it.
+
+| Source | State |
+|---|---|
+| **QMX USB** | The default, and what every earlier release did. |
+| **Line in (3.5 mm jack)** | **Declared beta** - see the warning below. |
+| Generic I/Q | Declared, not implemented. Selecting it is refused. |
+| Internal mics | Declared, not implemented. Selecting it is refused. |
+
+**Line in** *(asked for by Tony, @tony1tf, in issue #17)* feeds the panadapter from the
+Tab5's own 3.5 mm headphone jack instead of the radio's USB. Tony ran a test build on his
+own Tab5 to find where the jack lands — the mic ring arrives on the audio chip's third
+channel — which is the measurement the whole feature rests on. The jack is a single real audio channel, not I/Q, so the second
+channel is synthesised: a 255-tap filter builds the quadrature pair the decoders need.
+The jack wiring is drawn on screen so you can see which contact carries what.
+
+⚠ **No signal has been decoded through line in yet.** The path runs, samples flow and
+the levels read correctly with nothing plugged in - that is the whole of what has been
+verified. Treat it as unfinished. Changing the source needs a restart, and the Tab5
+does the restart itself when you press **Save**.
+
+⛔ **In line-in mode the USB radio connection is off by design.** One or the other, not
+both - so CAT, the S-meter and the band/mode display go quiet while line in is
+selected.
+
+## Not implemented: audio in the browser
+
+Audio does **not** reach the web page in this release, and there is no date for it. The
+shape it would take is to stream **I/Q channels only** to the browser and let the PC's own
+CPU do the audio work, because:
 
 - **Reduces Tab5 load** — the device sends raw I/Q data (~768 kbps at 48 kHz stereo), no processing
 - **Offloads processing to the PC** — your computer does the heavy lifting

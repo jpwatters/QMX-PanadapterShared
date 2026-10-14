@@ -246,6 +246,11 @@ esp_err_t cat_gps_gp_probe(int secs, int gap_ms, bool use_tm, cat_gp_probe_t *ou
 bool cat_gps_gp_parse(const char *resp, size_t len,
                       int *y, int *mo, int *d, int *h, int *mi, int *s);
 
+/* Latitude and longitude from the last GP reply, in DECIMAL DEGREES (the
+ * radio's own format - not the degrees-and-minutes NMEA uses). False when the
+ * radio has never reported a position this session. */
+bool cat_qmx_gps_position(double *lat, double *lon);
+
 bool cat_qmx_gps_source_internal(void);
 /* False until the radio has actually answered the GPS-source question. Callers
  * that would CHANGE the radio's state on the strength of "no GPS" must wait for
@@ -389,6 +394,34 @@ void cat_query_af_gain(void);
 /* Last AF gain read back from the radio in 0.25 dB steps, or -1 if never read.
  * Divide by 4 for the dB figure the QMX displays. */
 int cat_get_af_gain(void);
+
+/* ---- CW keyer speed (KS), in words per minute --------------------------
+ *
+ * Asked for by Ralph Hellmig on the group, 2026-10-10: there was no way to
+ * set the keyer speed from anything but the radio's own encoder.
+ *
+ * ⭐ 0 IS A REAL VALUE, NOT "unset". The QMX operation manual, section 4.5:
+ * "Setting speed to 0 enables Straight Key mode regardless of the keyer mode
+ * setting". So 0 must pass through to the radio rather than being clamped
+ * away as an empty field, and anything that caches this must not use 0 as
+ * its sentinel - see the cache-sentinel rule that BP_CW already broke once.
+ *
+ * ⚠ THE RADIO IS THE AUTHORITY ON THE RANGE. The CAT manual documents KS as
+ * "the specified number of words per minute" and states no limits, so this
+ * sends what it is given and READS BACK what the radio settled on. Whatever
+ * the QMX clamps to is what gets displayed, rather than a ceiling guessed
+ * here and then shown as if it were the radio's. */
+void cat_request_keyer_wpm(uint16_t wpm);
+
+/* Ask the radio for its current keyer speed; the answer lands in
+ * cat_get_keyer_wpm(). Same drawer-open/page-load read-back reasoning as AF
+ * gain: a surface that shows a stale value is worse than one that shows
+ * none. */
+void cat_query_keyer_wpm(void);
+
+/* Last keyer speed read back from the radio, in WPM. -1 until it has
+ * answered - NOT 0, which is straight-key mode. */
+int cat_get_keyer_wpm(void);
 
 /* ---- RF gain (RG), Stan's suggestion via Samuel W7STF, 2026-08-07 ----------
  *

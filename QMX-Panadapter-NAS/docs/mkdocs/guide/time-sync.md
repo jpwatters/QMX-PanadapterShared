@@ -11,7 +11,7 @@ FT8 requires accurate UTC time — within ±1 second of the real thing. The pana
 5. **FT8/FT4-derived** — offline fallback only (ignored while GPS/SNTP is up)
 6. **Manual set** — enter time manually via the settings drawer
 
-GPS and SNTP are the accurate sources and are used whenever present; if you're offline with neither, the panadapter falls back to the RTC (or FT8-derived / manual). The Unit GPS outranks the others while it has a fresh lock — see [Unit GPS Time Source](#unit-gps-time-source-port-a).
+GPS and SNTP are the accurate sources and are used whenever present; if you're offline with neither, the panadapter falls back to the RTC (or FT8-derived / manual). The Unit GPS outranks the others while it has a fresh lock — see [Unit GPS Time Source](#unit-gps-time-source-porta).
 
 !!! note "Both GPS sources show `UTC(GPS)`"
 
@@ -43,34 +43,41 @@ The bottom-bar **GPS indicator** — one GPS symbol, coloured by state, the same
 
 Locking takes 30 s to a few minutes from cold with a clear sky. **Switch the mode before plugging the GPS in** (enable-then-plug); see [Settings](settings.md) for why.
 
-### Module GPS v2.1 on the 30-pin bus — untested
+### Module GPS v2.1 on the 30-pin bus
 
-!!! warning "Supported in the code, never run on hardware"
+!!! warning "Works, but there is no control for it on screen"
 
     A **Module GPS v2.1 (M5Stack M003-V21)** stacked on the 30-pin bus is
     handled by the same driver as the Unit GPS — it is the same AT6668
     receiver, and the only difference is which pin the data arrives on
-    (GPIO2). **Nothing about it has been verified on hardware**, there is no
-    control for it on screen, and it is switched on over the API only:
+    (GPIO38). The receiver has now been run on hardware and delivers NMEA, but
+    there is still no control for it on screen: it is switched on over the API
+    only:
 
     ```
     POST /api/cmd   {"action":"gnss_mbus","on":true}
     ```
 
-    Set TXD DIP switch 5 on the module and leave every RXD switch off — the
-    driver only ever listens. Being on the 30-pin bus, it does not conflict
-    with the PORT.A relay, so both can be fitted at once.
+    **Set DIP switch 6 on the module — the first switch of the group the
+    silkscreen labels "RXD" — and leave every other switch off.** The groups
+    are named from the host's side, not the module's: the module's data output
+    drives the host's *receive* line, so it is the RXD group that selects it.
+    The TXD group produces nothing at all.
 
-    Use the **Unit GPS on PORT.A** if you want a receiver that has actually
-    been used. This note exists so the option is not a secret, not because it
-    is ready.
+    Being on the 30-pin bus, it does not conflict with the PORT.A relay, so
+    both can be fitted at once.
+
+    Measured on the bench with the antenna at a window: a lock, a fix 64 ms
+    old, about 530 bytes per second of well-formed NMEA, and the clock
+    taking it every second. Indoors it sat without a fix for three minutes,
+    which is normal for this receiver.
 
 
 ### 2. Offline (POTA / Portable)
 
 If you're operating **without WiFi** (POTA, portable, SOTA):
 
-0. **Best: take a Unit GPS.** With Port mode set to *Unit GPS v1.1*, the satellite gives you time **and the date** with no internet, no RTC remembered from home and no question to answer — see [Unit GPS Time Source](#unit-gps-time-source-port-a). Everything below is what to do when you have no Unit GPS.
+0. **Best: take a Unit GPS.** With Port mode set to *Unit GPS v1.1*, the satellite gives you time **and the date** with no internet, no RTC remembered from home and no question to answer — see [Unit GPS Time Source](#unit-gps-time-source-porta). Everything below is what to do when you have no Unit GPS.
 1. **Set the Tab5 RTC before you leave home** (settings -> Time)
 2. The RTC is powered by a **supercap battery** and holds time for **30–40 hours** without power
 3. When you turn the Tab5 on in the field, it reads the RTC immediately
@@ -123,7 +130,7 @@ No internet needed — FT8 timing works offline.
     The **Unit GPS on PORT.A is the exception**: its sentences carry the
     satellite date, so the date is verified by the fix itself and the question
     never has to be asked. See
-    [Unit GPS Time Source](#unit-gps-time-source-port-a).
+    [Unit GPS Time Source](#unit-gps-time-source-porta).
 
     The **Set and Sync the Clock** window also shows the date on its second
     line, marked *(unverified)* when it has not been checked. Tap that line to
@@ -285,6 +292,36 @@ This alignment is **automatic** — you don't configure slots. But **time accura
 - ±500 ms error -> can miss decodes or transmit off-slot
 - ±1 s error -> very few decodes, transmit often off-time
 - ±2 s error or worse -> FT8 doesn't work
+
+### 8b. GPS Stats - the sky view (new in v1.17.0)
+
+**Tap the UTC clock** on the bottom bar, or open **Radio -> GPS Stats** in the drawer, and
+the Tab5 draws what the GPS receiver can see:
+
+- A **sky view** - the satellites in use plotted by bearing and elevation, with elevation
+  rings and the compass axes drawn behind them
+- The fix itself, the satellite count, and **which receiver answered**
+- The same page is in the browser, composed by the device so the two cannot drift
+
+The bottom-bar clock now distinguishes its source: **U-GPS** for a GPS attached to the
+Tab5, **GPS** for a GPS-equipped QMX+ answering over CAT.
+
+**Two receivers work, and both are confirmed on hardware:**
+
+| Receiver | Where | How to enable |
+|---|---|---|
+| **Unit GPS v1.1** | PORT.A | Drawer -> **Port mode (relay / Unit GPS)** -> *Unit GPS v1.1* |
+| **Module GPS v2.1** | 30-pin M-Bus | **DIP switch 6** |
+
+⚠ On the Module GPS v2.1 the silkscreen DIP labels read backwards until you realise the
+groups are named from the **host's** side, not the module's. v1.16.12 shipped with this
+receiver supported in code but never run on hardware; it runs now.
+
+**Your grid fills itself from the fix.** If the GPS has a position, the station grid is
+filled in for you - and a grid you have typed by hand is never overwritten.
+
+⛔ The Unit GPS and the remote power-cycle relay share PORT.A. One cable, two uses: the
+relay cannot fire while the GPS owns the port, so unplug the GPS before switching back.
 
 ### 9. Time Sources Summary
 

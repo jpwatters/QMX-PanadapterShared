@@ -1132,6 +1132,41 @@
              ordering, so clicking any header does not leave the operator
              wondering how to get the CQ-callers-on-top view back. -->
         <a href="#" id="dec-order-reset" style="color:var(--dim); display:none">↺ CQ callers on top</a>
+        <!-- JS8 only. The Tab5's JS8 screen carries exactly these two tabs, and
+             ⭐ Conversation is the DEFAULT there: it is the only view that can
+             show what a station actually SAID, and Stations is one tap away.
+             Hidden in FT8/FT4, which have no conversation to show. -->
+        <span id="js8-tabs" style="display:none; margin-left:auto;">
+          <button type="button" id="js8-tab-conv" class="bot-btn">Conversation</button>
+          <button type="button" id="js8-tab-stn"  class="bot-btn">Stations</button>
+        </span>
+      </div>
+      <!-- The conversation grid, composed by the DEVICE (js8_page_render, the
+           same function the glass draws) and only painted here. Newest at the
+           top, age rather than a wall clock, the flag column first - all of
+           that is js8_page.c's and is not repeated in JavaScript. -->
+      <div id="js8-conv" style="display:none; border:1px solid #333; border-radius:6px; background:#000; padding:8px 10px;">
+        <pre id="js8-screen" style="margin:0; overflow-x:auto; color:#d8d8d8; font-family:'Consolas','DejaVu Sans Mono',monospace; font-size:14px; line-height:1.2; white-space:pre;"></pre>
+        <div id="js8-conv-hint" style="color:var(--dim); font-size:12px; margin-top:6px;"></div>
+
+        <!-- The free-text composer. ⭐ The air time is shown BEFORE the radio is
+             keyed: a 12-frame message holds the frequency for three minutes, and
+             the operator agrees to that first. The normalised text comes from the
+             DEVICE (js8_text_plan), not from JavaScript - upper-casing, whitespace
+             collapsing and dropping unsendable characters is the encoder's rule and
+             is not reimplemented here, the same reasoning as the grid above. -->
+        <div id="js8-tx" style="display:none; margin-top:10px; border-top:1px solid #333; padding-top:10px;">
+          <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap;">
+            <input type="text" id="js8-tx-text" maxlength="160" placeholder="Free text to send&hellip;"
+                   autocomplete="off" spellcheck="false"
+                   style="flex:1 1 260px; min-width:0; background:#000; color:#d8d8d8; border:1px solid #333;
+                          border-radius:6px; padding:8px 10px; font-family:'Consolas','DejaVu Sans Mono',monospace;
+                          font-size:14px;">
+            <button type="button" id="js8-tx-send" class="bot-btn">Send</button>
+            <button type="button" id="js8-tx-cancel" class="bot-btn" style="display:none;">Stop</button>
+          </div>
+          <div id="js8-tx-plan" style="color:var(--dim); font-size:12px; margin-top:6px; min-height:1.2em;"></div>
+        </div>
       </div>
       <div style="max-height:46vh; overflow:auto; border:1px solid #333; border-radius:6px;">
         <!-- Monospace, matching the Tab5 (Gyula HA3HZ: "the font of the reception
@@ -1338,6 +1373,7 @@
         <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
         <a href="#" id="act-btn" title="POTA / SOTA activation: every QSO logged while one is running claims that reference, so start it when you arrive and stop it when you leave">Activation</a>
         <a href="#" id="term-btn" title="The QMX's own menu system, on its second USB serial port - the whole radio, including everything the front panel can reach. Needed if your QMX has no control panel.">Radio menus</a>
+        <a href="#" id="gps-btn" title="The GPS status page - fix, position, grid, satellites and the sky plot. The same page the Tab5 shows when you tap the UTC clock.">GPS status</a>
       </div>
     </div>
     <button type="button" class="bot-btn" id="settings-btn" title="Callsign, grid, CQ messages, FT8 filters and the everyday toggles - with a real keyboard">Settings</button>
@@ -1655,6 +1691,40 @@
         <button class="bot-btn term-key" data-key="ctrl-q" title="Back out of a menu (the radio's own Ctrl-Q)">Back</button>
         <button class="bot-btn term-key" data-key="bksp" title="Backspace (0x08). In a numeric field the cursor sits on the rightmost digit - backspace leftward, then type the value you want">BS</button>
         <span style="color:#888; font-size:12px; margin-left:8px;">Your keyboard works too &mdash; arrows, Enter, Esc, and typing.</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- The GPS status page. ⭐ THE DEVICE COMPOSES IT, THIS ONLY PAINTS IT:
+       /api/gps returns the same 80x24 grid that gps_page_compose() draws on the
+       glass, so there is no second layout here to drift from the Tab5's. The
+       markers and the satellite rows arrive separately because they are
+       coloured, with the colour resolved on the device for the same reason -
+       one satellite must not be green in the plot and amber in the list.
+       The satellite pane is positioned over the hole the device leaves at rows
+       12-23, columns 0-25, from MEASURED character metrics: the sky plot
+       occupies the same rows to the right, so the table cannot simply be moved
+       below the grid. -->
+  <div id="gps-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.85); z-index:1000;">
+    <div style="max-width:960px; margin:4vh auto; background:#161616; border:1px solid #494949; border-radius:10px; padding:16px 20px; color:#ddd; font-size:14px;">
+      <div style="display:flex; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0; color:#ffa040; flex:1;" id="gps-title">GPS status</h3>
+        <span id="gps-state" style="color:#888; font-size:12px; margin-right:12px;"></span>
+        <button id="gps-close" class="btn-neutral">Close</button>
+      </div>
+      <div id="gps-msg" style="display:none; background:#1a1a2a; border:1px solid #3a4a7a; border-radius:6px; padding:10px 12px; margin-bottom:10px; color:#c8d4ff; line-height:1.5;"></div>
+      <!-- The black belongs to the WRAP now: the <pre> is transparent so the
+           ring SVG beneath it shows through. -->
+      <div id="gps-wrap" style="position:relative; background:#000; border-radius:6px;">
+        <!-- ⭐ The elevation rings are REAL OVALS, not characters. Three
+             attempts to draw them in the character grid were rejected on the
+             glass - a cell cannot hold a smooth curve, and every spacing that
+             broke the straight-line runs left a visible dotted line instead.
+             The device sends the geometry (gps_page_rings, the same numbers
+             the Tab5 draws) and this paints it under the text. -->
+        <svg id="gps-rings" style="position:absolute; left:0; top:0; pointer-events:none; overflow:visible;"></svg>
+        <pre id="gps-screen" style="position:relative; background:transparent; border:1px solid #333; border-radius:6px; padding:10px 12px; margin:0; overflow-x:auto; color:#d8d8d8; font-family:'Consolas','DejaVu Sans Mono',monospace; font-size:15px; line-height:1.15; white-space:pre;"></pre>
+        <div id="gps-sats" style="position:absolute; display:none; overflow-y:auto; overflow-x:hidden; font-family:'Consolas','DejaVu Sans Mono',monospace; white-space:pre; line-height:1.15;"></div>
       </div>
     </div>
   </div>
@@ -2093,6 +2163,12 @@ function freqToPixelX(freqHz, W) {
 }
 
 let lastSignalDbm = null;
+/* Frame counter for the WS S-meter trailer, so the browser samples at the same
+   1.7 Hz render.c does instead of the 1 Hz status tick that read low. */
+let wsSmeterTick = 0;
+/* When the WS trailer last drove the meter. The 1 Hz status tick stands down
+   while this is recent - see the status handler. */
+let lastSignalFromWsAt = 0;
 
 function updateClock() {
   if (!serverUtcAtTick) return;
@@ -3575,16 +3651,22 @@ async function sendCmd(payload) {
   sel.addEventListener("change", async () => {
     const hz = parseInt(sel.value, 10);
     if (!hz) return;
-    const ft4 = !!(window.__ft8Presets &&
-                   window.__ft8Presets.ft4.some(p => p.hz === hz));
+    /* ⛔ THE MODE COMES FROM THE OPTION, NOT FROM THE FREQUENCY. This used to
+       search the FT4 list for the chosen hz, which worked only while no two
+       sub-modes shared a dial frequency. JS8 shares TWO with FT4 - 17 m 18.104
+       and 6 m 50.318 are identical - so picking JS8 on either band would have
+       switched the radio to FT4 instead, on the right frequency, which is the
+       hardest kind of wrong to notice. */
+    const opt = sel.selectedOptions && sel.selectedOptions[0];
+    const mode = (opt && opt.dataset && opt.dataset.mode) || "ft8";
     /* Optimistically, like the wheel: the readout and the marker move now and
        the poll confirms, rather than the control looking dead for a second. */
     lastFreqHz = hz;
     document.getElementById("vfo").textContent = fmtHz(hz);
-    /* set_ft8_mode already exists and already does all of this - retune, FT4
-       switch, stale-decode clear. Adding an ft8_preset action would have been a
-       second door onto the same room. */
-    await sendCmd({ action: "set_ft8_mode", mode: ft4 ? "ft4" : "ft8", freq_hz: hz });
+    /* set_ft8_mode already exists and already does all of this - retune,
+       sub-mode switch, stale-decode clear. Adding an ft8_preset action would
+       have been a second door onto the same room. */
+    await sendCmd({ action: "set_ft8_mode", mode: mode, freq_hz: hz });
   });
 })();
 
@@ -4383,6 +4465,12 @@ const SET_FIELDS = [
      "The radio's achievable CW filter centres are 500-950 in 25 Hz steps, and which of them are offered depends on the CW passband in use - the QMX picks the nearest achievable one. Also sets the radio's own CW centre, so its sidetone and offset follow"],
   ["Radio & display", "if_cal_hz",          "num",  "IF calibration (Hz)",
      "Per-unit trim, -200 to +200, so a CW signal sits exactly under the cursor. Default -60"],
+  /* Keyer speed (Ralph Hellmig, 2026-10-10). Goes straight to the radio over
+     CAT and is read back, so the box shows what the QMX accepted rather than
+     what was typed. Not stored here - the radio owns it, and its own encoder
+     changes it behind the browser's back. */
+  ["Radio & display", "keyer_wpm",          "num",  "CW keyer speed (WPM)",
+     "Sent to the radio over CAT and read back, so this shows what the QMX accepted. 0 selects Straight Key mode regardless of the keyer mode setting, which is the quick way to key down for a tune-up. Needs the CAT link up"],
 
   ["Radio & display", "charge_limit_en",    "bool", "Battery care (stop charging early)",
      "Stopping short of full is easier on a lithium pack left plugged in"],
@@ -4483,6 +4571,40 @@ const SET_FIELDS = [
      version exists, which is the part nobody wanted to lose; it just waits
      for you to ask before spending 3.3 MB. Applying an update is a separate,
      always-deliberate press either way. */
+  /* RX audio - the Tab5's Resource Management sliders, which had no web
+     equivalent at all. Scaled exactly as the device stores them, and the
+     device applies each one to the live DSP as well as persisting it (see
+     the POST handler): a control that only persisted would look saved and
+     do nothing until the next boot. */
+  ["RX audio", "rxaudio.gain_d10", "num", "AGC ceiling (÷10)",
+   "5-150. The maximum gain the AGC may reach; 20 means 200. With AGC off this is a fixed gain."],
+  ["RX audio", "rxaudio.agc_off", "bool", "AGC off (fixed gain)",
+   "Pins the gain at the ceiling instead of tracking - for faint signals"],
+  ["RX audio", "rxaudio.agc_attack_ms", "num", "AGC attack (ms)",
+   "1-50. Fast (1) for CW, 3 is the default, 5 for SSB"],
+  ["RX audio", "rxaudio.agc_release_ms", "num", "AGC release (ms)",
+   "10-500. 30 for CW, 150 default, 400 for SSB - a fast release pumps on speech pauses"],
+  ["RX audio", "rxaudio.pan_width_x10", "num", "Panoramic CW width (×10)",
+   "0-30. 18 means 1.8. Only does anything in CW/CW-R"],
+  ["RX audio", "rxaudio.pan_blend_x100", "num", "Panoramic blend (×100)",
+   "0-50. 15 means 0.15"],
+  ["RX audio", "rxaudio.pan_ovlp_x100", "num", "Panoramic overlap (×100)",
+   "0-100. 30 means 0.30"],
+  /* ⛔ An escape hatch, not a preference: two operators lost all audio to the
+     auto-mute after v1.16.4 and neither could be reproduced here. It is on
+     the Tab5 so it can be reached there, and here so it can be reached from
+     a phone when the Tab5 is across the room. */
+  ["RX audio", "rxaudio.hp_mute_en", "bool", "Mute the speaker when headphones are plugged in",
+   "Turn this OFF if you lose all audio - it is the headphone auto-mute"],
+
+  /* Beside WiFi, not under a Device heading, and the Tab5 drawer places it
+     the same way for the same reason: "should this thing download 3.3 MB on
+     my hotspot" is a question about what the network connection does unasked,
+     and the people who asked for the switch would not have found it filed
+     under Expert. It downloads only - it never applies an update (#239).
+     ⚠ It was in the drawer and nowhere on the web until the parity sweep. */
+  ["WiFi", "ota_autodl", "bool", "Download updates in the background",
+   "Fetches a new release quietly when one appears. It is never installed on its own."],
   ["WiFi", "wifi_ssid", "text", "Network name", "Add another network from here; the Tab5 remembers up to six"],
   ["WiFi", "wifi_pass", "pass", "Password", "Leave blank to keep the stored one - it is never sent back to the browser"],
   /* Randy N4OPI, 2026-09-23: he runs a DMZ network alongside a home LAN, both
@@ -4550,7 +4672,10 @@ async function ft8LoadPresets() {
     const d = await r.json();
     if (!d.ft8_presets) return;
     ft8PresetsLoaded = true;
-    window.__ft8Presets = { ft8: d.ft8_presets, ft4: d.ft4_presets || [] };
+    /* js8_presets is absent on a build without JS8, and an absent list simply
+       means no JS8 group is offered. */
+    window.__ft8Presets = { ft8: d.ft8_presets, ft4: d.ft4_presets || [],
+                            js8: d.js8_presets || [] };
     ft8FillPresets();
   } catch (e) { /* offline - the control just stays empty rather than lying */ }
 }
@@ -4572,7 +4697,8 @@ function ft8FillPresets() {
      offered. Two <optgroup>s mirror the Tab5's own picker, which shows FT8 and
      FT4 side by side in two columns. */
   const groups = [["FT8", window.__ft8Presets.ft8],
-                  ["FT4", window.__ft8Presets.ft4]];
+                  ["FT4", window.__ft8Presets.ft4],
+                  ["JS8", window.__ft8Presets.js8]];
   for (const [label, list] of groups) {
     if (!list || !list.length) continue;
     const g = document.createElement("optgroup");
@@ -4580,12 +4706,14 @@ function ft8FillPresets() {
     for (const p of list) {
       const o = document.createElement("option");
       o.value = String(p.hz);
+      /* The sub-mode travels WITH the option - see the change handler. */
+      o.dataset.mode = label.toLowerCase();
       o.textContent = p.band + " m  " + (p.hz / 1e6).toFixed(3);
       /* Mark the one we are already on, so the control reads as a position and
          not just a jump list. Both mode AND frequency have to match, or the
-         same band in the other mode can look selected. */
-      const inFt4 = (lastMode || "").toUpperCase().indexOf("FT4") >= 0 || ft8IsFt4();
-      if (Math.abs(p.hz - lastFreqHz) < 500 && (label === "FT4") === inFt4)
+         same band in another mode can look selected - and with JS8 sharing two
+         frequencies with FT4, two options can carry the same hz. */
+      if (Math.abs(p.hz - lastFreqHz) < 500 && label === ft8Proto())
         o.selected = true;
       g.appendChild(o);
     }
@@ -4597,8 +4725,10 @@ function ft8FillPresets() {
 /* The device's own answer (/api/status ft8.proto), not a scan of the status
    text - that only ever said FT4 while something was being transmitted, so the
    preset list quietly believed FT8 the rest of the time. */
-function ft8IsFt4() {
-  return lastFtProto === "FT4";
+/* "FT8", "FT4" or "JS8" - the device's own word for what it is running. Used
+   anywhere a two-way FT8/FT4 test would put JS8 on the FT8 branch. */
+function ft8Proto() {
+  return (lastFtProto === "FT4" || lastFtProto === "JS8") ? lastFtProto : "FT8";
 }
 
 /* ==========================================================================
@@ -4745,6 +4875,48 @@ async function ft8OptsRefreshBadge() {
   } catch (e) { /* leave the last-known badge showing */ }
 }
 
+/* Keep in step with drawer_preset_*_cb() in ui/ui.c - same names, same
+   numbers, same order as the Tab5's own row of buttons. */
+const DB_PRESETS = [
+  ["HF Normal", -130, -30, 40],
+  ["HF DX",     -130, -50, 60],
+  ["Strong",    -110, -20, 20],
+  ["Noise",     -150, -30, 40],
+];
+
+function dbPresetRender(body) {
+  const min = body.querySelector('[data-path="display.db_min"]');
+  if (!min) return;                       // the group is not on this panel
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex; gap:6px; align-items:center; margin:8px 0 4px; flex-wrap:wrap;";
+  const lab = document.createElement("span");
+  lab.style.cssText = "color:var(--dim); font-size:13px;";
+  lab.textContent = "Presets:";
+  row.appendChild(lab);
+  for (const [name, lo, hi, ema] of DB_PRESETS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "bot-btn";
+    b.textContent = name;
+    b.title = "Floor " + lo + " dBm, ceiling " + hi + " dBm, smoothing " + ema +
+              "%. Fills the three rows below - press Save to apply.";
+    b.addEventListener("click", () => {
+      const set = (path, v) => {
+        const el = body.querySelector('[data-path="' + path + '"]');
+        if (el) el.value = String(v);
+      };
+      set("display.db_min", lo);
+      set("display.db_max", hi);
+      set("display.ema_pct", ema);
+    });
+    row.appendChild(b);
+  }
+  /* Directly above the floor row the buttons fill, so what changed is in
+     view when it changes. */
+  const host = min.closest("div");
+  if (host && host.parentNode) host.parentNode.insertBefore(row, host);
+}
+
 function setGet(obj, path) {
   return path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj);
 }
@@ -4832,6 +5004,15 @@ function setBuildForm(cfg, ft8Opts) {
      one-control-per-line renderer has no shape for. General settings only -
      it has nothing to do with FT8 options. */
   if (!ft8Opts) cwProfRender(cfg, body);
+  /* The four dB-range presets the Tab5's Spectrum group offers as buttons.
+     They are not a setting of their own - each one is just a (floor, ceiling,
+     smoothing) triple, and all three already have rows above - so this fills
+     those rows in rather than posting anything of its own. The operator still
+     presses Save, which is what makes it safe to offer here: the values are
+     visible before they are sent.
+     ⛔ The triples are the DEVICE's (drawer_preset_*_cb in ui/ui.c). Changing
+     one there and not here would give the same button two meanings. */
+  if (!ft8Opts) dbPresetRender(body);
   // Re-tint a warning select as soon as the choice changes, not on save - the
   // point of the colour is to be seen while deciding.
   body.querySelectorAll("select[data-tintable]").forEach(sel => {
@@ -5236,9 +5417,26 @@ document.getElementById("set-modal").addEventListener("click", (e) => {
    country was not shown anywhere in this list at all. */
 const DEC_COLS = [
   ["sl",   "SL"],   ["call", "CALL"], ["text", "MESSAGE"], ["cty", "COUNTRY"],
-  ["snr",  "SNR"],  ["dt",   "DT"],   ["hz",   "HZ"],      ["km",   "KM"],
-  ["brg",  "BRG"],  ["age",  "AGE"],
+  ["snr",  "SNR"],  ["dt",   "DT"],   ["dtr",  "DTR"],     ["hz",   "HZ"],
+  ["km",   "KM"],   ["brg",  "BRG"],  ["age",  "AGE"],
 ];
+/* TWO timing columns, because there are two honest answers and this table used
+   to show one of them under the other's name.
+
+   DT  = the station's offset MINUS the band consensus. Identical to the Tab5's
+         DT column, and the WSJT-X-style number: an on-time station reads ~0.0
+         because the consensus carries the RX audio latency both measurements
+         share. Shows "--" when fewer than two STATIONS fed the consensus - then
+         it is one station's offset minus itself, which is zero by construction
+         and not a measurement.
+   DTR = the raw, slot-boundary-relative offset. Includes ~0.5 s of one-way RX
+         audio latency (QMX SDR + USB buffering), so it is NOT comparable with
+         WSJT-X's DT - but it is the number that moves when the transmitter's
+         timing moves, which is what you want when checking a TX.
+
+   Randy N4OPI put the two side by side on 2026-10-08 and reported that they
+   disagreed. They did, by the audio latency, and nothing on either screen said
+   so. */
 /* Sort comparators: how to pull a comparable value out of a row, and which
    direction is the useful default the first time that column is clicked
    (SNR/KM: strongest/furthest first; everything else: low-to-high or A-Z).
@@ -5252,7 +5450,11 @@ const DEC_SORT = {
   text: { get: r => r.text || null, type: "str", def: "asc"  },
   cty:  { get: r => r.cty === undefined ? null : r.cty, type: "str", def: "asc" },
   snr:  { get: r => r.snr === undefined ? null : r.snr, type: "num", def: "desc" },
+  /* Both timing columns sort on the RAW value: the consensus is the same
+     constant for every row in a response, so subtracting it cannot reorder
+     anything. One accessor, no chance of the two columns sorting differently. */
   dt:   { get: r => r.dt  === undefined ? null : r.dt,  type: "num", def: "asc"  },
+  dtr:  { get: r => r.dt  === undefined ? null : r.dt,  type: "num", def: "asc"  },
   hz:   { get: r => r.hz  === undefined ? null : r.hz,  type: "num", def: "asc"  },
   km:   { get: r => r.km  === undefined ? null : r.km,  type: "num", def: "desc" },
   brg:  { get: r => r.brg === undefined ? null : r.brg, type: "num", def: "asc"  },
@@ -5604,12 +5806,29 @@ async function pollWspr() {
 setInterval(pollWspr, 5000);
 pollWspr();
 
-const decState = { rows: [], unit: "KM", mode: "FT8", sortKey: null, sortDir: "asc" };
+const decState = { rows: [], unit: "KM", mode: "FT8", sortKey: null, sortDir: "asc",
+                   dtConsensus: 0, dtStations: 0 };
 let decPollInFlight = false;
 
 function decFmt(k, r) {
   if (k === "snr") return (r.snr > 0 ? "+" : "") + r.snr;
-  if (k === "dt")  return (r.dt / 1000).toFixed(1);
+  /* DT: consensus-corrected, the same arithmetic and the same blanking rule as
+     the Tab5's own column. "--" when fewer than two stations fed the consensus,
+     because then it is a station's offset minus itself. */
+  if (k === "dt") {
+    if (decState.dtStations < 2) return "—";
+    const v = (r.dt - decState.dtConsensus) / 1000;
+    /* >= 0, not > 0: the Tab5 formats with %+.1f, which signs an exact zero as
+       "+0.0". A bare "0.0" here would be the two screens disagreeing again, in
+       the one place they are now meant to match character for character. */
+    return (v >= 0 ? "+" : "") + v.toFixed(1);
+  }
+  /* DTR: raw, boundary-relative, audio latency included. Signed like DT - the
+     sign was missing here and a bare "0.6" reads as a corrected value. */
+  if (k === "dtr") {
+    const v = r.dt / 1000;
+    return (v >= 0 ? "+" : "") + v.toFixed(1);
+  }
   if (k === "hz")  return r.hz;
   if (k === "age") return r.age < 60 ? r.age + "s" : Math.floor(r.age / 60) + "m";
   // The device OMITS km/brg when either grid is missing rather than sending a
@@ -5638,8 +5857,21 @@ function decRenderTable() {
   const head = document.getElementById("dec-head");
   const arrow = key => decState.sortKey === key
     ? '<span class="arrow">' + (decState.sortDir === "asc" ? "▲" : "▼") + '</span>' : "";
+  /* Hover text for the two timing columns. Without it DT and DTR are two
+     near-identical numbers under near-identical headings, which is the
+     confusion this pair was added to END, not to repeat. */
+  const DEC_TIPS = {
+    dt:  "Offset from the band consensus, as WSJT-X reports DT and as the Tab5 "
+       + "shows it. The consensus carries the RX audio latency both share, so an "
+       + "on-time station reads about 0.0. Shows — while fewer than two "
+       + "stations have fed the consensus.",
+    dtr: "Raw offset from the slot boundary, including about 0.5 s of one-way RX "
+       + "audio latency. Not comparable with WSJT-X's DT, but it is the number "
+       + "that moves when a transmitter's timing moves.",
+  };
   head.innerHTML = DEC_COLS.map(c =>
     '<th class="sortable" onclick="decSetSort(\'' + c[0] + '\')" '
+    + (DEC_TIPS[c[0]] ? 'title="' + DEC_TIPS[c[0]] + '" ' : '')
     + 'style="position:sticky;top:0;background:#1a1a1a;border-bottom:1px solid #333;padding:4px 6px;text-align:left;color:#ffa040">'
     + (c[0] === "km" ? decState.unit : c[1]) + arrow(c[0]) + "</th>").join("");
   document.getElementById("dec-order-reset").style.display = decState.sortKey === null ? "none" : "";
@@ -5698,6 +5930,11 @@ async function pollDecodes() {
     // The KM column has to become MI the moment the Tab5 setting is flipped.
     decState.unit = d.miles ? "MI" : "KM";
     decState.mode = d.mode || "FT8";
+    /* Slot properties, not row properties - DT subtracts the first and blanks
+       on the second. Defaulted so an older device that does not send them makes
+       DT render "--" rather than silently showing the raw value as corrected. */
+    decState.dtConsensus = d.dt_consensus || 0;
+    decState.dtStations  = d.dt_stations  || 0;
     /* Just "Decode list": the mode heading above the panel already says FT8 or
        FT4, and saying it twice on one screen is noise. */
     document.getElementById("dec-title").textContent = "Decode list";
@@ -5760,6 +5997,222 @@ document.getElementById("dec-body").addEventListener("click", async (e) => {
   document.getElementById("ft8-webr").textContent = "Asking the Tab5 to reply to " + call + "...";
   await sendCmd({ action: "reply", call: call });
 })
+
+/* ───────────────────────── JS8 conversation pane ───────────────────────────
+   Parity with the Tab5's JS8 screen, which carries two tabs over the same
+   right-hand pane: Stations (the decode table this page has always had) and
+   Conversation. ⭐ Conversation is the DEFAULT in JS8 on the glass, because it
+   is the only view that can show what a station actually SAID, so it is the
+   default here too.
+
+   The grid comes from /api/js8 already composed by js8_page_render() - the
+   same function the Tab5 draws. Laying it out here would be a second copy of
+   decisions that were argued out once (newest at the top, age not a wall
+   clock, the flag column first so live and truncated marks line up).
+
+   ⛔ Rows are tappable and the row -> message map comes FROM THE DEVICE. A
+   message can wrap onto several rows, so a tap cannot be turned into a message
+   by arithmetic - the glass asks for the map for exactly this reason. */
+let js8Tab = "conv";      // the Tab5's default in JS8
+let js8Timer = null;
+let js8Senders = [];
+let js8Shown = "";   // the grid currently painted - see js8Poll()
+
+function js8Esc(t) {
+  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* Show the tabs only in JS8, and only ever one pane at a time. Called from the
+   status poll, so switching the Tab5's mode from anywhere updates this page. */
+function js8TabsSync(proto) {
+  const isJs8 = (proto === "JS8");
+  document.getElementById("js8-tabs").style.display = isJs8 ? "" : "none";
+  const conv = document.getElementById("js8-conv");
+  const tbl  = document.getElementById("dec-table").parentElement;
+  const showConv = isJs8 && js8Tab === "conv";
+  conv.style.display = showConv ? "" : "none";
+  tbl.style.display  = showConv ? "none" : "";
+  /* ⭐ The glass HIDES the Stations column header in conversation view
+     (s_col_hdr, ft8_screen_view.c) and lets the tab bar name the pane. Do the
+     same: "Decode list - nothing heard yet" over a conversation is a heading
+     describing the pane that is not on screen. */
+  for (const id of ["dec-title", "dec-count", "dec-rx", "dec-order-reset"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (showConv) { el.dataset.js8Hid = "1"; el.style.visibility = "hidden"; }
+    else if (el.dataset.js8Hid) { delete el.dataset.js8Hid; el.style.visibility = ""; }
+  }
+  for (const [id, want] of [["js8-tab-conv", "conv"], ["js8-tab-stn", "stn"]]) {
+    const b = document.getElementById(id);
+    b.style.opacity = (js8Tab === want) ? "1" : "0.55";
+  }
+  /* The composer belongs to the conversation pane: it is where you are reading
+     what was said, which is where you answer. */
+  document.getElementById("js8-tx").style.display = showConv ? "" : "none";
+  if (showConv) {
+    if (!js8Timer) { js8Poll(); js8Timer = setInterval(js8Poll, 1000); }
+  } else if (js8Timer) {
+    clearInterval(js8Timer); js8Timer = null;
+  }
+}
+
+/* ---- the free-text composer -------------------------------------------
+   ⭐ THE PLAN COMES FROM THE DEVICE. js8_text_plan returns the frame count,
+   the air time AND the normalised text - upper-cased, whitespace collapsed,
+   unsendable characters dropped. Showing the device's own answer means the
+   operator sees exactly what will go out, and the encoder's rules are not
+   duplicated in JavaScript where they would drift. */
+let js8PlanTimer = null;
+let js8PlanSeq = 0;
+
+async function js8PlanNow() {
+  const txt  = document.getElementById("js8-tx-text").value;
+  const out  = document.getElementById("js8-tx-plan");
+  const send = document.getElementById("js8-tx-send");
+  if (!txt.trim()) { out.textContent = ""; send.disabled = true; return; }
+  const seq = ++js8PlanSeq;
+  let j;
+  try {
+    j = await (await fetch("/api/cmd", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "js8_text_plan", text: txt })
+    })).json();
+  } catch (e) { out.textContent = "(could not reach the Tab5)"; return; }
+  if (seq !== js8PlanSeq) return;   /* a later keystroke already answered */
+  if (!j.ok) {
+    out.textContent = "Nothing sendable in that.";
+    send.disabled = true;
+    return;
+  }
+  send.disabled = false;
+  const mins = j.secs >= 60 ? " (" + Math.floor(j.secs / 60) + " min " + (j.secs % 60) + " s)" : "";
+  out.textContent = j.frames + (j.frames === 1 ? " frame, " : " frames, ") +
+                    j.secs + " s of air time" + mins + "  →  " + j.text;
+}
+
+function js8TxInit() {
+  const ta     = document.getElementById("js8-tx-text");
+  const send   = document.getElementById("js8-tx-send");
+  const cancel = document.getElementById("js8-tx-cancel");
+  if (!ta || ta.dataset.wired) return;
+  ta.dataset.wired = "1";
+  send.disabled = true;
+
+  /* Debounced: one plan per pause in typing, not one per keystroke. */
+  ta.addEventListener("input", () => {
+    if (js8PlanTimer) clearTimeout(js8PlanTimer);
+    js8PlanTimer = setTimeout(js8PlanNow, 250);
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !send.disabled) { e.preventDefault(); send.click(); }
+  });
+
+  send.addEventListener("click", async () => {
+    const txt = ta.value;
+    if (!txt.trim()) return;
+    send.disabled = true;
+    try {
+      await fetch("/api/cmd", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "js8_text", text: txt })
+      });
+      ta.value = "";
+      document.getElementById("js8-tx-plan").textContent = "Sending…";
+    } catch (e) {
+      document.getElementById("js8-tx-plan").textContent = "(could not reach the Tab5)";
+      send.disabled = false;
+    }
+  });
+
+  /* ⛔ Reachable mid-transmission on purpose: a run holds the frequency for up
+     to three minutes and must be stoppable from wherever the operator is. */
+  cancel.addEventListener("click", async () => {
+    try {
+      await fetch("/api/cmd", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "js8_text_cancel" })
+      });
+    } catch (e) { /* the status poll will show whether it stopped */ }
+  });
+}
+
+/* Progress, from the status the device already publishes. Called from the
+   status poll rather than polling again - ft8.ftx_* is already in /api/status. */
+function js8TxStatus(ft8) {
+  const box = document.getElementById("js8-tx");
+  if (!box || box.style.display === "none") return;
+  const cancel = document.getElementById("js8-tx-cancel");
+  const send   = document.getElementById("js8-tx-send");
+  const plan   = document.getElementById("js8-tx-plan");
+  const run    = !!(ft8 && ft8.ftx_active);
+  cancel.style.display = run ? "" : "none";
+  send.style.display   = run ? "none" : "";
+  if (run && ft8.ftx_total) {
+    plan.textContent = "Sending frame " + ft8.ftx_sent + " of " + ft8.ftx_total + "…";
+  }
+}
+
+async function js8Poll() {
+  let j;
+  try { j = await (await fetch("/api/js8", { cache: "no-store" })).json(); }
+  catch (e) { return; }   /* a dropped poll retries */
+
+  const pre  = document.getElementById("js8-screen");
+  const hint = document.getElementById("js8-conv-hint");
+  if (j.mode !== "js8") {
+    js8Shown = "";
+    pre.textContent = "";
+    hint.textContent = "The Tab5 is not in JS8.";
+    return;
+  }
+  js8Senders = j.senders || [];
+  const rowMsg = j.row_msg || [];
+  /* ⛔ Do not rebuild an unchanged grid. This polls once a second, and
+     replacing innerHTML drops whatever the operator had selected to copy -
+     a callsign or a message is exactly what they select. (The glass caches
+     for a different reason, internal-heap churn; the effect to avoid here is
+     the selection.) */
+  const stamp = JSON.stringify(j.lines) + "|" + JSON.stringify(rowMsg);
+  if (stamp === js8Shown) { js8Hint(j); return; }
+  js8Shown = stamp;
+  /* Each row carries the message it belongs to, so a click can be resolved
+     without re-deriving it. data-mi = -1 for a row with no message. */
+  pre.innerHTML = (j.lines || []).map((t, r) => {
+    const mi = (r < rowMsg.length) ? rowMsg[r] : -1;
+    const who = (mi >= 0 && mi < js8Senders.length) ? js8Senders[mi] : "";
+    const tap = who ? ' style="cursor:pointer"' : "";
+    return '<span data-mi="' + mi + '" data-call="' + js8Esc(who) + '"' + tap + '>'
+         + js8Esc(t || " ") + "</span>";
+  }).join("\n");
+  js8Hint(j);
+}
+
+function js8Hint(j) {
+  document.getElementById("js8-conv-hint").textContent = j.count
+    ? "Tap a line to reply to that station. " + j.count + " in the store."
+    : "Nothing decoded yet. Heartbeats and directed messages appear here too, not only free text.";
+}
+
+document.getElementById("js8-tab-conv").addEventListener("click", () => {
+  js8Tab = "conv"; js8TabsSync("JS8");
+});
+document.getElementById("js8-tab-stn").addEventListener("click", () => {
+  js8Tab = "stn"; js8TabsSync("JS8");
+});
+
+/* Same gesture, and the same command, as clicking a row in the decode list -
+   the glass resolves a conversation tap to the Stations row with that callsign
+   and activates it, so both surfaces do one thing. ⚠ A free-text run that was
+   never attributed has no callsign (the sender reads "- - -"), and there is
+   nothing to reply to: the row simply does not respond. */
+document.getElementById("js8-screen").addEventListener("click", async (e) => {
+  const sp = e.target.closest("span[data-call]");
+  if (!sp) return;
+  const call = sp.getAttribute("data-call");
+  if (!call) return;
+  document.getElementById("ft8-webr").textContent = "Asking the Tab5 to reply to " + call + "...";
+  await sendCmd({ action: "reply", call: call });
+});
 
 /* =====================================================================
    Help: guidance rows + the built-in manual, both served by the Tab5
@@ -6454,6 +6907,22 @@ async function tick() {
        whenever nothing is transmitting - a guess wearing a fact's clothes. */
     if (s.ft8 && s.ft8.proto) lastFtProto = s.ft8.proto;
 
+    /* The JS8 tabs follow the DEVICE's mode, not a click on this page: the
+       operator can switch the Tab5 from the glass, from the drawer or from
+       here, and the pane must not go on offering a conversation that the
+       radio is no longer decoding. */
+    js8TabsSync(lastFtProto);
+    js8TxInit();
+    /* ⛔ `s`, NOT `d`. This read `d.ft8` and shipped in v1.17.0. There is no `d`
+       in tick() - the parsed status is `const s` - so every poll threw a
+       ReferenceError here, the catch below turned it into one suppressed
+       console line, and EVERYTHING AFTER THIS POINT never ran: the band, mode
+       and BW pills stayed "--", lastScreen stayed null so the page never left
+       the panadapter, and switching the Tab5's mode did nothing on the web
+       page. Randy N4OPI reported it within hours of the release.
+       The name came from js8Poll(), where the fetch result IS `d`. */
+    js8TxStatus(s.ft8);
+
     /* The Pause button has to SHOW the pause, not just set it - it shipped
        without this and the operator caught it immediately ("clicking the web
        Pause does what it should do if you check the Tab5, but stays the same").
@@ -6568,7 +7037,7 @@ async function tick() {
          either, and mirroring it was the whole request. Hidden rather than
          emptied, so the grid row collapses instead of leaving a gap. */
       const want = screen === "wspr" ? "MODE: WSPR"
-                 : screen === "ft8"  ? "MODE: " + (ft8IsFt4() ? "FT4" : "FT8")
+                 : screen === "ft8"  ? "MODE: " + ft8Proto()
                                      : "";
       if (mb && mb.textContent !== want) {
         mb.textContent = want;
@@ -6826,8 +7295,15 @@ async function tick() {
        device's fragile WiFi/httpd and jammed the whole web server, so it was
        reverted — stability beats a snappier meter. (If a faster meter is ever
        wanted, piggyback the dBm on the WS frame — zero extra connections.) */
-    lastSignalDbm = s.signal_dbm ?? null;
-    drawSmeter(lastSignalDbm);
+    /* ...but only while no WS frame is feeding it. The socket carries the same
+       dBm 10 times a second, so when it is up this 1 Hz value is strictly the
+       worse of the two - it is the undersampling signal_handler's own comment
+       warns about. Letting both drive the meter made it alternate between two
+       different instants, which looks like noise and is not. */
+    if (performance.now() - lastSignalFromWsAt > 3000) {
+      lastSignalDbm = s.signal_dbm ?? null;
+      drawSmeter(lastSignalDbm);
+    }
 
     /* Bottom-left: battery */
     const batt = s.battery;
@@ -6941,9 +7417,32 @@ async function tick() {
         console.error("status paint failed (values left stale):", e);
       else if (statusPaintErrs === 4)
         console.error("status paint still failing - further errors suppressed");
+      /* ⛔ AND SAY SO ON THE PAGE, not only in the console. The comment above
+         was written after this exact failure in September and fixed it to a
+         console line - which is a place nobody looks, because the page goes on
+         looking plausible: a live spectrum (it is a separate WebSocket) over
+         fields frozen at "--". It then shipped AGAIN in v1.17.0 and a user
+         found it, not me. A dead status poll is now stated where the operator
+         is already looking. */
+      if (statusPaintErrs === 3) showPaintFailureBanner(e);
     }
   }
   finally { statusInFlight = false; }
+}
+
+/* The banner for a status poll that is throwing. Built on demand so it costs
+   nothing on a healthy page, and it does not clear itself: the condition is a
+   bug in this file, so it is fixed by a new build, not by waiting. */
+function showPaintFailureBanner(e) {
+  if (document.getElementById("paint-fail")) return;
+  const b = document.createElement("div");
+  b.id = "paint-fail";
+  b.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:9999;background:#962020;" +
+                    "color:#fff;font:14px/1.4 system-ui,sans-serif;padding:10px 14px;text-align:center";
+  b.textContent = "This page has stopped reading the radio's status - band, mode and bandwidth " +
+                  "below are stale. The spectrum is a separate stream and is still live. " +
+                  "Please report this: " + (e && e.message ? e.message : String(e));
+  document.body.appendChild(b);
 }
 
 function updateFreqAxis() {
@@ -9314,25 +9813,35 @@ function termRender(j) {
    pre's own font, and the font size is reset to the base first so repeated
    calls cannot ratchet downward. overflow-x stays as the backstop for a window
    too narrow even at the minimum size. */
-function termFit() {
-  const pre = document.getElementById("term-screen");
-  if (!pre || !pre.offsetParent) return;          // modal not on screen
+function fit80(id) {
+  const pre = document.getElementById(id);
+  if (!pre || !pre.offsetParent) return null;     // modal not on screen
   const BASE = 15, MIN = 6;
   pre.style.fontSize = BASE + "px";
   const cs = getComputedStyle(pre);
   const avail = pre.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-  if (!(avail > 0)) return;
+  if (!(avail > 0)) return null;
   const probe = document.createElement("span");
   probe.textContent = "0".repeat(80);
   probe.style.cssText = "position:absolute; visibility:hidden; white-space:pre;";
   pre.appendChild(probe);
-  const w80 = probe.getBoundingClientRect().width;
+  let w80 = probe.getBoundingClientRect().width;
   pre.removeChild(probe);
-  if (!(w80 > 0)) return;
-  if (w80 <= avail) return;                       // already fits at full size
-  const size = Math.max(MIN, Math.floor(BASE * (avail / w80) * 10) / 10);
-  pre.style.fontSize = size + "px";
+  if (!(w80 > 0)) return null;
+  let size = BASE;
+  if (w80 > avail) {                              // does not fit at full size
+    size = Math.max(MIN, Math.floor(BASE * (avail / w80) * 10) / 10);
+    pre.style.fontSize = size + "px";
+    w80 *= size / BASE;
+  }
+  /* The GPS page needs the cell size as well as the fit, to put its satellite
+     pane over the hole in the grid. Measured, never assumed: the character
+     width depends on which fallback font the browser actually picked. */
+  return { size: size, cellW: w80 / 80, lineH: size * 1.15,
+           padL: parseFloat(cs.paddingLeft), padT: parseFloat(cs.paddingTop) };
 }
+
+function termFit() { fit80("term-screen"); }
 
 window.addEventListener("resize", termFit);
 
@@ -9421,6 +9930,266 @@ document.getElementById("term-btn").addEventListener("click", (e) => {
   termOpenModal();
 });
 document.getElementById("term-close").addEventListener("click", termCloseModal);
+
+/* ───────────────────────── GPS status page ─────────────────────────────────
+   The device composes the page; this paints it. /api/gps returns the same
+   80x24 grid gps_page_compose() draws on the glass, with the marker cells and
+   the satellite-table region already blanked, so the only work here is to put
+   the coloured text back into those holes. Laying the page out in JavaScript
+   instead would be a second implementation of a layout whose whole purpose is
+   to look like the radio's own GPS viewer.
+
+   REFRESH matches the glass's own REFRESH_MS (ui/gps_status_view.c): a GNSS
+   receiver reports once a second and a faster poll would only cost HTTP. */
+let gpsTimer = null;
+let gpsMetrics = null;   // cached cell metrics - see the fit80() call
+let gpsGridShown = "";   // the grid currently painted
+const GPS_REFRESH_MS = 1000;
+
+function gpsEsc(t) {
+  return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* Show or hide the grid. ⛔ Hide the WRAPPER, not just empty the <pre>: an
+   empty pre still draws its black panel and border, which reads as a page
+   that failed to load rather than as no page. */
+function gpsShowGrid(on) {
+  document.getElementById("gps-wrap").style.display = on ? "" : "none";
+  if (!on) {
+    const sv = document.getElementById("gps-rings");
+    while (sv && sv.firstChild) sv.removeChild(sv.firstChild);
+    document.getElementById("gps-screen").innerHTML = "";
+    gpsGridShown = "";
+    gpsSatsShown = "";
+    document.getElementById("gps-sats").style.display = "none";
+    document.getElementById("gps-state").textContent = "";
+  }
+}
+
+function gpsMsg(html) {
+  const el = document.getElementById("gps-msg");
+  el.innerHTML = html || "";
+  el.style.display = html ? "" : "none";
+}
+
+/* One row, with each marker on it written back in its own colour.
+   Built column by column rather than by splicing strings: two markers can sit
+   next to each other on the same row, and the device's own blanking means the
+   cells under them are spaces. */
+function gpsRowHtml(text, marks, row, cols) {
+  const cells = (text + " ".repeat(cols)).slice(0, cols).split("");
+  const colour = new Array(cols).fill(null);
+  for (const m of marks) {
+    if (m.row !== row) continue;
+    for (let k = 0; k < m.text.length; k++) {
+      const c = m.col + k;
+      if (c < 0 || c >= cols) continue;
+      cells[c]  = m.text[k];
+      colour[c] = m.colour;
+    }
+  }
+  let html = "", run = "", runCol = null;
+  const flush = () => {
+    if (!run) return;
+    html += runCol ? '<span style="color:' + runCol + '">' + gpsEsc(run) + "</span>"
+                   : gpsEsc(run);
+    run = "";
+  };
+  for (let c = 0; c < cols; c++) {
+    if (colour[c] !== runCol) { flush(); runCol = colour[c]; }
+    run += cells[c];
+  }
+  flush();
+  return html;
+}
+
+/* The satellite pane, over the hole the device leaves at rows table_row0..23,
+   columns 0..25. It cannot simply go below the grid: the sky plot occupies the
+   same rows to the RIGHT of it. Positioned from fit80()'s measured cell size,
+   and it scrolls because a receiver routinely sees twenty satellites while the
+   hole is twelve rows tall - the same reason the pane on the glass scrolls. */
+/* ⛔ ONLY REBUILD WHEN THE CONTENT CHANGED, AND KEEP THE SCROLL.
+ *
+ * This polls once a second and used to replace the pane's innerHTML every
+ * time. Replacing it resets scrollTop to 0 and repaints every row, so the
+ * list jumped back to the top once a second and visibly flickered - reported
+ * from the glass 2026-10-09 ("the satellite list is flipping all the time").
+ * The Tab5 does not do this because it sets each label's TEXT and leaves the
+ * objects alone; this is the browser-side equivalent.
+ *
+ * ⚠ MEASURED FIRST: four consecutive /api/gps polls on the bench returned the
+ * satellites in an identical order, so the device was not reordering anything
+ * and the fault was entirely here. Do not "fix" this by sorting the list. */
+let gpsSatsShown = "";
+
+function gpsPlaceSats(metrics, j) {
+  const pane = document.getElementById("gps-sats");
+  if (!metrics || !j.sats || !j.sats.length) {
+    pane.style.display = "none";
+    gpsSatsShown = "";
+    return;
+  }
+  const row0 = (j.table_row0 !== undefined) ? j.table_row0 : 12;
+  const rows = (j.rows || 24) - row0;
+  pane.style.left     = (metrics.padL) + "px";
+  pane.style.top      = (metrics.padT + row0 * metrics.lineH) + "px";
+  pane.style.width    = (26 * metrics.cellW) + "px";
+  pane.style.height   = (rows * metrics.lineH) + "px";
+  pane.style.fontSize = metrics.size + "px";
+  pane.style.display  = "";
+
+  const html = j.sats.map(
+    (r) => '<div style="color:' + r.colour + '">' + gpsEsc(r.text) + "</div>").join("");
+  if (html === gpsSatsShown) return;          /* nothing moved - leave it be */
+  const keep = pane.scrollTop;                /* a rebuild loses this */
+  pane.innerHTML = html;
+  pane.scrollTop = keep;
+  gpsSatsShown = html;
+}
+
+/* Paint the elevation rings as thin faint-grey ovals, positioned from the
+   SAME measured cell metrics the satellite pane uses. The geometry is the
+   device's (gps_page_rings), so the browser and the Tab5 cannot disagree
+   about where the horizon is.
+
+   ⛔ Do NOT go back to drawing these as characters. It was tried three times
+   and rejected three times - continuous gives horizontal and diagonal runs,
+   spaced gives a visible ". . ." dotted line (measured: 11 such runs). */
+function gpsDrawRings(metrics, j) {
+  const svg = document.getElementById("gps-rings");
+  if (!svg) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  if (!metrics || ((!j.rings || !j.rings.length) && (!j.axes || !j.axes.length))) return;
+
+  const pre = document.getElementById("gps-screen");
+  svg.setAttribute("width",  pre.offsetWidth);
+  svg.setAttribute("height", pre.offsetHeight);
+
+  /* Axes FIRST, so they sit under everything else in the SVG - and the whole
+     SVG sits under the <pre>, so the satellites are on top of both. That
+     ordering is the operator's instruction, not an incidental: a line through
+     the plot crosses satellites, and the satellite is what he reads. */
+  for (const a of (j.axes || [])) {
+    const ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    ln.setAttribute("x1", metrics.padL + a.x0 * metrics.cellW);
+    ln.setAttribute("y1", metrics.padT + a.y0 * metrics.lineH);
+    ln.setAttribute("x2", metrics.padL + a.x1 * metrics.cellW);
+    ln.setAttribute("y2", metrics.padT + a.y1 * metrics.lineH);
+    ln.setAttribute("stroke", "#4a4a4a");
+    ln.setAttribute("stroke-width", "1");
+    svg.appendChild(ln);
+  }
+
+  for (const r of j.rings) {
+    const el = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
+    el.setAttribute("cx", metrics.padL + r.cx * metrics.cellW);
+    el.setAttribute("cy", metrics.padT + r.cy * metrics.lineH);
+    el.setAttribute("rx", r.rx * metrics.cellW);
+    el.setAttribute("ry", r.ry * metrics.lineH);
+    el.setAttribute("fill", "none");
+    el.setAttribute("stroke", "#4a4a4a");
+    el.setAttribute("stroke-width", "1");
+    svg.appendChild(el);
+  }
+}
+
+async function gpsPoll() {
+  let j;
+  try {
+    j = await (await fetch("/api/gps", { cache: "no-store" })).json();
+  } catch (e) { return; }   /* a dropped poll retries; not worth a message */
+
+  const title = document.getElementById("gps-title");
+
+  if (j.src === "none") {
+    /* The same rule the tap on the glass follows: no page rather than a page
+       of dashes, which reads as a receiver that has failed instead of as no
+       receiver at all. */
+    title.textContent = "GPS status";
+    gpsShowGrid(false);
+    gpsMsg("No GPS receiver is setting the clock, so there is nothing to show. "
+         + "The clock is on NTP, the on-board RTC, FT8 or whatever you set by hand. "
+         + "Attach a Module GPS or a Unit GPS, or let the QMX's own receiver take over.");
+    return;
+  }
+
+  if (j.src === "qmx") {
+    /* Over CAT the radio gives position and time and nothing else, so a page
+       drawn from it would be three rows of data and eight of dashes. The glass
+       hands this case to the radio's own viewer; so does the browser. */
+    title.textContent = "GPS status — the radio's own receiver";
+    gpsShowGrid(false);
+    gpsMsg("The QMX's own GPS is setting the clock. Over CAT the radio reports "
+         + "position and time and nothing else &mdash; no satellites, no signal "
+         + "levels &mdash; so there is no page to draw here. Its own GPS viewer has "
+         + "all of it: open <b>Radio menus</b> and go to Hardware tests &rarr; GPS viewer.");
+    return;
+  }
+
+  gpsMsg("");
+  gpsShowGrid(true);
+  if (j.title) title.textContent = j.title;
+  document.getElementById("gps-state").textContent =
+      (j.sats ? j.sats.length : 0) + " satellites";
+
+  const cols  = j.cols || 80;
+  const marks = j.marks || [];
+  {
+    /* Same rule as the satellite pane: a 1 Hz innerHTML rebuild of the whole
+       grid repaints 24 rows whether or not anything changed, and drops any
+       text the operator had selected. */
+    const grid = (j.lines || []).map((t, r) => gpsRowHtml(t, marks, r, cols)).join("\n");
+    if (grid !== gpsGridShown) {
+      document.getElementById("gps-screen").innerHTML = grid;
+      gpsGridShown = grid;
+    }
+  }
+  {
+    /* One measurement, both overlays - the rings and the satellite pane must
+       land on the same grid or they disagree with the text under them.
+       ⛔ CACHED. fit80() resets the font size to its base and re-measures, so
+       calling it on every 1 Hz poll reflowed the whole grid once a second -
+       the other half of the flicker. The cell size only changes when the
+       window does, and the resize handler drops the cache. */
+    if (!gpsMetrics) gpsMetrics = fit80("gps-screen");
+    gpsDrawRings(gpsMetrics, j);
+    gpsPlaceSats(gpsMetrics, j);
+  }
+}
+
+function gpsOpenModal() {
+  document.getElementById("gps-modal").style.display = "";
+  gpsMetrics = null;        /* the modal was hidden, so nothing was measurable */
+  gpsSatsShown = "";
+  gpsGridShown = "";
+  gpsShowGrid(false);
+  document.getElementById("gps-state").textContent = "reading...";
+  gpsMsg("");
+  gpsPoll();
+  if (gpsTimer) clearInterval(gpsTimer);
+  gpsTimer = setInterval(gpsPoll, GPS_REFRESH_MS);
+}
+
+function gpsCloseModal() {
+  if (gpsTimer) { clearInterval(gpsTimer); gpsTimer = null; }
+  document.getElementById("gps-modal").style.display = "none";
+}
+
+document.getElementById("gps-btn").addEventListener("click", (e) => {
+  e.preventDefault();
+  const m = document.getElementById("radio-menu");
+  if (m) m.classList.remove("open");
+  gpsOpenModal();
+});
+document.getElementById("gps-close").addEventListener("click", gpsCloseModal);
+/* The pane is positioned from measured metrics, so a resize has to re-measure
+   - otherwise the satellite table slides off the hole it belongs in. */
+window.addEventListener("resize", () => {
+  if (document.getElementById("gps-modal").style.display === "none") return;
+  gpsMetrics = null;        /* the cell size changed - re-measure once */
+  gpsSatsShown = "";        /* and the pane must be rebuilt at the new size */
+  gpsPoll();
+});
 document.querySelectorAll(".term-key").forEach((b) => {
   b.addEventListener("click", async () => {
     await termSend("key", { key: b.dataset.key });
@@ -9520,6 +10289,28 @@ function connectWs() {
          drawing correctly at 10 fps, which is how Dave KX3DX and the operator
          both saw it while decoding carried on perfectly. */
       lastViewAt = performance.now();
+    }
+    /* S-meter trailer: 2 bytes AFTER the bins, int16 LE, dBm x10, 0x8000 = no
+       reading. Absent on older firmware, which is why this is length-checked
+       rather than assumed - the frame is still perfectly valid without it.
+
+       Decimated to every 6th frame to match render.c's own S-meter tick (10 Hz
+       / 6 = 1.7 Hz) EXACTLY. Same source, same conversion, same cadence, so the
+       two meters now differ only in which instant they happened to catch.
+
+       ⚠ A peak-hold or EMA across the six frames would be a better meter than
+       either screen has today. It is deliberately NOT done here: doing it on
+       one screen only would re-open the very disagreement this closes. If it is
+       wanted, it has to land in render.c at the same time. */
+    if (buf.length >= HEADER_LEN + SPEC_W + 2) {
+      let sq = buf[HEADER_LEN+SPEC_W] | (buf[HEADER_LEN+SPEC_W+1] << 8);
+      if (sq & 0x8000) sq -= 0x10000;              /* signed */
+      wsSmeterTick = (wsSmeterTick + 1) % 6;
+      if (wsSmeterTick === 0) {
+        lastSignalDbm = (sq === -32768) ? null : sq / 10;
+        lastSignalFromWsAt = performance.now();
+        drawSmeter(lastSignalDbm);
+      }
     }
     const payload=buf.subarray(HEADER_LEN,HEADER_LEN+SPEC_W);
     /* Spectrum gets the device's first EMA stage; the waterfall keeps its own,

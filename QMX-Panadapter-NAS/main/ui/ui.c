@@ -4,6 +4,7 @@
 #include "util/format_freq.h"   // #302: ONE frequency format
 #include "util/freq_gridlines.h"
 #include "ui_theme.h"
+#include "gps_status_view.h"   // tapping the UTC field opens the GPS page
 #include "cw_decode.h"   /* the QMX decodes CW itself; this just shows it */
 LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "nvs.h"
@@ -2182,6 +2183,15 @@ bool ui_pan_view_current(pan_view_cfg_t *c, pan_view_t *v, int n_bins)
          * live dial only before any audio has been processed. */
         uint32_t cap = dsp_get_spectrum_dial_hz();
         c->dial_hz = (int64_t)(cap ? cap : s_last_qmx_freq_hz);
+        /* ⛔ A REAL SOURCE HAS NO DIAL. The 3.5 mm jack delivers audio, and
+         * line_in.c makes it analytic, so bin 0 IS 0 Hz audio and the axis
+         * reads audio frequency directly. Leaving the QMX's last dial here
+         * would label an audio spectrum with an RF frequency nothing in it
+         * relates to - a readout that is not merely useless but wrong.
+         *
+         * The negative half of the span stays empty, and that is honest: it
+         * is the half one channel cannot tell you about. */
+        if (dsp_source_is_real()) c->dial_hz = 0;
     }
     c->if_offset_hz      = ui_get_if_offset_hz();
     c->zoom              = s_zoom_factor;
@@ -2549,6 +2559,11 @@ static lv_obj_t *s_bot_left   = NULL;
 static lv_obj_t *s_bot_batt_icon = NULL;  /* battery glyph, colored by charge level */
 static lv_obj_t *s_bot_batt_slash = NULL; /* red diagonal stroke over the glyph when no pack is attached */
 static lv_obj_t *s_bot_center_suffix = NULL;
+
+/* X span of the UTC field in the bottom bar, recorded when it is laid out.
+ * The tap is arbitrated by x inside bottom_edge_swipe_cb() - see the note at
+ * the assignment and at sd_indicator_hit(). */
+static lv_coord_t s_bot_clock_x0 = -1, s_bot_clock_x1 = -1;
 static ui_clock_t s_bot_clock;
 static bool       s_bot_clock_valid = false;
 static lv_obj_t *s_bot_bt = NULL;        // Bluetooth glyph, left of the WiFi fan
@@ -2622,6 +2637,17 @@ static lv_obj_t *s_tune_entry_btn  = NULL;  // "Antenna Tune" button in the WiFi
  * reason - see output_power_area_refresh()'s own header. */
 static lv_obj_t *s_outpwr_nc_lbl   = NULL;
 static lv_obj_t *s_outpwr_cal_btn  = NULL;
+/* The operator's own PA-voltage ceiling control - see pa_ceiling_x10 in
+ * settings.h for why this is a setting of ours and not the radio's register. */
+static lv_obj_t *s_pacap_dd  = NULL;
+static lv_obj_t *s_pacap_lbl = NULL;
+/* 0 means "No limit" and is deliberately FIRST, because it is the default and
+ * the behaviour every build since v1.16.0 has had. 0.5 V steps from 5.0: finer
+ * than that is false precision for a protection limit, and below 5.0 a sweep
+ * has almost nothing left to measure. */
+static const uint16_t s_pacap_x10[] = { 0, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115 };
+#define PACAP_N  ((int)(sizeof(s_pacap_x10) / sizeof(s_pacap_x10[0])))
+
 static lv_obj_t *s_outpwr_recal_btn = NULL;  /* mirror of s_outpwr_cal_btn - see its own header
                                                * on the WSPR side (s_wspr_dbm_recal_btn) for why
                                                * this exists: the standalone "Calibrate Power"
@@ -2754,7 +2780,8 @@ static void output_power_area_refresh(void)
     // is "louder than expected", never "silently far too quiet".
     int idx = s_outpwr_n - 1;
     uint16_t target_w;
-    if (band && band[0] && settings_get_pwr_target_watts(band, &target_w)) {
+    const bool have_target = band && band[0] && settings_get_pwr_target_watts(band, &target_w);
+    if (have_target) {
         int best_gap = 0x7FFFFFFF;
         for (int k = 0; k < s_outpwr_n; k++) {
             int gap = abs((int)s_outpwr_w[k] - (int)target_w);
@@ -2780,11 +2807,32 @@ static void output_power_area_refresh(void)
     outpwr_set_value_text(s_outpwr_w[idx]);
     outpwr_update_warning(s_outpwr_w[idx]);
 
-    // Persist AND apply even when this is just restoring what was already
-    // stored - a band change is exactly the moment the radio needs
-    // re-telling, same reasoning as wspr_dbm_area_refresh(). Skip the
-    // actual CAT write (not the persistence) if a burst is keyed right
-    // now - see outpwr_tx_busy()'s own header.
+    // ⛔ NOTHING STORED MEANS NOTHING TO SAY. This used to persist and write
+    // on every refresh even when the operator had never chosen an output
+    // power - so opening the drawer COMMANDED the radio to a figure this
+    // control had just invented, and then recorded that invention as his
+    // target so it stuck.
+    //
+    // Bryan N0LUF, 2026-10-11: "my Max PA Voltage has changed from 11.5
+    // (default) to 12" after calibrating. The sweep was not at fault - it
+    // restores the pre-sweep voltage and confirms it by read-back. This
+    // function then ran on the next drawer open, found no stored target
+    // (calibration measures the curve and sets no target of its own), picked
+    // a calibrated step and wrote it over the 11.5 the sweep had just put
+    // back.
+    //
+    // ⚠ THE PREVIOUS FIX CHANGED THE WRONG THING, and this is the lesson.
+    // Gyula HA3HZ hit the same code writing the LOWEST step; it was fixed by
+    // making the fallback the highest instead. That corrected which wrong
+    // value was sent and left the unconditional write alone - so the defect
+    // survived with a different number in it, which is exactly what Bryan
+    // then reported. A control with no stored setting must DISPLAY, not
+    // command.
+    //
+    // Persist and apply only when a target really was stored: a band change
+    // is exactly the moment the radio needs re-telling, same reasoning as
+    // wspr_dbm_area_refresh(). Skip the CAT write (not the persistence) if a
+    // burst is keyed right now - see outpwr_tx_busy()'s own header.
     //
     // ⛔ AND skip it outright while WSPR is running - it owns Max. PA
     // voltage then, via its own Declared-power calibration. This control
@@ -2796,13 +2844,32 @@ static void output_power_area_refresh(void)
     // wspr_rx_running(), not the current UI mode - the WSPR page can be
     // left showing while another screen is up front, same reasoning as
     // wspr_pa_guard_periodic_check()'s own "running, not visible" test.
-    settings_set_pwr_target_watts(band, s_outpwr_w[idx]);
-    if (!outpwr_tx_busy() && !wspr_rx_running()) cat_request_pa_voltage_x10(s_outpwr_v[idx]);
+    if (have_target) {
+        settings_set_pwr_target_watts(band, s_outpwr_w[idx]);
+        if (!outpwr_tx_busy() && !wspr_rx_running()) cat_request_pa_voltage_x10(s_outpwr_v[idx]);
+    }
     outpwr_relayout();
 }
 
 // Live label/warning only while dragging - no CAT write until release, same
 // discipline as every other slider in this drawer that touches the radio.
+/* ⛔ THE ONE PLACE THE CEILING IS WRITTEN. Everything else in this app writes
+ * the RADIO's Max. PA voltage, which is why that register cannot be trusted as
+ * a statement of intent and why this setting exists at all. If a second writer
+ * is ever added here, this setting acquires the same problem the register has. */
+static void drawer_dropdown_pacap_cb(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t i = lv_dropdown_get_selected(dd);
+    if ((int)i >= PACAP_N) return;
+    settings_set_pa_ceiling_x10(s_pacap_x10[i]);
+    if (s_pacap_x10[i])
+        ESP_LOGI(TAG, "PA voltage ceiling set to %u.%uV by the operator",
+                 (unsigned)(s_pacap_x10[i] / 10), (unsigned)(s_pacap_x10[i] % 10));
+    else
+        ESP_LOGI(TAG, "PA voltage ceiling cleared - the sweep will run the full range");
+}
+
 static void drawer_slider_outpwr_preview_cb(lv_event_t *e)
 {
     lv_obj_t *sl = lv_event_get_target(e);
@@ -3011,6 +3078,16 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  * session reaches for, and getting it wrong is an electrical question (pins
  * driven into a GPS transmitter) rather than a preference. */
 #define DRAWER_SEC_PORTA      47
+/* "GPS Stats" - a LAUNCHER for the GPS page, the same shape as
+ * DRAWER_SEC_TERM. It lives in Radio because the page covers both receivers:
+ * the Tab5's own module and the QMX's internal one, which it reaches through
+ * the radio's menus. Operator, 2026-10-09. */
+#define DRAWER_SEC_GPSSTATS   48
+/* CW keyer speed. A POTA operator asked for it on the Tab5 as well as the web
+ * (2026-10-10, after Ralph Hellmig asked for the web control): in the field
+ * the radio is in a bag and the Tab5 is the thing in your hand, so walking to
+ * the QMX's own encoder is exactly what you cannot do. */
+#define DRAWER_SEC_KEYER      49
 // ⛔ THE NEXT ONE MUST RAISE N_DRAWER_SECTIONS TOO - see CLAUDE.md's "fixed-
 // size array indexed by an enum will be overrun" section. IDs are 0..47.
 //
@@ -3024,15 +3101,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
 //   lv_obj_has_flag_any <- lv_obj_is_layout_positioned
 //
 // A comment cannot stop this on its own, so the assert below now does.
+#define N_DRAWER_SECTIONS     51
 // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 // or one plugged into a NAS running tools/nas-relay. Same effect as the web
 // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 // cat_reconnect), so the switch no longer needs a computer.
-// (48, not 47: upstream v1.16.12 took 47 for DRAWER_SEC_PORTA.)
-#define DRAWER_SEC_RADIOSRC   48
-// ⛔ IDs are 0..48 now. The next one raises N_DRAWER_SECTIONS AND gets an
+// (50: upstream v1.18.0 took 47 PORTA, 48 GPSSTATS, 49 KEYER.)
+#define DRAWER_SEC_RADIOSRC   50
+// ⛔ IDs are 0..50 now. The next one raises N_DRAWER_SECTIONS AND gets an
 // assert below - see the 2026-10-03 note above.
-#define N_DRAWER_SECTIONS     49
 
 /* Catches the mistake above at COMPILE time instead of as a crash minutes into
  * a session. Every id must be a valid index; raise N_DRAWER_SECTIONS when you
@@ -3041,6 +3118,7 @@ _Static_assert(DRAWER_SEC_REBOOT  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
 _Static_assert(DRAWER_SEC_SDEJECT < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_OUTPWR  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_PORTA   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_KEYER   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
 static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
@@ -3084,6 +3162,11 @@ static const drawer_item_t GRP_RADIO[] = {
      * as the CW centre sitting under it - and CLAUDE.md records a whole field
      * report (Roy KI0ER, #165) where a stale CW offset and this trim had to be
      * reasoned about together. */
+    /* Directly above IF calibration, where he asked for it. It is a
+       setting you reach for while operating, so it goes above the per-unit
+       trim you set once - and it is marked Basic, unlike the trim, because
+       changing speed mid-activation is ordinary use rather than setup. */
+    { DRAWER_SEC_KEYER, "CW keyer speed", true },
     { DRAWER_SEC_IFCAL, "IF calibration", false },
     { DRAWER_SEC_CW, "CW centre & transmit offset", false },
     { DRAWER_SEC_CWPROF, "CW profiles", false },
@@ -3093,6 +3176,7 @@ static const drawer_item_t GRP_RADIO[] = {
     { DRAWER_SEC_OUTPWR, "Output power", true },
     { DRAWER_SEC_PAUSE, "Release radio", false },
     { DRAWER_SEC_TERM, "Radio menus", false },
+    { DRAWER_SEC_GPSSTATS, "GPS Stats", true },
 };
 // DRAWER_SEC_OTADL sits here, not in Device, and that placement is the point:
 // Device is an EXPERT-only group, and "should this thing download 3.3 MB on my
@@ -3443,6 +3527,8 @@ static bool drawer_sec_visible(int id, ui_mode_t mode, bool tune_ok)
 }
 
 // Phase 5.10D Stage 2b: drawer widgets we need to keep handles to
+static lv_obj_t *s_slider_keyer = NULL;
+static lv_obj_t *s_lbl_keyer    = NULL;
 static lv_obj_t *s_slider_qmx_vol = NULL;
 static lv_obj_t *s_lbl_qmx_vol    = NULL;
 static lv_obj_t *s_slider_qmx_rf  = NULL;
@@ -3509,8 +3595,9 @@ static lv_obj_t *s_check_ft8_early = NULL;       // FT8 fast-pounce early-decode
 static lv_obj_t *s_check_sim_mode = NULL;        // FT8 simulation mode checkbox
 static lv_obj_t *s_check_wspr_test = NULL;       // the same setting, WSPR page ("Test station")
 static lv_obj_t *s_lbl_sim_mode   = NULL;        // its label (dimmed alongside the checkbox)
-static bool      s_sim_mode_locked = false;      // true while in FT4 - the phantom-station
-                                                  // simulator (ft8_sim.c) is FT8-only for now
+static bool      s_sim_mode_locked = false;      // NEVER true since #256 - kept with the
+                                                  // guard pattern apply_sim_mode_lock()
+                                                  // documents, not as a live gate
 
 static lv_obj_t *s_slider_wf_black = NULL;
 static lv_obj_t *s_lbl_wf_black = NULL;
@@ -3521,7 +3608,7 @@ static lv_obj_t *s_dropdown_wf_speed = NULL;
 static lv_obj_t *s_dropdown_spur      = NULL;
 static lv_obj_t *s_tune_tooltip  = NULL;  // freq label above finger during tap-to-tune
 static lv_obj_t *s_bw_label      = NULL;  // passband width in top bar
-static void apply_sim_mode_lock(bool ft4);   // defined below, used by ui_refresh_sim_mode_indicator() above it
+static void apply_sim_mode_lock(void);   // defined below, used by ui_refresh_sim_mode_indicator() above it
 static void drawer_preset_normal_cb(lv_event_t *e);
 static void drawer_preset_dx_cb(lv_event_t *e);
 static void drawer_preset_strong_cb(lv_event_t *e);
@@ -3622,6 +3709,11 @@ static void drawer_slider_brightness_cb(lv_event_t *e);
 static void drawer_slider_qmx_vol_cb(lv_event_t *e);
 static void drawer_refresh_qmx_vol(void);
 static void drawer_refresh_cw_profiles(void);
+/* Keyer speed row. Defined beside drawer_refresh_qmx_vol(), which it mirrors,
+ * but built far earlier in drawer_build() - hence the forward declarations. */
+static void paint_keyer(int wpm);
+static void drawer_refresh_keyer(void);
+static void drawer_slider_keyer_cb(lv_event_t *e);
 static lv_obj_t *s_check_cw_decode;
 static lv_obj_t *s_check_pskrep;
 static lv_obj_t *s_check_wspr_net;
@@ -3632,6 +3724,7 @@ static void gain_resolve_start(void);   // repaint a read-back that answers late
 static void gain_resolve_stop(void);
 static void drawer_pause_btn_cb(lv_event_t *e);
 static void drawer_term_btn_cb(lv_event_t *e);
+static void drawer_gpsstats_btn_cb(lv_event_t *e);
 static void drawer_radiosrc_btn_cb(lv_event_t *e);
 static void radiosrc_label_timer_cb(lv_timer_t *t);
 static lv_obj_t *s_radiosrc_lbl;
@@ -3901,21 +3994,29 @@ void ui_set_sim_mode_indicator(bool active)
 }
 
 // Re-evaluate and apply the breathing border from BOTH of its sources: the
-// drawer's general "FT8 Simulation Mode" toggle (s_sim_mode_en) AND the
-// FT8/FT4 sub-mode itself - FT4 TX is unconditionally forced through the same
-// simulation interlock regardless of this toggle (see ft8_tx.c's FT4 SAFETY
-// note), so the visual warning must follow that, not just the checkbox.
-// Also re-locks the checkbox itself (apply_sim_mode_lock) - the phantom-
-// station simulator it controls is FT8-only (see that function's comment),
-// so the two concerns share every call site and are kept together here.
-// Call this (instead of ui_set_sim_mode_indicator directly) anywhere either
-// source can change: the drawer checkbox callback, drawer build, and the
-// FT8/FT4 preset dropdown (ft8_screen_view.c's apply_freq_preset()).
+// drawer's general "FT8 Simulation Mode" toggle (s_sim_mode_en) - which is now
+// its ONLY source.
+//
+// ⚠ THIS COMMENT USED TO CLAIM "FT4 TX is unconditionally forced through the
+// same simulation interlock regardless of this toggle (see ft8_tx.c's FT4 SAFETY
+// note)". There is no such interlock and no such note: ft8_tx_run()'s `sim` is
+// settings' sim_mode_en and nothing else, real FT4 QSOs have completed on air,
+// and ft8_tx.c/ft8_test.c already carry their own corrections of the same claim
+// (2026-08-09). This was the copy nobody went back for. A comment describing a
+// TX safety boundary that does not exist is the worst kind to leave: the next
+// reader trusts it instead of checking.
+//
+// It still pairs with apply_sim_mode_lock(), which re-asserts the checkbox as
+// usable - also no longer sub-mode dependent (see its own comment), but kept
+// together here so the indicator and the control can never disagree.
+//
+// Call this (instead of ui_set_sim_mode_indicator directly) anywhere the
+// setting can change: the drawer checkbox callback, drawer build, and the
+// preset dropdown (ft8_screen_view.c's apply_freq_preset()).
 void ui_refresh_sim_mode_indicator(void)
 {
-    bool ft4 = (ft8_op_mode_get() == FT8_OP_MODE_FT4);
     ui_set_sim_mode_indicator(s_sim_mode_en);
-    apply_sim_mode_lock(ft4);
+    apply_sim_mode_lock();
 }
 
 // 1 Hz keepalive: re-foregrounds the border (see comment above s_sim_border)
@@ -6238,7 +6339,14 @@ static void build_bottom_bar(lv_obj_t *parent)
         const lv_font_t *font = &lv_font_montserrat_24;
         const lv_coord_t cell_w = 15;
         const lv_coord_t clock_w = 7 * cell_w;  // 6 digit cells + 2 half-width colon cells
-        // Size x0 using the widest suffix so the clock stays centered when NTP is active.
+        /* Size x0 using " UTC(NTP)", NOT the widest suffix.
+         *
+         * " UTC(U-GPS)" is two characters wider, and sizing on it moves this
+         * whole zone right by about 15 px - which squeezes the firmware
+         * version text on the right of the bar. Tried on 2026-10-08 and
+         * reverted at the operator's request: "I know it overlaps - but it is
+         * only for me with long working and dirty suffixes". The overlap is
+         * his to live with; the version text is not. */
         const char *sizing_suffix = " UTC(NTP)";
         lv_coord_t suffix_w = lv_txt_get_width(sizing_suffix, strlen(sizing_suffix), font, 0);
         lv_coord_t total_w = clock_w + suffix_w;
@@ -6258,6 +6366,22 @@ static void build_bottom_bar(lv_obj_t *parent)
         lv_obj_set_style_text_color(s_bot_center_suffix, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
         lv_obj_set_style_text_font(s_bot_center_suffix, font, 0);
         lv_obj_align(s_bot_center_suffix, LV_ALIGN_LEFT_MID, x0 + clock_w, 0);
+
+        /* The UTC field is a tap target for the GPS page - but NOT as an
+         * object of its own.
+         *
+         * ⛔ An invisible button here does not work and cannot be made to:
+         * s_bottom_edge_strip is the full width of the bar, is
+         * move_foreground()'d above everything, and owns every press down
+         * here. The first attempt was exactly that button, and it never fired
+         * once (2026-10-08, caught on the glass). The same note already
+         * existed at sd_indicator_hit().
+         *
+         * So the target is recognised by X RANGE inside
+         * bottom_edge_swipe_cb(), like the microSD indicator and the update
+         * line. Its span is recorded here, where the geometry is known. */
+        s_bot_clock_x0 = x0;
+        s_bot_clock_x1 = x0 + clock_w + suffix_w;
     }
 
 
@@ -10082,6 +10206,18 @@ static bool update_line_hit(int x)
 // alone. Same arbitration-by-x as update_line_hit(), for the same reason: the
 // bottom edge strip owns every press down here, so a target on the bar has to
 // be recognised inside bottom_edge_swipe_cb() or it does not exist.
+// True when x falls on the UTC clock field - the digits AND the "(U-GPS)"
+// suffix, which is one target because it reads as one thing.
+//
+// Same arbitration-by-x as sd_indicator_hit() and update_line_hit(), and for
+// the same reason: the bottom edge strip owns every press down here.
+static bool clock_field_hit(int x)
+{
+    if (s_bot_clock_x0 < 0) return false;
+    const int margin = 12;
+    return x >= (int)s_bot_clock_x0 - margin && x <= (int)s_bot_clock_x1 + margin;
+}
+
 static bool sd_indicator_hit(int x)
 {
     if (!s_bot_diag_dot) return false;
@@ -10102,27 +10238,24 @@ void ui_set_update_line(const char *text, uint32_t colour)
     update_line_blink_stop();          // any normal text-set ends a pulse in progress
     const char *t = text ? text : "";
 
-    // Font stays at the ORIGINAL montserrat_24 - the operator's wording is
-    // ~20 characters in every state, which fits the ~270 px between the SD text
-    // (ends x=254) and the clock (starts x=534), measured on the real bar.
-    //
-    // The smaller sizes below are a SAFETY NET, not the normal path: they only
-    // engage if a string genuinely will not fit, which today means an unusually
-    // long version pair. Shrinking beats overlapping - "v1.8.8 - touch to
-    // update" (24 chars) previously ran through the clock and pushed the SD dot
-    // off screen, seen on a device screenshot rather than predicted.
-    static const lv_font_t *fonts[] = {
-        &lv_font_montserrat_24, &lv_font_montserrat_22,
-        &lv_font_montserrat_20, &lv_font_montserrat_18,
-    };
-    const int budget_px = 264;
-    const lv_font_t *use = fonts[0];
-    for (unsigned i = 0; i < sizeof(fonts) / sizeof(fonts[0]); i++) {
-        lv_point_t sz;
-        lv_text_get_size(&sz, t, fonts[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        use = fonts[i];
-        if (sz.x <= budget_px) break;
-    }
+    /* ⛔ ALWAYS montserrat_24. NO AUTO-SHRINK.
+     *
+     * This used to pick a smaller font when the string exceeded a 264 px
+     * budget, so that "v1.8.8 - touch to update" could not run through the
+     * clock. The side effect was that a DEVELOPMENT version string -
+     * "v1.16.12-10-gee82625b-dirty", 27 characters from git describe - shrank
+     * on every dev build, and that is the bar the operator reads all day.
+     *
+     * Removed at his explicit instruction, twice, 2026-10-08: "I know it
+     * overlaps - but it is only for me with long working and dirty suffixes",
+     * and "everything run into each other - its supposed to be like that with
+     * me - looks good when fw stay short". A released version is short and
+     * does not overlap; a dev one overlaps and he would rather read it.
+     *
+     * I raised the budget to 330 px first and that was still too narrow, which
+     * is why there is no number here now - any number is a guess at the next
+     * version string. */
+    const lv_font_t *use = &lv_font_montserrat_24;
 
     if (display_lock(20)) {
         lv_obj_set_style_text_font(s_bot_version, use, 0);
@@ -10983,6 +11116,14 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             //
             ESP_LOGI("ui", "update line tapped (x=%d)", (int)p.x);
             s_update_tap_cb();
+        } else if (be_decided == 0 && be_start_x >= 0 && clock_field_hit(be_start_x)) {
+            /* The UTC field opens the GPS page - but only when a GNSS receiver
+             * is actually disciplining the clock. On NTP the tap is ignored:
+             * a page of dashes reads as a receiver that has failed, rather
+             * than as no receiver at all. gps_status_view_open() makes that
+             * decision itself, so there is one place it lives. */
+            ESP_LOGI("ui", "UTC field tapped (x=%d)", (int)be_start_x);
+            gps_status_view_open();
         } else if (be_decided == 0 && grip_mouse_click(e, s_bottom_edge_grip)) {
             ui_show_memories();         // a pointer cannot swipe: see grip_mouse_click()
         }
@@ -11523,9 +11664,12 @@ static void drawer_check_pskrep_cb(lv_event_t *e)
 // (dim + DISABLED + an early return in the handler) is the one this file uses
 // wherever a control must be genuinely unusable, and the next thing that needs
 // locking should copy it rather than reinvent it.
-static void apply_sim_mode_lock(bool ft4)
+static void apply_sim_mode_lock(void)
 {
-    (void)ft4;
+    // The `bool ft4` parameter is gone with the lock it used to drive. It was
+    // ignored - `(void)ft4` - so every caller computed a sub-mode only to throw
+    // it away, and a signature that still asked for it kept reading as a
+    // protocol-based interlock.
     s_sim_mode_locked = false;
     if (s_lbl_sim_mode) lv_obj_set_style_opa(s_lbl_sim_mode, LV_OPA_COVER, 0);
     if (s_check_sim_mode) {
@@ -11540,7 +11684,9 @@ static void apply_sim_mode_lock(bool ft4)
 // toggle site itself.
 static void drawer_check_sim_mode_cb(lv_event_t *e)
 {
-    if (s_sim_mode_locked) return;   // FT4 - see apply_sim_mode_lock()
+    // Never taken: s_sim_mode_locked has been permanently false since #256.
+    // Kept as the guard half of the pattern apply_sim_mode_lock() documents.
+    if (s_sim_mode_locked) return;
     lv_obj_t *cb = lv_event_get_target(e);
     s_sim_mode_en = lv_obj_has_state(cb, LV_STATE_CHECKED);
     settings_set_sim_mode_en(s_sim_mode_en);
@@ -11918,6 +12064,8 @@ static void outpwr_relayout(void)
     wspr_dbm_stack(s_outpwr_nc_lbl,    &y, 8);
     wspr_dbm_stack(s_outpwr_slider,    &y, 8);
     wspr_dbm_stack(s_outpwr_val_lbl,   &y, 8);
+    wspr_dbm_stack(s_pacap_lbl,        &y, 8);
+    wspr_dbm_stack(s_pacap_dd,         &y, 8);
     wspr_dbm_stack(s_outpwr_cal_btn,   &y, 0);
     wspr_dbm_stack(s_outpwr_warn_lbl,  &y, 10);
     wspr_dbm_stack(s_outpwr_recal_btn, &y, 0);
@@ -13012,6 +13160,25 @@ static void drawer_build(void)
         y += 72;
     }
 
+    /* "GPS Stats" - the same launcher shape, directly under Radio menus
+     * because for the QMX's own receiver this IS a trip into those menus. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_GPSSTATS, y, 72);
+        lv_obj_t *btn = lv_btn_create(sec);
+        lv_obj_set_size(btn, DRAWER_W - 32, 56);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2a3138), 0);
+        lv_obj_set_style_border_color(btn, lv_color_hex(UI_COLOR_PRIMARY), 0);
+        lv_obj_set_style_border_width(btn, 2, 0);
+        lv_obj_add_event_cb(btn, drawer_gpsstats_btn_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, LV_SYMBOL_GPS "  GPS Stats");
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+        lv_obj_center(lbl);
+        y += 72;
+    }
+
     // Display sleep (#34): idle minutes before the backlight turns off.
     // Touch wakes it; a two-finger double-tap blanks immediately. Kept in
     // both Panadapter and FT8 modes (it's a device-level setting).
@@ -13229,6 +13396,46 @@ static void drawer_build(void)
         lv_obj_set_style_text_color(val, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(val, &lv_font_montserrat_24, 0);
         lv_obj_align(val, LV_ALIGN_TOP_LEFT, 0, 76);
+
+        /* The operator's own PA-voltage ceiling. It lives in this section
+         * because this is where Calibrate Power is reached from, which is the
+         * moment it matters: the sweep keys the PA at every step up to it.
+         *
+         * ⚠ ALWAYS VISIBLE, unlike the slider and the warning around it. A
+         * protection limit that only appeared once a band was calibrated would
+         * be missing exactly when someone with a fragile radio is about to run
+         * their first sweep. */
+        {
+            lv_obj_t *cap_lbl = lv_label_create(sec);
+            s_pacap_lbl = cap_lbl;
+            lv_label_set_text(cap_lbl, "Never exceed PA voltage");
+            lv_obj_set_style_text_color(cap_lbl, lv_color_hex(0xB0B0B0), 0);
+            lv_obj_set_style_text_font(cap_lbl, &lv_font_montserrat_20, 0);
+
+            lv_obj_t *dd = lv_dropdown_create(sec);
+            s_pacap_dd = dd;
+            char opts[PACAP_N * 10];
+            int  o = 0;
+            for (int k = 0; k < PACAP_N; k++) {
+                const char *sep = k ? "\n" : "";
+                if (s_pacap_x10[k] == 0)
+                    o += snprintf(opts + o, sizeof(opts) - o, "%sNo limit", sep);
+                else
+                    o += snprintf(opts + o, sizeof(opts) - o, "%s%u.%u V", sep,
+                                  (unsigned)(s_pacap_x10[k] / 10),
+                                  (unsigned)(s_pacap_x10[k] % 10));
+            }
+            lv_dropdown_set_options(dd, opts);
+            const uint16_t cur = settings_get_pa_ceiling_x10();
+            for (int k = 0; k < PACAP_N; k++)
+                if (s_pacap_x10[k] == cur) { lv_dropdown_set_selected(dd, k); break; }
+            lv_obj_set_size(dd, DRAWER_W - 32, 50);
+            lv_obj_set_style_text_font(dd, &lv_font_montserrat_28, 0);
+            lv_obj_add_event_cb(dd, drawer_dropdown_pacap_cb, LV_EVENT_VALUE_CHANGED, NULL);
+            /* The option LIST is its own object with its own font - every
+             * dropdown in this drawer needs this or it opens tiny. */
+            lv_obj_add_event_cb(dd, drawer_dropdown_cmap_open_cb, LV_EVENT_CLICKED, NULL);
+        }
 
         lv_obj_t *warn = lv_label_create(sec);
         s_outpwr_warn_lbl = warn;
@@ -13963,6 +14170,42 @@ static void drawer_build(void)
      * window, long-press the top bar to reach it. */
 
     // IF calibration section (per-unit QMX oscillator trim)
+    /* CW keyer speed, directly above IF calibration (POTA operator via him,
+       2026-10-10).
+
+       ⛔ SHAPED LIKE QMX VOLUME AND RF GAIN, NOT LIKE IF CALIBRATION. The
+       first version copied the IF-cal row - a green section header, then a
+       white value label, then the slider - which on the glass put "CW keyer
+       speed" and "Keyer: 18 WPM" on two lines saying the same thing, and
+       made the row half as tall again as the two sliders directly above it.
+       Operator, 2026-10-10: "please keep same format as other sliders".
+
+       The gain rows are the pattern: ONE label carrying both the name and
+       the value, at y=10, and the slider at y=40 in a 96 px section. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_KEYER, y, 96);
+        s_lbl_keyer = lv_label_create(sec);
+        lv_obj_set_style_text_color(s_lbl_keyer, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_lbl_keyer, &lv_font_montserrat_28, 0);
+        lv_obj_align(s_lbl_keyer, LV_ALIGN_TOP_LEFT, 0, 10);
+
+        s_slider_keyer = lv_slider_create(sec);
+        lv_obj_set_size(s_slider_keyer, DRAWER_W - 32, 30);
+        /* 0..60. 0 is straight key and is a real setting (op manual 4.5), so
+           the range starts there rather than at a "sensible" minimum. The
+           firmware does NOT clamp what it sends - the CAT manual states no
+           range, so the radio is the authority and this is only the knob's
+           span. */
+        lv_slider_set_range(s_slider_keyer, 0, 60);
+        lv_obj_align(s_slider_keyer, LV_ALIGN_TOP_LEFT, 0, 40);
+        lv_obj_add_event_cb(s_slider_keyer, drawer_slider_keyer_cb,
+                            LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(s_slider_keyer, drawer_slider_keyer_cb,
+                            LV_EVENT_RELEASED, NULL);
+        paint_keyer(cat_get_keyer_wpm());
+        y += 96;
+    }
+
     {
         lv_obj_t *sec = drawer_section(DRAWER_SEC_IFCAL, y, 130);
         lv_obj_t *ifcal_hdr = lv_label_create(sec);
@@ -14309,7 +14552,7 @@ static void drawer_build(void)
         s_sim_mode_en = scfg_sim.sim_mode_en;
         s_check_sim_mode = make_drawer_checkbox(sec, s_sim_mode_en, drawer_check_sim_mode_cb, NULL);
         lv_obj_align(s_check_sim_mode, LV_ALIGN_TOP_RIGHT, 0, 6);
-        ui_refresh_sim_mode_indicator();   // also applies the FT4 lock (apply_sim_mode_lock)
+        ui_refresh_sim_mode_indicator();   // also re-asserts the checkbox (apply_sim_mode_lock)
         y += 56;
     }
     // The km/miles switch alone, for the WSPR page (DRAWER_SEC_WSPRDIST). Same
@@ -14723,6 +14966,15 @@ static void drawer_build(void)
         s_slider_wf_black, s_slider_wf_contrast,
         s_slider_charge_limit_pct, s_slider_qmx_vol, s_slider_qmx_rf,
         s_slider_cwtxoff, s_outpwr_slider,
+        /* ⛔ A SLIDER LEFT OUT OF THIS LIST LOOKS WRONG AND NOTHING SAYS SO.
+           The keyer row was added without it and rendered a 30 px track
+           beside the 14 px ones it sits between - MEASURED off /ss.bmp as
+           y 356..385 against QMX volume at 172..185. It also missed the 28 px
+           touch area and the scroll-chain fix, so its knob would have been
+           the one slider in the drawer that is hard to catch and easy to lose
+           mid-drag. The per-section lv_obj_set_size(..., 30) is NOT the
+           height that ships; this loop is. */
+        s_slider_keyer,
     };
     for (size_t i = 0; i < sizeof(drawer_sliders) / sizeof(drawer_sliders[0]); i++) {
         if (!drawer_sliders[i]) continue;
@@ -14839,6 +15091,7 @@ static void drawer_open(void)
 #endif
     lv_anim_start(&a);
     drawer_refresh_qmx_vol();   // show what the RADIO is set to, not our last write
+    drawer_refresh_keyer();     // same: the QMX's own encoder moves this too
     drawer_refresh_activation();
     drawer_refresh_qmx_rf();    // and its per-band RF gain, which changes with the band
     gain_resolve_start();       // ...and repaint whichever of those answers late
@@ -15326,6 +15579,70 @@ static void paint_qmx_vol(int ag)
     }
 }
 
+/* Paint the keyer row from whatever the RADIO last said, not from our last
+ * write - the operator can turn the speed with the QMX's own encoder, and a
+ * Tab5 that disagrees with the radio is the one thing this control must not
+ * do. Same reasoning as paint_qmx_vol() above. */
+static void paint_keyer(int wpm)
+{
+    if (!s_lbl_keyer) return;
+    /* The label carries the control's NAME as well as its value, because
+     * there is no section header above it any more - same as "QMX volume:
+     * 23 dB" two rows up. */
+    if (wpm < 0) {
+        /* -1 is "the radio has not answered", which is NOT 0 - 0 is straight
+         * key. Say so rather than drawing a speed nobody set. */
+        lv_label_set_text(s_lbl_keyer, "CW keyer: no CAT link");
+        return;
+    }
+    if (wpm == 0) {
+        /* QMX operation manual 4.5: speed 0 selects Straight Key mode
+         * whatever the keyer mode says. Name it, or the operator reads 0 as
+         * a broken control. */
+        lv_label_set_text(s_lbl_keyer, "CW keyer: 0 (straight key)");
+    } else {
+        char b[32];
+        snprintf(b, sizeof(b), "CW keyer: %d WPM", wpm);
+        lv_label_set_text(s_lbl_keyer, b);
+    }
+    if (s_slider_keyer) {
+        /* The slider spans 0..60; a radio set faster than that with its own
+         * encoder pins the knob, but the LABEL above still reports the true
+         * speed - the label is what has to agree with the radio. */
+        int knob = wpm > 60 ? 60 : wpm;
+        lv_slider_set_value(s_slider_keyer, knob, LV_ANIM_OFF);
+    }
+}
+
+static void drawer_refresh_keyer(void)
+{
+    if (!s_slider_keyer) return;
+    paint_keyer(cat_get_keyer_wpm());
+    cat_query_keyer_wpm();   // ask again for next time the drawer opens
+}
+
+/* RELEASED, not VALUE_CHANGED: a drag would otherwise stream sixty KS writes
+ * down the CAT pipe, the same reason the RF gain slider below uses RELEASED.
+ * The label follows the drag so the number moves under the finger. */
+static void drawer_slider_keyer_cb(lv_event_t *e)
+{
+    lv_obj_t *sld = lv_event_get_target(e);
+    int wpm = lv_slider_get_value(sld);
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        if (wpm == 0) lv_label_set_text(s_lbl_keyer, "CW keyer: 0 (straight key)");
+        else {
+            char b[32];
+            snprintf(b, sizeof(b), "CW keyer: %d WPM", wpm);
+            lv_label_set_text(s_lbl_keyer, b);
+        }
+        return;
+    }
+    cat_request_keyer_wpm((uint16_t)wpm);
+    /* The poll task reads back automatically after the write, so the next
+     * drawer open shows what the radio actually took. */
+    ESP_LOGI(TAG, "keyer speed -> %d WPM from the drawer", wpm);
+}
+
 static void drawer_refresh_qmx_vol(void)
 {
     if (!s_slider_qmx_vol) return;
@@ -15565,6 +15882,22 @@ static void drawer_term_btn_cb(lv_event_t *e)
     (void)e;
     ui_set_drawer_open(false);
     qmx_term_view_open();
+}
+
+static void drawer_gpsstats_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_set_drawer_open(false);
+    /* gps_status_view_open() decides for itself which receiver is in use and
+     * hands over to the radio's own viewer for the QMX - and says nothing at
+     * all when neither is disciplining the clock. The toast is here rather
+     * than there because a BUTTON press that appears to do nothing is a
+     * different thing from a tap on a clock: he pressed this one on purpose. */
+    if (!gps_status_view_available()) {
+        ui_toast("No GPS receiver is disciplining the clock");
+        return;
+    }
+    gps_status_view_open();
 }
 
 static void drawer_check_flip_cb(lv_event_t *e)

@@ -1,6 +1,9 @@
 #include "webserver_ws.h"
+#include "webserver.h"   // WEB_WS_PUSH_STACK_SIZE - sized and justified there
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR
 
 #include <string.h>
+#include <math.h>        // lroundf - the S-meter trailer
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -78,7 +81,29 @@
  * 22 extra bytes on a 1026-byte frame, 10 times a second: 1.8 kbit/s. */
 #define WS_HEADER_LEN           24
 #define WS_PAYLOAD_LEN          DSP_FFT_SIZE
-#define WS_FRAME_LEN            (WS_HEADER_LEN + WS_PAYLOAD_LEN)
+
+/* S-meter TRAILER - two bytes AFTER the spectrum bins, not in the header.
+ *
+ *   [WS_HEADER_LEN + WS_PAYLOAD_LEN .. +1]  signal dBm x10, int16 little-endian
+ *                                           (0x8000 = no reading)
+ *
+ * ⛔ It goes at the END on purpose. Growing the HEADER would move the payload,
+ * and a browser still running a cached index.html with the old HEADER_LEN
+ * passes its own length check, then reads the bins two bytes off and draws a
+ * shifted spectrum. Appending instead leaves every existing offset alone: the
+ * old page's `buf.length < HEADER_LEN + SPEC_W` still passes, its
+ * subarray(HEADER_LEN, HEADER_LEN + SPEC_W) is unchanged, and the two extra
+ * bytes are simply never looked at.
+ *
+ * Why it is here at all: the browser's S-meter was drawn from the 1 Hz
+ * /api/status tick, which undersamples a fluctuating signal and reads low -
+ * signal_handler's own comment says so. A faster /api/signal poller was tried
+ * and jammed httpd with extra connections, so it was reverted. This frame is
+ * already going out 10 times a second; two more bytes on 1026 is 1.6 kbit/s
+ * and costs no new connection. */
+#define WS_TRAILER_LEN          2
+#define WS_SIGNAL_NONE          ((int16_t)0x8000)
+#define WS_FRAME_LEN            (WS_HEADER_LEN + WS_PAYLOAD_LEN + WS_TRAILER_LEN)
 
 static inline void ws_put_u32(uint8_t *p, uint32_t v)
 {
@@ -125,7 +150,10 @@ static httpd_handle_t volatile s_server   = NULL;
 static int            volatile s_ws_fd    = -1;
 static volatile bool           s_session_active = false;
 
-static float          s_spec[DSP_FFT_SIZE];
+/* PSRAM: 4 KB of internal .bss for the spectrum the WebSocket pushes at a
+ * handful of frames a second. Written and read only by the push path -
+ * no DMA, no ISR. */
+static EXT_RAM_BSS_ATTR float s_spec[DSP_FFT_SIZE];
 
 // WS wire buffer: the RFC 6455 header is built directly IN FRONT of the payload
 // so header and body leave as ONE contiguous send. A split between them is one of
@@ -564,6 +592,32 @@ static void ws_push_task(void *arg)
             s_payload[WS_HEADER_LEN + i] = (uint8_t)q;
         }
 
+        /* S-meter trailer. The SAME dsp call, bin and width the Tab5's own
+         * meter uses (render.c) and that status_handler reports, so the browser
+         * and the glass cannot be reading different numbers - which is exactly
+         * what they were doing, and what the operator reported on 2026-10-09.
+         *
+         * Sent raw, in 0.1 dB. The dBm -> S-unit conversion stays in ONE place
+         * per screen and the wire carries the measurement, not a rendering. */
+        {
+            float    sig_dbm = 0.0f;
+            int16_t  sig_q   = WS_SIGNAL_NONE;
+            int vfo_bin = ((ui_get_if_bin_shift(DSP_FFT_SIZE) % DSP_FFT_SIZE)
+                           + DSP_FFT_SIZE) % DSP_FFT_SIZE;
+            if (dsp_get_peak_dbm_around_vfo(vfo_bin, 64, &sig_dbm) == ESP_OK) {
+                long v = lroundf(sig_dbm * 10.0f);
+                /* Clamp clear of the no-reading sentinel: -3276.8 dBm is not a
+                   signal level anything can produce, but a sentinel that can
+                   collide with a real value is a bug waiting for the one input
+                   that produces it. */
+                if (v < -32767) v = -32767;
+                if (v >  32767) v =  32767;
+                sig_q = (int16_t)v;
+            }
+            s_payload[WS_HEADER_LEN + WS_PAYLOAD_LEN]     = (uint8_t)((uint16_t)sig_q);
+            s_payload[WS_HEADER_LEN + WS_PAYLOAD_LEN + 1] = (uint8_t)(((uint16_t)sig_q) >> 8);
+        }
+
         // Budget for finishing a frame we are already committed to. Deliberately
         // longer than one push period: dropping the session costs the browser a
         // ~2 s reconnect, so riding out a congestion burst is much cheaper than
@@ -678,15 +732,22 @@ esp_err_t webserver_ws_start(httpd_handle_t server)
         // capture. At priority 5 this task could preempt it every 100 ms
         // whenever a browser tab is open, the same hazard class that
         // regressed FT8 decode yield via cw_audio_task (see CLAUDE.md).
-        // 3072, not 4096: measured peak use 848 B (hwm 3,504 free of a 4,352 B
-        // block, 2026-08-28, #284). Internal RAM on purpose - psram_task.h
-        // names ws_push_task as latency-critical.
-        /* 3072 -> 4096: measured 2026-09-06 with 364 B of headroom left. This
-           stack stays INTERNAL deliberately - CLAUDE.md lists ws_push_task
-           among the latency-critical tasks that must not take a PSRAM stack -
-           so the extra 1 KB is paid out of the scarce pool on purpose, because
-           an overflow here corrupts a neighbour and, with canary-only checking,
-           says nothing when it does. */
+        /* Size is WEB_WS_PUSH_STACK_SIZE in webserver.h, with the full
+           measurement history. The short version, because the sequence is the
+           lesson:
+             2026-08-28 (#284): "peak use 848 B" -> cut 4352 to 3072.
+             2026-09-06: raised back to 4096, with only 364 B of headroom left
+               - so the real peak was ~3.7 KB, four times the 848 B the cut had
+               been based on. The 848 B was a watermark taken before the deep
+               path ran.
+             2026-10-10: 3,164 B free again, which is NOT reassurance - it is
+               the same roomy-looking watermark as in August. Raised to 6144.
+           This stack stays INTERNAL deliberately - CLAUDE.md lists
+           ws_push_task among the latency-critical tasks that must not take a
+           PSRAM stack - so it is paid out of the scarce pool on purpose,
+           because an overflow here corrupts a NEIGHBOUR and, with canary-only
+           checking, says nothing when it does. That silence is why the margin
+           is generous instead of fitted. */
         /* ⛔ TRIED core-1-vs-core-0 pinning here, 2026-09-23 - REVERTED, it made
          * LATE writes WORSE, not better. Theory was that this task, unpinned,
          * lands on core 1 and round-robins at equal priority (3) with
@@ -699,7 +760,7 @@ esp_err_t webserver_ws_start(httpd_handle_t server)
          * contention with THIS task is not the mechanism - do not re-try this
          * exact change without new evidence. The actual cause of the browser-
          * attached breakup is still open. */
-        BaseType_t ok = xTaskCreate(ws_push_task, "ws_push", 4096, NULL, 3, &s_push_task);
+        BaseType_t ok = xTaskCreate(ws_push_task, "ws_push", WEB_WS_PUSH_STACK_SIZE, NULL, 3, &s_push_task);
         if (ok != pdPASS) {
             ESP_LOGE(TAG, "xTaskCreate ws_push failed");
             s_server = NULL;
