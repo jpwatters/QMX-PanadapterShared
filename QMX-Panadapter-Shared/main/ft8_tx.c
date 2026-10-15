@@ -29,6 +29,7 @@
 #include "ft8/js8_text.h"
 
 #include "cat/cat.h"
+#include "net/radio_relay.h"
 #include "storage/settings.h"
 
 static const char *TAG = "ft8_tx";
@@ -1298,7 +1299,36 @@ void ft8_tx_run(const ft8_tx_request_t *req)
             ESP_LOGI(TAG, "key down at +%lld ms into the slot", 
                      (long long)(key_ms % per_ms));
         }
-        tx_cmd(t0, sim, "TX;");   // key down - radio's own envelope shaping
+        /* ⭐ RELAY-TIMED BURST (QMXR/1 "txsched=1").
+         * Over the NAS relay, 79 separate tone changes each had to cross WiFi
+         * on time, and twice in 20 test bursts (2026-10-14) one stalled for
+         * 1.1-1.5 s: the Tab5's own timing was perfect, the radio's was not.
+         * So the whole burst goes to the relay in one frame, and the relay
+         * keys the QMX, plays every tone on the NAS's clock over its wired
+         * link and USB, sends the key-up tone and reports back (TX_DONE).
+         * The loop below still runs on the Tab5 clock - for the UI progress,
+         * the live power/SWR query, SWR protection and abort - it just doesn't
+         * send the tones. Any failure handing the burst over falls back to the
+         * old tone-by-tone path, so a burst is never lost to this. */
+        bool relay_play = false;
+#if FT8_TX_SEND_LIVE
+        if (!sim && strcmp(cat_get_transport(), "net") == 0 && radio_relay_txsched_supported()) {
+            float *fr = malloc((size_t)nn * sizeof(float));
+            if (fr) {
+                for (int i = 0; i < nn; i++)
+                    fr[i] = (float)req->audio_freq_hz + (float)req->tones[i] * tone_spacing_hz;
+                esp_err_t se = radio_relay_tx_schedule(fr, nn, (uint32_t)symbol_period_us);
+                free(fr);
+                if (se == ESP_OK) {
+                    relay_play = true;
+                    ESP_LOGI(TAG, "burst handed to the relay (%d tones, relay-timed)", nn);
+                } else {
+                    ESP_LOGW(TAG, "relay-timed burst refused (0x%x) - sending tones from the Tab5", se);
+                }
+            }
+        }
+#endif
+        if (!relay_play) tx_cmd(t0, sim, "TX;");   // key down - radio's own envelope shaping
 
         // Live power/SWR: fire ONE non-blocking PC;SW; once the PA has settled
         // (symbol 6 ≈ 1 s in), then read the async response a few symbols later
@@ -1347,7 +1377,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
             }
             float freq = (float)req->audio_freq_hz + (float)req->tones[i] * tone_spacing_hz;
             sleep_until(t0, (int64_t)i * symbol_period_us);
-            tx_cmd(t0, sim, "TA%.2f;", (double)freq);
+            if (!relay_play) tx_cmd(t0, sim, "TA%.2f;", (double)freq);
             // Live power/SWR mid-burst query is FT8-only timing (tuned to FT8's
             // 160 ms symbol slack at symbols 6/14) and is skipped for FT4 on
             // those grounds alone - see the note on the branch below. This
@@ -1474,10 +1504,29 @@ void ft8_tx_run(const ft8_tx_request_t *req)
             // up - otherwise we'd truncate the last tone for receivers.
             sleep_until(t0, (int64_t)nn * symbol_period_us);
         }
+        // Relay-timed: the relay sends the key-up tone itself. Tell it to stop
+        // early on an abort, then wait for its report. If no report comes (link
+        // lost, old relay), fall through and send the key-up tone from here as
+        // well - a second TA0; is harmless, a missing one is not.
+        bool relay_keyed_up = false;
+#if FT8_TX_SEND_LIVE
+        if (relay_play) {
+            if (aborted) radio_relay_tx_abort();
+            radio_relay_tx_result_t rr;
+            if (radio_relay_tx_wait_done(aborted ? 1500 : 4000, &rr)) {
+                relay_keyed_up = true;
+                ESP_LOGI(TAG, "relay burst %s: %u/%d tones, RF on-air %lu ms, latest symbol %+ld ms (NAS clock)",
+                         rr.status == 0 ? "complete" : rr.status == 1 ? "aborted" : "FAILED",
+                         (unsigned)rr.tones_sent, nn, (unsigned long)rr.duration_ms, (long)rr.latest_ms);
+            } else {
+                ESP_LOGW(TAG, "no report from the relay for the burst - sending key-up from the Tab5");
+            }
+        }
+#endif
         // Either way - whether all symbols played or we broke out early
         // on an abort request - key up immediately now. This is the part
         // that must ALWAYS run: the radio must never be left transmitting.
-        {
+        if (!relay_keyed_up) {
             char keyup[24];
             snprintf(keyup, sizeof(keyup), "TA%.0f;", (double)FT8_TX_KEYUP_TONE_HZ);
             tx_cmd_critical(t0, sim, keyup);   // drops the envelope

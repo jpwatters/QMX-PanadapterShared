@@ -1118,7 +1118,7 @@
 
   <div id="bandplan-wrap"><canvas id="bandplan" title="Whole-band plan - drag or tap to retune"></canvas></div>
 
-  <div id="ft8-notice"><div id="ft8-topline"><div id="ft8-status"><div id="ft8-tx" class="st-idle">--</div><div id="ft8-countdown" class="ft8-stat" hidden><div class="k">TX in</div><div class="v" id="ft8-countdown-v">--</div></div><div id="ft8-stats"></div><div id="ft8-webr"></div></div></div><div id="ft8-body"><div id="ft8-slotrow"><canvas id="ft8-eo" width="1000" height="72"></canvas><div id="ft8-slot"><div id="slot-sec"><b id="slot-n">--</b><i>sec</i></div><div id="slot-meter"><div id="slot-track"><div id="slot-fill"></div></div></div></div></div><div id="ft8-controls"><div id="ft8-actions"><button id="cq-restart" title="Start a fresh CQ run on the Tab5">Call CQ</button><button id="cq-parity" title="Which 15-second slot your CQ goes out in. ANY uses whichever comes first; EVEN and ODD lock it.">TXCQ ANY</button><select id="ft8-preset" title="Conventional FT8/FT4 calling frequencies - the same list the Tab5 offers"><option value="">Band…</option></select><button id="tone-btn" title="Choose the audio tone you transmit on, against the live occupancy of the band">TX tone</button><button id="ft8opts-btn" title="FT8-specific settings: filters, robot, pileup, Field Day - the same panel the Tab5's own Options button opens">Options<span id="ft8opts-badge" class="badge-count"></span></button></div><div id="ft8-override" style="visibility:hidden;"><span class="ovr-label">Mid-QSO:</span><button id="ovr-resend" title="Send the current message again">Re-send</button><button id="ovr-rr73" title="Jump straight to RR73">RR73</button><button id="ovr-73" title="Jump straight to 73">73</button><button id="ovr-pause" title="Skip the next transmission without ending the exchange - use the listening slot to check the frequency">Pause</button><button id="ovr-cancel" class="btn-danger" title="Stop transmitting and end this exchange">Cancel</button></div></div></div>
+  <div id="ft8-notice"><div id="ft8-topline"><div id="ft8-status"><div id="ft8-tx" class="st-idle">--</div><div id="ft8-countdown" class="ft8-stat" hidden><div class="k">TX in</div><div class="v" id="ft8-countdown-v">--</div></div><div id="ft8-stats"></div><div id="ft8-webr"></div></div></div><div id="ft8-body"><div id="ft8-slotrow"><canvas id="ft8-eo" width="1000" height="72"></canvas><div id="ft8-slot"><div id="slot-sec"><b id="slot-n">--</b><i>sec</i></div><div id="slot-meter"><div id="slot-track"><div id="slot-fill"></div></div></div></div></div><div id="ft8-controls"><div id="ft8-actions"><button id="cq-restart" title="Start a fresh CQ run on the Tab5">Call CQ</button><button id="burst-test" hidden title="Transmit test: ten CQ bursts in a row (stop after 10 calls, no listening slot), then put both settings back">10-burst test</button><button id="cq-parity" title="Which 15-second slot your CQ goes out in. ANY uses whichever comes first; EVEN and ODD lock it.">TXCQ ANY</button><select id="ft8-preset" title="Conventional FT8/FT4 calling frequencies - the same list the Tab5 offers"><option value="">Band…</option></select><button id="tone-btn" title="Choose the audio tone you transmit on, against the live occupancy of the band">TX tone</button><button id="ft8opts-btn" title="FT8-specific settings: filters, robot, pileup, Field Day - the same panel the Tab5's own Options button opens">Options<span id="ft8opts-badge" class="badge-count"></span></button></div><div id="ft8-override" style="visibility:hidden;"><span class="ovr-label">Mid-QSO:</span><button id="ovr-resend" title="Send the current message again">Re-send</button><button id="ovr-rr73" title="Jump straight to RR73">RR73</button><button id="ovr-73" title="Jump straight to 73">73</button><button id="ovr-pause" title="Skip the next transmission without ending the exchange - use the listening slot to check the frequency">Pause</button><button id="ovr-cancel" class="btn-danger" title="Stop transmitting and end this exchange">Cancel</button></div></div></div>
     <div id="ft8-decodes" style="width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
       <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
         <strong id="dec-title" style="color:#ffa040">Decode list</strong>
@@ -3628,6 +3628,97 @@ async function sendCmd(payload) {
    then held disabled briefly: the device defers the request to its own 1 Hz timer,
    so a second click inside that window would do nothing visible and invite
    double-tapping. */
+/* 10-burst test (network-radio), shown only at http://qmx.local/?test.
+   One click sets up a transmit timing test:
+   CQ "Stop after" = 10 calls and no listening slot, so the ten bursts follow
+   each other with nothing skipped; switches the Tab5 to FT8 if needed; starts
+   the CQ run; counts the bursts from /api/status; and when the run ends -
+   ten sent, answered, cancelled - puts both settings back as they were.
+   The previous values are kept in localStorage so a reload mid-run still
+   restores them. Compare the result with tools/tx-test/tx_compare.py. */
+(function wireBurstTest() {
+  const btn = document.getElementById("burst-test");
+  if (!btn) return;
+  const KEY = "qmxBurstTest";
+  const N = 10;
+  let st = null;                       // { prev:{max_calls,listen_every}, sent, active, phase }
+  try { st = JSON.parse(localStorage.getItem(KEY) || "null"); } catch (e) { st = null; }
+  /* Test equipment, not an operating control: the button only appears when the
+     page is opened as http://qmx.local/?test (or while a test it started is
+     still running, so it can always be stopped). Everyone else never sees it. */
+  if (!/[?&]test\b/.test(location.search) && !st) return;
+  btn.hidden = false;
+  const save = () => { try { st ? localStorage.setItem(KEY, JSON.stringify(st)) : localStorage.removeItem(KEY); } catch (e) {} };
+  const label = (t) => { btn.textContent = t; };
+  const postCq = (cq) => fetch("/api/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cq })
+  }).then(r => r.ok).catch(() => false);
+
+  async function finish(why) {
+    if (!st || st.phase === "finishing") return;
+    st.phase = "finishing";              // the next status poll must not finish it twice
+    const prev = st.prev, sent = st.sent;
+    label("Restoring...");
+    const ok = await postCq({ max_calls: prev.max_calls, listen_every: prev.listen_every });
+    st = null; save();
+    btn.disabled = false;
+    label("10-burst test");
+    alert("10-burst test " + why + ": " + sent + " burst(s) sent.\n" +
+          (ok ? "CQ settings restored (Stop after: " + (prev.max_calls || "never") +
+                ", listening slot: " + (prev.listen_every || "off") + ")."
+              : "Could not restore the CQ settings - set them back in Settings > CQ messages.") +
+          "\n\nNow save the Tab5 log: open /api/log (it empties the Tab5's log), " +
+          "and download txlog from the NAS.");
+  }
+
+  btn.addEventListener("click", async () => {
+    if (st) {                             // running: this click stops it
+      if (!confirm("Stop the 10-burst test now? The CQ run is cancelled and the settings restored.")) return;
+      await sendCmd({ action: "qso_override", what: "cancel" });
+      await finish("stopped");
+      return;
+    }
+    if (!confirm("Start a 10-burst test?\n\nThe Tab5 calls CQ ten times in a row (every other " +
+                 "15 s slot, about 5 minutes) and transmits each time. Use a dummy load, or make " +
+                 "sure the frequency is clear and you are licensed to transmit on it.\n\n" +
+                 "CQ settings are changed for the test and put back afterwards.")) return;
+    btn.disabled = true; label("Preparing...");
+    let cfg = null;
+    try { cfg = await (await fetch("/api/settings", { cache: "no-store" })).json(); } catch (e) {}
+    if (!cfg || !cfg.cq) { btn.disabled = false; label("10-burst test"); alert("Could not read the Tab5's settings."); return; }
+    st = { prev: { max_calls: cfg.cq.max_calls || 0, listen_every: cfg.cq.listen_every || 0 },
+           sent: 0, active: false, phase: "starting", t0: Date.now() };
+    save();
+    if (!(await postCq({ max_calls: N, listen_every: 0 }))) { await finish("could not start"); return; }
+    let screen = "";
+    try { screen = (await (await fetch("/api/status", { cache: "no-store" })).json()).screen || ""; } catch (e) {}
+    if (screen !== "ft8") {
+      await sendCmd({ action: "set_screen", screen: "ft8" });
+      await new Promise(r => setTimeout(r, 4000));      // let the FT8 engine start
+    }
+    await sendCmd({ action: "cq_start" });
+    st.phase = "running"; save();
+    btn.disabled = false; label("Burst 0 of " + N + " - stop");
+  });
+
+  /* Called from the /api/status handler once per poll. */
+  window.burstTestOnStatus = function (s) {
+    if (!st || st.phase !== "running" || !s || !s.ft8) return;
+    const f = s.ft8, now = f.st || "idle";
+    if (now === "active" && !st.active) { st.active = true; }
+    else if (now !== "active" && st.active) { st.active = false; st.sent++; save(); }
+    label((st.active ? "Burst " + (st.sent + 1) : "Burst " + st.sent) + " of " + N + " - stop");
+    const text = f.text || "";
+    const elapsed = Date.now() - (st.t0 || 0);
+    if (!st.active && (st.sent >= N || /sent - listening/.test(text))) { finish("finished"); return; }
+    // ended some other way: answered (QSO done/timeout), cancelled, or never got going
+    if (!st.active && elapsed > 60000 && (now === "idle" || now === "done" || now === "timeout")) {
+      finish(st.sent ? "ended early" : "did not start"); return;
+    }
+  };
+  if (st) { label("Burst " + st.sent + " of " + N + " - stop"); st.phase = "running"; }
+})();
+
 (function wireCqRestart() {
   const btn = document.getElementById("cq-restart");
   if (!btn) return;
@@ -7116,6 +7207,7 @@ async function tick() {
       }
     }
 
+    if (window.burstTestOnStatus) window.burstTestOnStatus(s);
     if (screen === "ft8" && s.ft8) {
       /* ⭐ TWO HOMES FOR ONE STRING, decided by the state. While nothing is
          being transmitted this is a RECEIVE readout - "RX: capturing...",

@@ -221,6 +221,47 @@ Notes:
   connection on the Tab5 freezes for good about 20-50 s after boot (fixed in
   `wifi.c`; `radio_relay.c` refuses such a send instead of hanging).
 
+* **Transmit log:** every transmit burst from the Tab5 is written, once `RX;` has
+  gone out, to `txlog/txlog-<date>.log` in the relay folder. The log holds each
+  command the relay handed to the QMX, timed on the NAS's clock, plus a summary
+  line: RF on-air time, tone gaps, and symbol timing against schedule. Compare it
+  with the Tab5's console using `tools/tx-test/tx_compare.py` (see
+  `tools/tx-test/README.md`). Turn it off with `--txlog-dir ''`.
+
+* **CAT log:** every CAT command sent to the QMX and every reply is written to
+  `catlog/catlog-<date>.log` in the relay folder, one timestamped line each.
+  Sources are labelled: `T5` = Tab5, `PC` = port-3 software, `T5 menu` = Radio
+  menus keystrokes. Each day's file is capped at 40 MB. Put a file named
+  `catlog.off` in the relay folder to pause it, and delete the file to resume.
+* **Power-off guard:** `PS0;` (power off) is **blocked** by default, from the Tab5
+  and from PC software alike. It's logged as `BLOCKED` in the CAT log and in
+  `qmx-relay.log`. To let it through, put a file named `allow-ps0` in the relay
+  folder; delete the file to block it again. Both flag files are re-checked
+  every 2 s, so no restart is needed. CAT cannot switch a QMX *on*: while it is
+  off the radio is not on the USB bus at all, so there is nothing to talk to.
+
+* **I/Q paused while transmitting:** from the Tab5's `TX;` to its `RX;` the relay
+  stops sending I/Q to the Tab5 (pings continue). During a transmission the
+  spectrum is of no use, and the ~190 KB/s of incoming I/Q is what overloads
+  the Tab5's Wi-Fi link: on 2026-10-14 that held up one burst's last symbols
+  by 1.5 s. The spectrum and waterfall freeze for the length of each burst.
+  To keep streaming during transmit (for an A/B comparison), put a file named
+  `iq-during-tx` in the relay folder. Each burst in the transmit log records
+  which way it ran ("I/Q to Tab5 paused" or "streamed").
+
+* **Transmit bursts timed by the relay:** with Tab5 firmware that supports it,
+  the Tab5 sends the whole burst (every tone) to the relay in one message at
+  key-down. The relay keys the QMX, sends each tone on the NAS's own clock, and
+  sends the key-up tone at the end, then reports back to the Tab5. The tones no
+  longer have to cross Wi-Fi one by one on time, so a Wi-Fi hiccup during the
+  burst can't delay a symbol. The Tab5 still sends its power/SWR query and the
+  final `RX;`. If the Tab5 disconnects mid-burst, the relay keys up and puts the
+  QMX back in receive. To go back to the Tab5 timing every tone (for an A/B
+  comparison), put a file named `tab5-timed-tx` in the relay folder; it takes
+  effect the next time the Tab5 connects. Each burst in the transmit log
+  records "tones timed by relay" or "tones timed by Tab5", and relay-sent
+  commands appear as `RELAY>QMX` in the CAT log.
+
 ## Troubleshooting
 
 * **Touch dead, but the screen and stream keep running, even after a restart:**

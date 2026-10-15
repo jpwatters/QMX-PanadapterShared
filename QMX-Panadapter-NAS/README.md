@@ -21,21 +21,24 @@ On the Tab5
 * Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus, and upstream’s new GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
 * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
 * Live spectrum on the web page (fixed). Tested.
+* FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
 
 Reliability fixes needed for the network stream
 * WiFi receive: the Tab5 now keeps every packet of a bundled WiFi read instead of dropping some, and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
 * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
 * Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
+* I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder, without a restart. Tested on the NAS.
 Mac tools
 * Mac serial bridge (tools/mac-serial-bridge): presents the NAS-shared QMX as a serial port for WSJT-X, qFT8 and similar programs, finding the NAS automatically. Doesn’t connect yet; deferred.
 * Build and flash from a Mac (mac-build-flash.sh), and record the Tab5’s serial log (mac-capture-serial.sh).
 Keeping up with upstream
-* Update kit (make-qmx-panadapter-nas.sh): rebuilds QMX-Panadapter-NAS from each new upstream release plus the 12 NAS patches. --mark-tested promotes a build to QMX-Panadapter-Shared, and replaced folders go to an archive rather than being deleted.
+* Update kit (make-qmx-panadapter-nas.sh): rebuilds QMX-Panadapter-NAS from each new upstream release plus the 19 NAS patches. --mark-tested promotes a build to QMX-Panadapter-Shared, and replaced folders go to an archive rather than being deleted.
 * GitHub publishing (push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared. The first upload still needs to go through.
 * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.18.0-NAS.
 Documentation
 * The relay README: setup, troubleshooting, and the power-off cure for a stuck touch chip.
-* The project PDF, QMX-Panadapter-Shared.pdf: covers all of this, with sources and full code listings.
+* The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
+* Earlier project PDFs (QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf) describe the v1.16 versions.
 
 
 

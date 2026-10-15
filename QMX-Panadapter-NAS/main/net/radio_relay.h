@@ -86,6 +86,30 @@ typedef struct {
 } radio_relay_found_t;
 int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms);
 
+/* ---- Relay-timed transmit bursts (QMXR/1 "txsched=1") ----------------------
+ * Over the network every tone change used to cross WiFi on its own, 160 ms
+ * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)
+ * delivered symbols late. Instead the whole burst goes to the relay in ONE
+ * frame at key-down; the relay keys the QMX, sends each tone on the NAS's own
+ * timer over its wired link and USB, sends the key-up tone, and reports back.
+ * Only relays that announce "txsched=1" in their HELLO accept it. */
+typedef struct {
+    bool     done;            // a TX_DONE arrived (false: timed out / link lost)
+    uint8_t  status;          // 0 complete, 1 aborted, 2 failed
+    uint16_t tones_sent;
+    uint32_t duration_ms;     // TX; -> key-up, NAS clock
+    int32_t  latest_ms;       // latest symbol vs its schedule, NAS clock
+} radio_relay_tx_result_t;
+
+bool      radio_relay_txsched_supported(void);
+/* Hand the burst to the relay: n tone frequencies (Hz), one every symbol_us.
+ * The relay keys the radio on receipt. */
+esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_us);
+/* Stop a relay-timed burst now (the relay sends the key-up tone). */
+esp_err_t radio_relay_tx_abort(void);
+/* Wait for the relay's report that the burst (including key-up) is done. */
+bool      radio_relay_tx_wait_done(uint32_t timeout_ms, radio_relay_tx_result_t *out);
+
 /* Diagnostics for /api/relay. */
 uint32_t radio_relay_iq_pairs_total(void);
 const char *radio_relay_last_error(void);

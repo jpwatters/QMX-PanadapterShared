@@ -30,14 +30,25 @@ as the DS416j (QMX_BACKEND=libusb|usbfs forces one):
 Wire format (QMXR/1): every frame = 4-byte header + payload
      u8  type   1=HELLO 2=IQ 3=CAT 4=PING
                 5=TERM_OPEN 6=TERM_STATUS 7=TERM_DATA 8=TERM_CLOSE
+                9=TX_SCHED 10=TX_ABORT 11=TX_DONE
      u8  flags  0
      u16 len    payload length, little-endian
   Tab5 -> relay : HELLO "QMXR/1 ...", then CAT bytes
-  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1", then IQ / CAT / PING
+  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1 txsched=1", then IQ / CAT / PING
   Terminal (second serial port), Tab5-initiated:
     Tab5 -> relay : TERM_OPEN            relay -> Tab5 : TERM_STATUS u8 ok [+ reason]
     both ways     : TERM_DATA bytes      Tab5 -> relay : TERM_CLOSE
     relay -> Tab5 : TERM_STATUS 0 unsolicited if the port goes away while open
+  Relay-timed transmit bursts ("txsched=1"):
+    Tab5 -> relay : TX_SCHED u8 ver=1, u8 flags=0, u16 n, u32 symbol_us,
+                    n x u32 tone frequency in centi-Hz (all little-endian)
+                    The relay keys the QMX (TX;) at once, sends tone i at
+                    key down + i x symbol_us and the key-up tone (TA0;) at
+                    key down + n x symbol_us, all on its own clock.
+    Tab5 -> relay : TX_ABORT             stop now: key-up tone at once
+    relay -> Tab5 : TX_DONE u8 status (0 complete, 1 aborted, 2 failed),
+                    u16 tones sent, u32 ms TX; -> key-up, i32 ms latest symbol
+    The Tab5 still sends RX; (after its power/SWR query) and its own CAT.
 
 The relay only answers the Tab5's HELLO after it has opened the QMX, and it
 closes the connection as soon as the QMX goes away, so for the Tab5 an open
@@ -61,6 +72,7 @@ import logging
 import math
 import os
 import queue
+import re
 import select
 import socket
 import struct
@@ -72,6 +84,9 @@ log = logging.getLogger("qmx-nas-relay")
 
 PROTO_HELLO, PROTO_IQ, PROTO_CAT, PROTO_PING = 1, 2, 3, 4
 PROTO_TERM_OPEN, PROTO_TERM_STATUS, PROTO_TERM_DATA, PROTO_TERM_CLOSE = 5, 6, 7, 8
+PROTO_TX_SCHED, PROTO_TX_ABORT, PROTO_TX_DONE = 9, 10, 11
+TX_SCHED_HDR = struct.Struct("<BBHI")
+TX_DONE_FMT = struct.Struct("<BHIi")
 HDR = struct.Struct("<BBH")
 DEFAULT_PORT = 7355
 DEFAULT_SERIAL_PORT = 7356     # QMX port 3 as raw TCP serial for PCs
@@ -1290,6 +1305,9 @@ class RadioManager:
         self.dead = False
         self.users: set = set()
         self.session = None          # the current Tab5 session gets I/Q and CAT
+        self.txlog = None            # TxLog, unless --txlog-dir ''
+        self.catlog = None           # CatLog (see catlog.off)
+        self.flags = Flags(RELAY_DIR)
 
     def acquire(self, user):
         with self.lock:
@@ -1336,6 +1354,236 @@ class RadioManager:
 
 
 # ---------------------------------------------------------------------------
+# CAT log and the power-off guard.
+#
+# CatLog writes every command that reaches the QMX, and every reply, to
+# catlog/catlog-<date>.log, one line each, stamped with the NAS's clock:
+#     11:26:03.214  T5>QMX   FA;
+#     11:26:03.236  QMX>T5   FA00007025450;
+#     11:26:05.001  PC>QMX   PS0;   BLOCKED (power off)
+# "T5" is the Tab5 session, "PC" the port-3 client (WSJT-X, rigctld ...),
+# "T5 menu" the keystrokes the Tab5's Radio menus send to port 2. Lines are
+# queued and written by a thread once a second, never on the USB or socket
+# threads. A day's file stops at CATLOG_MAX_BYTES with a note saying so.
+#
+# Flag files in the relay folder, like restart.request, checked every 2 s:
+#     catlog.off   present = no CAT log
+#     allow-ps0    present = PS0; (power off) is passed to the radio.
+#                  Absent (the default) = it is dropped and logged as BLOCKED.
+#     iq-during-tx present = keep streaming I/Q to the Tab5 while it transmits.
+#                  Absent (the default) = I/Q is paused from TX; to RX; - see
+#                  Session.tx_hold below.
+# ---------------------------------------------------------------------------
+
+CATLOG_MAX_BYTES = 40 * 1024 * 1024
+TX_IQ_HOLD_MAX_S = 180      # longest I/Q pause if RX; never comes (WSPR burst ~111 s)
+RELAY_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class Flags:
+    def __init__(self, directory: str):
+        self.dir, self._t, self._v = directory, 0.0, {}
+
+    def has(self, name: str) -> bool:
+        now = time.monotonic()
+        if now - self._t > 2.0:
+            self._t = now
+            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx", "tab5-timed-tx")}
+        return self._v.get(name, False)
+
+
+class CatLog:
+    def __init__(self, directory: str, flags: Flags):
+        self.dir, self.flags = directory, flags
+        self.q: "queue.Queue[str]" = queue.Queue()
+        threading.Thread(target=self._writer, daemon=True, name="catlog").start()
+
+    def note(self, who: str, data: bytes, extra: str = ""):
+        if self.flags.has("catlog.off"):
+            return
+        t = time.time()
+        stamp = time.strftime("%H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
+        text = data.decode("ascii", errors="backslashreplace").replace("\r", "\\r").replace("\n", "\\n")
+        self.q.put("%s  %-8s %s%s\n" % (stamp, who, text, ("   " + extra) if extra else ""))
+
+    def _writer(self):
+        full_for = None
+        while True:
+            lines = [self.q.get()]
+            time.sleep(1.0)
+            while True:
+                try:
+                    lines.append(self.q.get_nowait())
+                except queue.Empty:
+                    break
+            day = time.strftime("%Y-%m-%d")
+            path = os.path.join(self.dir, "catlog-%s.log" % day)
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+                size = os.path.getsize(path) if os.path.exists(path) else 0
+                if size >= CATLOG_MAX_BYTES:
+                    if full_for != day:
+                        full_for = day
+                        with open(path, "a") as f:
+                            f.write("--- %s: %d MB reached, CAT log paused until tomorrow ---\n"
+                                    % (time.strftime("%H:%M:%S"), CATLOG_MAX_BYTES // 1048576))
+                    continue
+                with open(path, "a") as f:
+                    f.writelines(lines)
+            except OSError as e:
+                log.warning("catlog: cannot write %s: %s", self.dir, e)
+
+
+POWER_OFF = re.compile(rb"^\s*PS\s*0\s*$", re.I)
+
+
+def guard_cat(data: bytes, carry: bytearray, who: str, mgr) -> bytes:
+    """Pass complete CAT commands through, dropping PS0; unless allow-ps0 is
+    present; log each command. An incomplete tail waits in `carry` for the
+    rest of it (every CAT command ends with ';')."""
+    carry += data
+    out = bytearray()
+    while True:
+        i = carry.find(b";")
+        if i < 0:
+            break
+        cmd = bytes(carry[:i + 1])
+        del carry[:i + 1]
+        if POWER_OFF.match(cmd[:-1]) and not mgr.flags.has("allow-ps0"):
+            log.warning("%s sent %r (power off) - BLOCKED; put a file named allow-ps0 in %s to allow it",
+                        who, cmd, RELAY_DIR)
+            if mgr.catlog:
+                mgr.catlog.note(who + ">QMX", cmd, "BLOCKED (power off)")
+            continue
+        if mgr.catlog:
+            mgr.catlog.note(who + ">QMX", cmd)
+        out += cmd
+    if len(carry) > 256:                  # not CAT (no ';' for 256 bytes): pass it on as-is
+        if mgr.catlog:
+            mgr.catlog.note(who + ">QMX", bytes(carry), "(no ';')")
+        out += carry
+        del carry[:]
+    return bytes(out)
+
+
+# ---------------------------------------------------------------------------
+# Transmit log: what the relay actually handed to the QMX during a TX burst,
+# timed on THIS host's clock only. Every interval in it (burst length, gap
+# between tone changes, lateness of a symbol) is the difference of two
+# readings of time.monotonic() on the NAS, so it never mixes clocks. The
+# NAS's wall clock is used for one thing: naming the FT8/FT4 slot, so a burst
+# here can be paired with the same burst in the Tab5's console log
+# (tools/tx-test/tx_compare.py). Nothing is written to disk during a burst;
+# the whole burst is queued to a writer thread when RX; has gone out.
+# ---------------------------------------------------------------------------
+
+class TxLog:
+    MAX_CMDS = 400           # a burst is ~85 commands; anything beyond is noise
+
+    def __init__(self, directory: str):
+        self.dir = directory
+        self.q: "queue.Queue[str]" = queue.Queue()
+        self.burst = None        # list of (t_in_ns, t_out_ns, cmd) while keyed
+        self.wall0 = 0.0         # NAS wall clock at key down (slot naming only)
+        self.count = 0
+        self.carry = b""
+        self.flags = None            # Flags, set by main(): records whether I/Q was paused
+        self.iq_paused = None
+        self.timed_by = "Tab5"       # who scheduled the tones: the Tab5 or this relay (TX_SCHED)
+        threading.Thread(target=self._writer, daemon=True, name="txlog").start()
+
+    # called on the Tab5 session thread, around radio.send_cat()
+    def cat(self, payload: bytes, t_in: int, t_out: int, timed_by: str = "Tab5"):
+        data = self.carry + payload
+        cmds = data.split(b";")
+        self.carry = cmds.pop()[-64:]             # incomplete tail, if any
+        for c in cmds:
+            c = c.strip().decode(errors="replace")
+            if not c:
+                continue
+            if c.startswith("TX"):
+                if self.burst:
+                    self._finish(complete=False)
+                self.burst = [(t_in, t_out, c)]
+                self.wall0 = time.time() - (time.monotonic_ns() - t_out) / 1e9
+                self.iq_paused = (not self.flags.has("iq-during-tx")) if self.flags else None
+                self.timed_by = timed_by
+            elif self.burst is not None:
+                if len(self.burst) < self.MAX_CMDS:
+                    self.burst.append((t_in, t_out, c))
+                if c.startswith("RX"):
+                    self._finish(complete=True)
+
+    @staticmethod
+    def _ta_hz(c: str):
+        try:
+            return float(c[2:]) if c.startswith("TA") else None
+        except ValueError:
+            return None
+
+    def _finish(self, complete: bool):
+        b, self.burst = self.burst, None
+        self.count += 1
+        try:
+            self.q.put(self._format(b, self.wall0, complete))
+        except Exception as e:                       # never let logging hurt the relay
+            log.warning("txlog: %s", e)
+
+    def _format(self, b, wall0: float, complete: bool) -> str:
+        t_key = b[0][1]
+        ms = lambda t: (t - t_key) / 1e6
+        tones = [(ti, to, c) for ti, to, c in b if (self._ta_hz(c) or 0) >= 10]
+        keyup = next((to for ti, to, c in b if self._ta_hz(c) is not None and self._ta_hz(c) < 10), None)
+        rx = next((to for ti, to, c in b if c.startswith("RX")), None)
+        n = len(tones)
+        # FT8 = 79 tones at 160 ms, FT4 = 105 at 48 ms; anything else: no ideal
+        sym = 48.0 if 90 <= n <= 110 else (160.0 if 60 <= n < 90 else 0.0)
+        period = 7.5 if sym == 48.0 else 15.0
+        slot0 = math.floor(wall0 / period) * period
+        key_into = (wall0 - slot0) * 1000
+        utc = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(slot0)) + (".5" if slot0 % 1 else "") + "Z"
+        gaps = [(tones[i][1] - tones[i - 1][1]) / 1e6 for i in range(1, n)]
+        # symbol i is due i*sym after key down (the Tab5 sends TX; and the
+        # first tone together, at t0); + = reached the radio late, - = early
+        late = [ms(tones[i][1]) - i * sym for i in range(n)] if sym else []
+        hold = max((to - ti) / 1e6 for ti, to, c in b)
+        out = ["# burst %d  slot %s  (%s)" % (self.count, utc, "complete" if complete else "NO RX; - next TX; came first")]
+        out.append("RELAY key down at +%.0f ms into the slot (NAS clock)" % key_into)
+        parts = ["RELAY TX burst: %d tones" % n]
+        if keyup is not None:
+            parts.append("RF on-air %.0f ms (TX; -> key-up TA0;)" % ms(keyup))
+        if rx is not None:
+            parts.append("TX; -> RX; %.0f ms" % ms(rx))
+        if gaps:
+            off = sum(1 for g in gaps if sym and abs(g - sym) > 20)
+            parts.append("tone gaps min/avg/max %.0f/%.1f/%.0f ms" % (min(gaps), sum(gaps) / len(gaps), max(gaps)))
+            if sym:
+                parts.append("gaps off by >20 ms: %d" % off)
+        if late:
+            parts.append("symbol timing vs schedule %+d..%+d ms" % (round(min(late)), round(max(late))))
+        parts.append("relay USB write max %.1f ms" % hold)
+        if self.iq_paused is not None:
+            parts.append("I/Q to Tab5 %s" % ("paused" if self.iq_paused else "streamed"))
+        parts.append("tones timed by %s" % self.timed_by)
+        out.append("; ".join(parts))
+        for ti, to, c in b:
+            out.append("  %9.1f ms  %s" % (ms(to), c))
+        return "\n".join(out) + "\n"
+
+    def _writer(self):
+        while True:
+            text = self.q.get()
+            try:
+                os.makedirs(self.dir, exist_ok=True)
+                path = os.path.join(self.dir, time.strftime("txlog-%Y-%m-%d.log"))
+                with open(path, "a") as f:
+                    f.write(text)
+                log.info("txlog: burst %d written to %s", self.count, path)
+            except OSError as e:
+                log.warning("txlog: cannot write %s: %s", self.dir, e)
+
+
+# ---------------------------------------------------------------------------
 # One Tab5 session
 # ---------------------------------------------------------------------------
 
@@ -1352,14 +1600,52 @@ class Session:
         self.alive = True
         self.dropped = 0
         self.iq_bytes = 0
+        self.cat_carry = bytearray()
+        # I/Q pause during transmit. From the Tab5's TX; until its RX; the QMX
+        # is transmitting and its I/Q is of no use, yet it is ~190 KB/s of
+        # traffic INTO the Tab5 - the direction that overflows its WiFi
+        # chip's SDIO link ("SDIO RX oversize - draining"), and on 2026-10-14
+        # one of those stalled a burst's last symbols by 1.5 s. Pausing it
+        # leaves the link nearly idle while timing matters. PINGs continue, so
+        # the Tab5's 3 s idle timeout is not tripped. TX_IQ_HOLD_MAX_S caps a
+        # pause whose RX; never arrives (WSPR bursts are ~111 s).
+        self.tx_hold = False
+        self.tx_hold_t0 = 0.0
+        self.tx_held_frames = 0
+        # Relay-timed bursts (TX_SCHED). cat_lock keeps the playout thread's
+        # tone writes and the Tab5's own CAT (its mid-burst PC;SW;, RX;) from
+        # interleaving inside one USB write and keeps the logs in order.
+        self.cat_lock = threading.Lock()
+        self.play: threading.Thread | None = None
+        self.play_abort = threading.Event()
+        self.txsched = False
 
     def _put_ctl(self, data: bytes):
         with self.wake:
             self.ctl.append(data)
             self.wake.notify()
 
+    def _tx_state(self, payload: bytes):
+        """Follow TX;/RX; in the Tab5's CAT stream to pause I/Q while keyed."""
+        for c in payload.split(b";"):
+            c = c.strip()
+            if c.startswith(b"TX"):
+                if not self.tx_hold and not self.mgr.flags.has("iq-during-tx"):
+                    self.tx_hold, self.tx_hold_t0, self.tx_held_frames = True, time.monotonic(), 0
+            elif c.startswith(b"RX") and self.tx_hold:
+                self.tx_hold = False
+                log.info("TX: I/Q to the Tab5 paused %.1f s (%d frames not sent)",
+                         time.monotonic() - self.tx_hold_t0, self.tx_held_frames)
+
     # radio callbacks (libusb thread)
     def _on_iq(self, s16: bytes):
+        if self.tx_hold:
+            if time.monotonic() - self.tx_hold_t0 < TX_IQ_HOLD_MAX_S:
+                self.tx_held_frames += 1
+                self.iq_acc.clear()          # restart on a clean frame when RX; comes
+                return
+            self.tx_hold = False
+            log.warning("TX: no RX; after %d s - I/Q to the Tab5 resumed anyway", TX_IQ_HOLD_MAX_S)
         self.iq_acc += s16
         fb = FRAME_PAIRS * 4
         while len(self.iq_acc) >= fb:
@@ -1373,8 +1659,84 @@ class Session:
                 self.iq.append(frame(PROTO_IQ, chunk))
                 self.wake.notify()
 
+    # ---- relay-timed transmit burst -------------------------------------
+    def _send_cat(self, radio, data: bytes, who: str, timed_by: str = "Tab5") -> int:
+        """One CAT write to the QMX, logged; returns the time it completed."""
+        with self.cat_lock:
+            t_in = time.monotonic_ns()
+            if who and self.mgr.catlog:
+                self.mgr.catlog.note(who, data)
+            self._tx_state(data)
+            radio.send_cat(data)
+            t_out = time.monotonic_ns()
+            if self.mgr.txlog:
+                self.mgr.txlog.cat(data, t_in, t_out, timed_by)
+            return t_out
+
+    def _tx_sched(self, radio, payload: bytes):
+        try:
+            ver, _flags, n, sym_us = TX_SCHED_HDR.unpack_from(payload)
+        except struct.error:
+            ver = n = sym_us = 0
+        if ver != 1 or not 1 <= n <= 400 or not 10_000 <= sym_us <= 1_000_000 \
+                or len(payload) < TX_SCHED_HDR.size + 4 * n:
+            log.warning("TX_SCHED: bad request (ver %d, %d tones, %d us, %d bytes) - refused",
+                        ver, n, sym_us, len(payload))
+            self._put_ctl(frame(PROTO_TX_DONE, TX_DONE_FMT.pack(2, 0, 0, 0)))
+            return
+        hz = struct.unpack_from("<%dI" % n, payload, TX_SCHED_HDR.size)
+        self._stop_playout()                       # a new burst replaces one still playing
+        self.play_abort.clear()
+        self.play = threading.Thread(target=self._playout, args=(radio, hz, sym_us),
+                                     daemon=True, name="tx-playout")
+        self.play.start()
+
+    def _playout(self, radio, centi_hz, sym_us: int):
+        n, sym_ns = len(centi_hz), sym_us * 1000
+        status, sent, latest_ns, t_key, t_up = 2, 0, 0, None, None
+        try:
+            t_key = self._send_cat(radio, b"TX;", "RELAY>QMX", "relay")
+            for i, c in enumerate(centi_hz):
+                due = t_key + i * sym_ns
+                wait = (due - time.monotonic_ns()) / 1e9
+                if wait > 0 and self.play_abort.wait(wait):
+                    break
+                if self.play_abort.is_set():
+                    break
+                t = self._send_cat(radio, b"TA%d.%02d;" % (c // 100, c % 100), "RELAY>QMX", "relay")
+                latest_ns = max(latest_ns, t - due)
+                sent += 1
+            else:
+                wait = (t_key + n * sym_ns - time.monotonic_ns()) / 1e9
+                if wait > 0:
+                    self.play_abort.wait(wait)
+            status = 1 if self.play_abort.is_set() else 0
+        except Exception as e:                        # RadioGone, USB error: still try to key up
+            log.warning("TX playout: %s", e)
+        finally:
+            try:
+                t_up = self._send_cat(radio, b"TA0;", "RELAY>QMX", "relay")
+            except Exception as e:
+                log.error("TX playout: key-up tone failed: %s", e)
+                status = 2
+        dur = int((t_up - t_key) / 1e6) if (t_key and t_up) else 0
+        log.info("TX playout %s: %d/%d tones, RF on-air %d ms, latest symbol %+.1f ms",
+                 ("complete", "aborted", "FAILED")[status], sent, n, dur, latest_ns / 1e6)
+        self._put_ctl(frame(PROTO_TX_DONE, TX_DONE_FMT.pack(status, sent, dur, int(latest_ns / 1e6))))
+
+    def _stop_playout(self, timeout: float = 2.0) -> bool:
+        """Abort a running playout and wait for its key-up. True if one was running."""
+        th = self.play
+        if not th or not th.is_alive():
+            return False
+        self.play_abort.set()
+        th.join(timeout)
+        return True
+
     def _on_cat(self, data: bytes):
         log.debug("QMX -> Tab5 CAT %r", data)
+        if self.mgr.catlog:
+            self.mgr.catlog.note("QMX>T5", data)
         self._put_ctl(frame(PROTO_CAT, data))
 
     def _on_term(self, data: bytes):
@@ -1417,7 +1779,13 @@ class Session:
             radio = self.mgr.acquire(self)    # raises RadioGone -> we close without answering
             self.mgr.session = self
 
-            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1" % SAMPLE_RATE))
+            # txsched=1: this relay times transmit bursts itself (TX_SCHED). A
+            # file named tab5-timed-tx in the relay folder leaves it out, so the
+            # Tab5 times them as before - for comparing the two.
+            self.txsched = not self.mgr.flags.has("tab5-timed-tx")
+            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1%s"
+                               % (SAMPLE_RATE, b" txsched=1" if self.txsched else b"")))
+            log.info("transmit bursts timed by %s", "this relay" if self.txsched else "the Tab5 (tab5-timed-tx)")
             sock.settimeout(None)
             sender = threading.Thread(target=self._send_loop, daemon=True)
             sender.start()
@@ -1426,8 +1794,19 @@ class Session:
                 payload = recv_exact(sock, n) if n else b""
                 if t == PROTO_CAT and payload:
                     log.debug("Tab5 -> QMX CAT %r", payload)
-                    radio.send_cat(payload)
+                    payload = guard_cat(payload, self.cat_carry, "T5", self.mgr)
+                    if not payload:
+                        continue
+                    self._send_cat(radio, payload, "")     # guard_cat already logged it
+                elif t == PROTO_TX_SCHED and self.txsched:
+                    self._tx_sched(radio, payload)
+                elif t == PROTO_TX_ABORT:
+                    if self.play and self.play.is_alive():
+                        log.info("TX_ABORT from the Tab5")
+                        self.play_abort.set()
                 elif t == PROTO_TERM_DATA and payload:
+                    if self.mgr.catlog:
+                        self.mgr.catlog.note("T5 menu", payload)
                     radio.term_send(payload)
                 elif t == PROTO_TERM_OPEN:
                     ok, why = radio.term_open(self._on_term)
@@ -1443,6 +1822,13 @@ class Session:
                 log.info("Tab5 %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
         finally:
             self.alive = False
+            # The Tab5 is gone - never leave the QMX keyed on its behalf.
+            if radio and (self._stop_playout() or self.tx_hold):
+                try:
+                    self._send_cat(radio, b"TA0;RX;", "RELAY>QMX")
+                    log.warning("Tab5 left while transmitting - QMX put back in receive")
+                except Exception as e:
+                    log.error("could not put the QMX back in receive: %s", e)
             if radio:
                 try:
                     radio.term_close()
@@ -1508,6 +1894,8 @@ class SerialClient:
                 pass
 
     def _on_data(self, data: bytes):
+        if self.mgr.catlog:
+            self.mgr.catlog.note("QMX>PC", data)
         self.q.put(data)               # libusb thread: never block on the PC's socket
 
     def _send_loop(self):
@@ -1536,12 +1924,15 @@ class SerialClient:
             opened = True
             log.info("port 3 client %s:%d connected", self.peer[0], self.peer[1])
             threading.Thread(target=self._send_loop, daemon=True).start()
+            carry = bytearray()
             while self.alive:
                 data = sock.recv(4096)
                 if not data:
                     log.info("port 3 client %s:%d disconnected", self.peer[0], self.peer[1])
                     break
-                radio.serial_send(PORT3, data)
+                data = guard_cat(data, carry, "PC", self.mgr)
+                if data:
+                    radio.serial_send(PORT3, data)
         except RadioGone as e:
             log.warning("port 3: %s", e)
         except OSError as e:
@@ -1818,6 +2209,12 @@ def main():
     ap.add_argument("--selftest-only", action="store_true", help="run the self-test and exit (0 = passed)")
     ap.add_argument("--discovery-port", type=int, default=None,
                     help="UDP port answering Tab5 'QMXR?' searches (default: same as --port; 0 = off)")
+    ap.add_argument("--catlog-dir", default=os.path.join(RELAY_DIR, "catlog"),
+                    help="where to log every CAT command and reply (default: catlog/ next to this "
+                         "script; '' = off; a file named catlog.off in the relay folder pauses it)")
+    ap.add_argument("--txlog-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "txlog"),
+                    help="where to log each transmit burst as the relay sent it to the QMX "
+                         "(default: txlog/ next to this script; '' = off)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -1826,6 +2223,18 @@ def main():
         return probe(args)
 
     mgr = RadioManager(args)
+    if args.catlog_dir:
+        mgr.catlog = CatLog(args.catlog_dir, mgr.flags)
+        log.info("CAT commands are logged to %s/catlog-<date>.log (pause: file catlog.off in %s)",
+                 args.catlog_dir, RELAY_DIR)
+    log.info("PS0; (power off) is %s (flag file allow-ps0 in %s)",
+             "PASSED" if mgr.flags.has("allow-ps0") else "BLOCKED", RELAY_DIR)
+    log.info("I/Q to the Tab5 during transmit: %s (flag file iq-during-tx in %s)",
+             "STREAMED" if mgr.flags.has("iq-during-tx") else "PAUSED", RELAY_DIR)
+    if args.txlog_dir:
+        mgr.txlog = TxLog(args.txlog_dir)
+        mgr.txlog.flags = mgr.flags
+        log.info("transmit bursts are logged to %s/txlog-<date>.log", args.txlog_dir)
     if args.selftest or args.selftest_only:
         passed = selftest(mgr)
         if args.selftest_only:

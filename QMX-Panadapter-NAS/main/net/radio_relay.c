@@ -7,6 +7,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -26,6 +27,9 @@ static const char *TAG = "relay";
 #define PROTO_TERM_STATUS 6   // relay -> Tab5: u8 ok (1/0) [+ reason text]
 #define PROTO_TERM_DATA   7   // both ways: bytes on the second serial port
 #define PROTO_TERM_CLOSE  8   // Tab5 -> relay: close it
+#define PROTO_TX_SCHED    9   // Tab5 -> relay: a whole transmit burst (see radio_relay.h)
+#define PROTO_TX_ABORT   10   // Tab5 -> relay: stop the burst now
+#define PROTO_TX_DONE    11   // relay -> Tab5: u8 status, u16 tones, u32 ms, i32 latest ms
 
 #define RX_PAYLOAD_MAX   8192     // NAS relay sends <=1920-byte IQ frames; anything larger is skipped
 #define RX_IDLE_TIMEOUT_S   3     // relay streams I/Q + 1 s PINGs; 3 s of silence == gone
@@ -52,6 +56,11 @@ static SemaphoreHandle_t       s_term_sem = NULL;
 static volatile int            s_term_result = 0;   // -1 waiting, 0 failed, 1 open
 static char                    s_term_err[64] = "";
 static int64_t s_last_fail_log_us = 0;
+
+// Relay-timed transmit bursts.
+static volatile bool s_txsched_supported = false;
+static SemaphoreHandle_t s_txdone_sem = NULL;
+static radio_relay_tx_result_t s_txdone;
 
 // ---- config ---------------------------------------------------------------
 
@@ -201,10 +210,23 @@ static void rx_task(void *arg)
             }
             break;
         }
+        case PROTO_TX_DONE:
+            if (len >= 11) {
+                s_txdone.done        = true;
+                s_txdone.status      = payload[0];
+                s_txdone.tones_sent  = (uint16_t)(payload[1] | (payload[2] << 8));
+                s_txdone.duration_ms = (uint32_t)payload[3] | ((uint32_t)payload[4] << 8) |
+                                       ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 24);
+                s_txdone.latest_ms   = (int32_t)((uint32_t)payload[7] | ((uint32_t)payload[8] << 8) |
+                                       ((uint32_t)payload[9] << 16) | ((uint32_t)payload[10] << 24));
+                if (s_txdone_sem) xSemaphoreGive(s_txdone_sem);
+            }
+            break;
         default:   // HELLO / PING / unknown: nothing to do
             break;
         }
     }
+    if (s_txdone_sem) xSemaphoreGive(s_txdone_sem);   // a waiting burst must not wait for a dead link
 
     bool unexpected = !s_closing;
     s_connected = false;
@@ -343,6 +365,7 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
     resp[len] = '\0';
     if (strncmp(resp, "QMXR/1", 6) != 0) { note_fail("bad protocol", 0); goto fail; }
     s_term_supported = strstr(resp, "term=1") != NULL;
+    s_txsched_supported = strstr(resp, "txsched=1") != NULL;
     if (!strstr(resp, "rate=48000")) {
         ESP_LOGW(TAG, "relay rate is not 48000 Hz (%s) - spectrum scale will be off", resp);
     }
@@ -382,6 +405,7 @@ void radio_relay_close(void)
     s_term_cb = NULL;
     s_term_gone_cb = NULL;
     s_term_supported = false;
+    s_txsched_supported = false;
     ESP_LOGI(TAG, "relay link closed");
 }
 
@@ -498,4 +522,48 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
     close(s);
     ESP_LOGI(TAG, "discovery: %d relay(s) answered", n);
     return n;
+}
+
+// ---- relay-timed transmit bursts --------------------------------------------
+
+bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }
+
+esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_us)
+{
+    if (!radio_relay_txsched_supported()) return ESP_ERR_NOT_SUPPORTED;
+    if (!freq_hz || n <= 0 || n > 400) return ESP_ERR_INVALID_ARG;
+    if (!s_txdone_sem) {
+        s_txdone_sem = xSemaphoreCreateBinary();
+        if (!s_txdone_sem) return ESP_ERR_NO_MEM;
+    }
+    xSemaphoreTake(s_txdone_sem, 0);              // drop a stale signal
+    memset(&s_txdone, 0, sizeof(s_txdone));
+    /* u8 version, u8 flags, u16 n, u32 symbol_us, then n x u32 centi-Hz -
+     * centi-Hz so the relay can print exactly the "TA%.2f;" the Tab5 would. */
+    size_t len = 8 + (size_t)n * 4;
+    uint8_t *p = heap_caps_malloc(len, MALLOC_CAP_8BIT);
+    if (!p) return ESP_ERR_NO_MEM;
+    p[0] = 1; p[1] = 0; p[2] = (uint8_t)n; p[3] = (uint8_t)(n >> 8);
+    for (int b = 0; b < 4; b++) p[4 + b] = (uint8_t)(symbol_us >> (8 * b));
+    for (int i = 0; i < n; i++) {
+        uint32_t c = (uint32_t)(freq_hz[i] * 100.0f + 0.5f);
+        for (int b = 0; b < 4; b++) p[8 + i * 4 + b] = (uint8_t)(c >> (8 * b));
+    }
+    esp_err_t e = send_frame(PROTO_TX_SCHED, p, len, 500);
+    heap_caps_free(p);
+    return e;
+}
+
+esp_err_t radio_relay_tx_abort(void)
+{
+    if (!s_connected) return ESP_ERR_INVALID_STATE;
+    return send_frame(PROTO_TX_ABORT, NULL, 0, 500);
+}
+
+bool radio_relay_tx_wait_done(uint32_t timeout_ms, radio_relay_tx_result_t *out)
+{
+    bool got = s_txdone_sem && xSemaphoreTake(s_txdone_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE
+               && s_txdone.done;
+    if (out) { *out = s_txdone; out->done = got; }
+    return got;
 }
