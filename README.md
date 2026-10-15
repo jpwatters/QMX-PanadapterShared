@@ -38,7 +38,7 @@ Keeping up with upstream
 Documentation
 * The relay README: setup, troubleshooting, and the power-off cure for a stuck touch chip.
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
-* Earlier project PDFs (QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf) describe the v1.16 versions.
+* QMX-Panadapter-Shared.pdf: the same v1.18.0-NAS project in the earlier document layout. QMX-Panadapter-SharedViaNAS.pdf: the Synology NAS part only (relay, Tab5 firmware, timing), for readers who don't need the Raspberry Pi or Mac tools.
 
 
 
