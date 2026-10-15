@@ -432,6 +432,16 @@ typedef struct {
     // short and latched off rather than driving a mismatched load for the
     // whole 12.7 s. The QMX's finals are the thing being protected here.
     uint8_t  swr_limit_x10;
+    /* JS8 submode, as JS8Call's own NSUBMODE: 0 Normal, 1 Fast, 2 Turbo,
+     * 4 Slow. ⛔ NOT an index - the numbering is JS8Call's and it is not
+     * dense (3 and 5..7 do not exist; 8 is Ultra, which this firmware does
+     * not implement). Appended, so an old NVS blob reads back 0 = Normal,
+     * which is what every existing installation is running.
+     *
+     * Each submode is a different physical layer - NSPS, slot period, tone
+     * spacing and sync arrays all change - so this is not a quality knob and
+     * two stations must agree on it before they can hear each other at all. */
+    uint8_t  js8_submode;
     /* RX audio, persisted so a level set by ear is not lost at the next boot -
      * these were live RAM-only values tuned over /api/cmd during development,
      * which is not something a user can reach. Scaled integers, same idiom as
@@ -451,6 +461,13 @@ typedef struct {
      * manual gain control, which is what "AGC off plus a gain knob" means on
      * any other receiver. */
     bool     rxaud_agc_off;
+    /* AM demodulator half-bandwidth, in units of 100 Hz (30 = 3000 Hz, a 6 kHz
+     * wide signal). The Tab5 demodulates AM from the raw I/Q, so this is the
+     * filter the operator actually listens through - the radio's own AM
+     * bandwidth is fixed at 3.2 kHz and is not in that path. See
+     * RX_AUDIO_AM_HALF_BW_HZ in audio/rx_audio.h for the ceiling and why the
+     * default is not it. */
+    uint8_t  rxaud_am_half_bw_h100;
     /* Mute the internal speaker when headphones are detected (v1.16.4).
      * Default TRUE - it is what everyone expects. Switchable because the
      * detection is a single I2C read that DOES fail in the field, and two
@@ -946,6 +963,13 @@ void    settings_set_spots_mode_filter(bool v);  // show only spots for the curr
 void    settings_set_swr_limit_x10(uint8_t v);   // 0 = off, else limit x10 (25 = 2.5:1)
 uint8_t settings_get_swr_limit_x10(void);
 
+/* JS8 submode as JS8Call's NSUBMODE: 0 Normal, 1 Fast, 2 Turbo, 4 Slow.
+ * Anything else is clamped to 0 - an unknown submode must not reach the
+ * physical layer, where it would pick the wrong sync arrays and transmit
+ * something nobody can decode. */
+void    settings_set_js8_submode(uint8_t v);
+uint8_t settings_get_js8_submode(void);
+
 /* RX audio level and panoramic-split shape. Stored scaled; the Resource
  * Management sliders are the only writers. Ranges are clamped to what
  * rx_audio.h documents, so a bad stored value cannot put the DSP somewhere
@@ -965,6 +989,8 @@ uint16_t settings_get_rxaud_agc_release_ms(void);
 // AGC bypass - gain pinned at the ceiling instead of tracking. Default false.
 void    settings_set_rxaud_agc_off(bool v);
 bool    settings_get_rxaud_agc_off(void);
+void    settings_set_rxaud_am_half_bw_h100(uint8_t v);  // 20..48 (default 30 = 3000 Hz)
+uint8_t settings_get_rxaud_am_half_bw_h100(void);
 // Speaker auto-mute on headphone insert. Default true.
 void    settings_set_hp_mute_en(bool v);
 bool    settings_get_hp_mute_en(void);

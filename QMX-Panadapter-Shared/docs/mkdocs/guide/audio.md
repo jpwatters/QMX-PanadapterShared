@@ -35,9 +35,20 @@ Three live controls tune the effect mid-QSO without leaving the exchange, groupe
 
 !!! note "Which modes produce audio"
 
-    **CW, CW-R, USB and LSB only.** **AM is silent** — there is no AM
-    or FM demodulator yet, so listening to an AM station means putting the
-    radio in USB.
+    **CW, CW-R, USB, LSB and AM.** **FM is still silent** — there is no FM
+    demodulator, so an FM signal has to be listened to in USB or not at all.
+
+    AM is demodulated on the Tab5 itself, from the I/Q the radio sends, so the
+    audio bandwidth is set by the Tab5 and not by the filter in the radio: it
+    is flat to about **3 kHz**, a 6 kHz wide signal. That is the classic "wide"
+    communications AM filter.
+
+    It is deliberately not wider. A broadcaster transmits up to about 4.5 kHz
+    of audio, but shortwave channels are spaced only 5 kHz apart, so a filter
+    wide enough for the full audio would also let the next station in. 3 kHz
+    leaves nearly 2 kHz of margin to that neighbour. A broadcast station will
+    therefore sound a little narrower than it does on a domestic receiver,
+    which is the trade and not a fault.
 
 The three pan controls sit directly under the Binaural CW row in the same window. They stay greyed out until both boxes above are ticked, because they shape a split that is not being produced otherwise.
 
@@ -126,10 +137,11 @@ Audio and the panoramic split are not the same thing, and it is worth being clea
 |------|-------|----------------------------|
 | CW, CW-R | Yes | **Yes** |
 | USB, LSB | **Yes** | No — single channel, both ears the same |
+| AM | **Yes**, to about 3 kHz | No — AM has no stereo content to split |
 | DiGi | No | No |
-| AM, FM | No | No |
+| FM | No | No |
 
-So you **do** get audio on SSB; what you do not get there is the left/right split, because that is a CW feature. In DiGi and AM there is no audio at all yet — nothing is broken if you hear silence in those.
+So you **do** get audio on SSB and AM; what you do not get there is the left/right split, because that is a CW feature. In DiGi and FM there is no audio at all — nothing is broken if you hear silence in those.
 
 ## Known Limitations
 
@@ -197,7 +209,7 @@ A peak limiter sits after the automatic gain, so a loud station cannot arrive at
 
 This is the part of the beta I most want reports on: which mode, roughly how strong the signal was, and whether more ceiling fixed it.
 
-## Where the receive signal comes from (new in v1.17.0)
+## Where the receive signal comes from
 
 Until now the panadapter always listened to the **radio's USB audio**. There is now a
 **receive source** selector, on the Tab5 and in the browser, with a level meter and a

@@ -55,6 +55,14 @@ Get-ChildItem tools/patches/apply_*.ps1 | ForEach-Object { powershell -File $_.F
 python tools/check_patches.py     # the authority - refuses the build if any is missing
 ```
 
+## ⛔ What can key the radio is a FILE, not a memory
+
+`python tools/check_unattended_tx.py` is the authority over
+`docs/unattended-tx-inventory.md` — 11 arming sites, **6 unattended**. Run it
+every release; if the table changed, say so in the notes. ⛔ Never call a
+capability "not completed" or "not yet": say implemented or not, then proven or
+not — [why](../../../memory/feedback_the_operator_must_never_learn_his_own_release_from_a_user.md).
+
 They live in git-ignored `managed_components/`, so `idf.py fullclean`, a dependency
 refresh, or the release's `rm -r managed_components/` wipes them. All are idempotent.
 

@@ -28,7 +28,8 @@
 #include "js8_chat.h"      // the JS8 conversation store, reported in /api/status
 #include "ui/js8_page.h"   // the conversation grid, composed for /api/js8
 #include "ft8_tx.h"
-#include "js8_ftx.h"           // JS8 free-text run (J8)
+#include "js8_ftx.h"
+#include "js8_target.h"           // who the operator is working in JS8
 #include "wspr_tx.h"          // the dev "wspr_tx_test" action
 #include "ui/wspr_screen_view.h" // wspr_bands - ONE band table for both screens
 #include "wspr_selftest.h"    // the dev "wspr_selftest" action
@@ -255,6 +256,30 @@ static void add_ft8_tx_status(cJSON *root)
         char res[64];
         ft8_screen_view_freetext_result(res, sizeof(res));
         cJSON_AddStringToObject(f, "ftx_result", res);
+    }
+
+    /* ⭐ WHO IS SELECTED IN JS8, AND THE OPENING THAT FOLLOWS FROM IT. A tap
+     * on the Tab5 and a click in the browser set the same one piece of state
+     * (js8_target.h), so the browser has to be able to READ it or the two
+     * surfaces disagree about who is being worked - the same mistake the web
+     * Pause button shipped with. js8_prefix is served rather than assembled in
+     * JavaScript for the same reason js8_text_plan is: the rule for what a
+     * message opens with belongs to the device. */
+    {
+        char tgt[FT8_CALL_MAX_LEN];
+        js8_target_get(tgt, sizeof(tgt));
+        cJSON_AddStringToObject(f, "js8_target", tgt);
+        char pre[48];
+        js8_text_prefix(pre, sizeof(pre));
+        cJSON_AddStringToObject(f, "js8_prefix", pre);
+        /* The submode, readable for the same reason js8_target is: it is a
+         * physical-layer choice set from either surface, and a control that
+         * cannot read its own state is a second source of truth. The name is
+         * served rather than assembled in JavaScript so both surfaces call the
+         * submodes the same thing. */
+        cJSON_AddNumberToObject(f, "js8_submode", settings_get_js8_submode());
+        cJSON_AddStringToObject(f, "js8_submode_name",
+                                ftx_protocol_label(ft8_op_mode_protocol()));
     }
 
     /* ⭐ THE BROWSER MUST BE ABLE TO SEE THE PAUSE, NOT JUST SET IT - the same
@@ -1420,6 +1445,58 @@ static esp_err_t status_handler(httpd_req_t *req)
     return err;
 }
 
+/* ⛔ THE WSPR PAGE OWNS THE DIAL, AND THE BROWSER USED TO IGNORE THAT.
+ *
+ * On the Tab5 the top bar's Band, Mode, BW and Zoom are greyed out and inert
+ * while the WSPR page is up (ui.c greys them on UI_MODE_WSPR), and
+ * guide/wspr.md documents exactly that. The web page drew the same controls
+ * grey and then acted on them anyway, because nothing here ever asked which
+ * screen was in front.
+ *
+ * John W5JSS, 2026-10-12, v1.17.1: he picked 20 m from the browser's top row.
+ * set_band wrote the band CENTRE - 14074000, the FT8 frequency - while WSPR
+ * kept its own dial of 1.8366 MHz, so the radio was on 20 m FT8 while WSPR
+ * carried on capturing and labelling its spots 160 m. No spots, a mismatch
+ * warning he had to go and read on the glass, and his own signal reported on
+ * a band he was not on. He also changed Mode from DiGi to LSB the same way.
+ *
+ * ⚠ THE GUIDE ALREADY DESCRIBED THIS FAILURE. It is written up as a
+ * v1.12.0 bug where the top bar overlapped the WSPR panel and took the touch:
+ * "picking a band from it wrote an FT8 frequency to the radio while WSPR
+ * carried on capturing and labelling its spots with the band it thought it
+ * was on." That was fixed on the TOUCH path only. The identical consequence
+ * sat in the API for ten releases because the fix stopped at the instance.
+ *
+ * Decided by the operator 2026-10-13: REFUSE, as the Tab5 does - "nothing
+ * else makes sense". Not redirect: a band change that silently moved the WSPR
+ * dial would be a third behaviour for one control.
+ *
+ * ⭐ Freq is NOT guarded, deliberately. The guide says "Only Freq stays
+ * live, so a beacon found off the standard dial frequency can still be chased
+ * by typing it in", and that is a real operating need.
+ *
+ * It answers with a REASON rather than ok:false alone. A silent refusal is
+ * what the greyed-but-live control already was. */
+static bool wspr_owns_the_dial(httpd_req_t *req, cJSON *root, const char *what)
+{
+    if (ui_mode_get() != UI_MODE_WSPR) return false;
+    /* 256, not 160: -Werror=format-truncation caught the longer wording
+     * overflowing by ten bytes, which would have shipped a refusal whose
+     * own JSON was cut mid-string. */
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             /* ⚠ The advice has to fit ALL FOUR. The first wording said
+              * "use the WSPR page's own band button", which is only true for
+              * Band - that page has no Mode, BW or Zoom control at all. */
+             "{\"ok\":false,\"error\":\"the WSPR page owns the dial - %s is "
+             "inactive there, as it is on the Tab5. That page sets its own band; "
+             "leave it to reach the panadapter's controls.\"}", what);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return true;
+}
+
 static esp_err_t cmd_handler(httpd_req_t *req)
 {
     char buf[256];
@@ -1504,6 +1581,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             ui_request_bandplan_view((int64_t)item->valuedouble);
         }
     } else if (action && strcmp(action, "set_band") == 0) {
+        if (wspr_owns_the_dial(req, root, "Band")) return ESP_OK;
         cJSON *item = cJSON_GetObjectItem(root, "hz");
         if (cJSON_IsNumber(item)) {
             uint32_t center_hz = (uint32_t)item->valuedouble;
@@ -1528,6 +1606,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             ui_update_frequency(want);
         }
     } else if (action && strcmp(action, "set_mode") == 0) {
+        if (wspr_owns_the_dial(req, root, "Mode")) return ESP_OK;
         const char *mode = cJSON_GetStringValue(cJSON_GetObjectItem(root, "mode"));
         /* ⛔ cat_request_mode(), NOT cat_set_mode(). This was the direct
          * call, whose return value was discarded - and cat_set_mode() SHARES
@@ -1550,6 +1629,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
          * radio stayed in the previous mode. cat_request_mode is retried". */
         if (mode) cat_request_mode(mode);
     } else if (action && strcmp(action, "set_bw") == 0) {
+        if (wspr_owns_the_dial(req, root, "BW")) return ESP_OK;
         cJSON *item = cJSON_GetObjectItem(root, "hz");
         if (cJSON_IsNumber(item)) {
             uint32_t bw = (uint32_t)item->valuedouble;
@@ -1578,6 +1658,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         settings_set_still_notice_done(true);
         ESP_LOGI(TAG, "web: still display -> %s", v ? "on" : "off");
     } else if (action && strcmp(action, "set_zoom") == 0) {
+        if (wspr_owns_the_dial(req, root, "Zoom")) return ESP_OK;
         cJSON *item = cJSON_GetObjectItem(root, "zoom");
         if (cJSON_IsNumber(item)) {
             if (display_lock(50)) {
@@ -1753,7 +1834,79 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         // cq_start; the outcome comes back through /api/status's ft8 block
         // (web_r), because a Tab5 toast is invisible from another room.
         const char *call = cJSON_GetStringValue(cJSON_GetObjectItem(root, "call"));
-        if (call && call[0]) ft8_screen_view_request_reply(call);
+        /* ⛔ IN JS8 THIS SELECTS AND TRANSMITS NOTHING, and the gate is HERE
+         * rather than only in the page.
+         *
+         * The page is cached and gzipped in flash, but a browser that has the
+         * OLD page open keeps sending "reply" on every row click, and on that
+         * page a click meant "transmit now". Gating in JavaScript alone would
+         * leave the behaviour Ryan KK6DZB reported ("anytime I would click on
+         * a call it would auto start sending the SNR") alive for every tab
+         * that was open across the update - and the far end sees it as
+         * Gyula HA3HZ did, as a station answering on its own.
+         *
+         * So the server decides. js8_target.h carries the whole reasoning. */
+        if (call && call[0]) {
+            if (ftx_protocol_is_js8(ft8_op_mode_protocol())) {
+                js8_target_set(call);
+            } else {
+                ft8_screen_view_request_reply(call);
+            }
+        }
+    } else if (action && strcmp(action, "js8_select") == 0) {
+        /* Select, or clear with an empty/absent call. The explicit action the
+         * current page sends; "reply" above is the same thing for a page that
+         * predates it. */
+        const char *call = cJSON_GetStringValue(cJSON_GetObjectItem(root, "call"));
+        js8_target_set(call);
+    } else if (action && strcmp(action, "js8_snr") == 0) {
+        /* The SNR macro. One message, armed - never the auto-sequencer, which
+         * is what these buttons exist to replace. Deferred to the LVGL task
+         * like every other arming path. */
+        ft8_screen_view_request_js8_macro(0);
+    } else if (action && strcmp(action, "js8_grid") == 0) {
+        ft8_screen_view_request_js8_macro(1);
+    } else if (action && strcmp(action, "js8_submode") == 0) {
+        /* {"action":"js8_submode","submode":0|1|2|4} - JS8Call's own NSUBMODE:
+         * 0 Normal, 1 Fast, 2 Turbo, 4 Slow.
+         *
+         * ⛔ THIS IS NOT A QUALITY KNOB. Each submode is a different physical
+         * layer - slot period, symbol rate, tone spacing and sync arrays all
+         * change - so a station on Fast cannot hear a station on Normal at
+         * all. Changing it mid-exchange would abandon whoever is being worked,
+         * so it is refused while a QSO or a burst is live, the same rule the
+         * band and mode controls follow.
+         *
+         * ⚠ Fast, Turbo and Slow have never been exchanged with a real
+         * JS8Call station. They round-trip through our own encoder and decoder
+         * (test/js8_submode_harness.c) and nothing more than that.
+         *
+         * The setting is clamped in settings.c, not here: NVS and an imported
+         * config file are writers this handler never sees. */
+        cJSON *sm = cJSON_GetObjectItem(root, "submode");
+        int want = cJSON_IsNumber(sm) ? sm->valueint : 0;
+        /* Armed counts as busy too, not just keyed: an armed request
+         * carries tones already built for the OLD submode. */
+        bool busy = ft8_qso_is_busy(NULL, 0) ||
+                    ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE;
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        if (busy) {
+            httpd_resp_sendstr(req,
+                "{\"ok\":false,\"err\":\"busy - a QSO or burst is in progress\"}");
+            return ESP_OK;
+        }
+        settings_set_js8_submode((uint8_t)want);
+        {
+            char out[128];
+            snprintf(out, sizeof(out),
+                     "{\"ok\":true,\"submode\":%u,\"name\":\"%s\",\"slot_ms\":%d}",
+                     (unsigned)settings_get_js8_submode(),
+                     ftx_protocol_label(ft8_op_mode_protocol()),
+                     ftx_protocol_slot_ms(ft8_op_mode_protocol()));
+            httpd_resp_sendstr(req, out);
+        }
+        return ESP_OK;
     } else if (action && strcmp(action, "qso_override") == 0) {
         // Mid-QSO override from the browser (#205, Randy N4OPI). Same deferral as
         // "reply": the QSO machine belongs to the LVGL task, and the outcome comes
@@ -1871,6 +2024,40 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
         cat_band_scan_restore_test((uint32_t)hz_item->valuedouble, md ? md[0] : 0);
+    } else if (action && strcmp(action, "trip_swr") == 0) {
+        /* Hidden dev action, same family as gp_probe and ta_probe: RAISE the
+         * station SWR latch, so the refusal path can be exercised without a
+         * bad antenna.
+         *
+         * ⛔ IT EXISTS BECAUSE THE TRIP CANNOT OTHERWISE BE FIRED ON A HEALTHY
+         * STATION. settings_set_swr_limit_x10() clamps the limit to a floor of
+         * 1.5:1, and a well-matched bench reads 1.2 - so "set the limit low and
+         * transmit" cannot reach the comparison, and keying the radio to find
+         * that out proves nothing. This raises the SAME flag a real trip
+         * raises, through the same function, so everything downstream - the
+         * WSPR refusal before key-down, ft8_tx_arm()'s refusal, the Tab5
+         * prompt, the web banner - is the real path and not a simulation.
+         *
+         * It does NOT prove the mid-burst CUT, which only a genuine mismatch
+         * (or a build with the clamp floor lowered) can reach. Do not cite it
+         * for that.
+         *
+         * {"action":"trip_swr"} or {"action":"trip_swr","swr":5.1} */
+        cJSON *sj = cJSON_GetObjectItem(root, "swr");
+        float sw = cJSON_IsNumber(sj) ? (float)sj->valuedouble : 5.1f;
+        ft8_tx_trip_swr(sw);
+        ESP_LOGW("webserver", "DEV: SWR latch raised at %.1f:1 by /api/cmd - "
+                              "transmit is now refused until it is cleared", (double)sw);
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        {
+            char out[96];
+            float t = 0.0f;
+            snprintf(out, sizeof(out), "{\"ok\":true,\"tripped\":%s,\"swr\":%.2f}",
+                     ft8_tx_swr_tripped(&t) ? "true" : "false", (double)t);
+            httpd_resp_sendstr(req, out);
+        }
+        return ESP_OK;
     } else if (action && strcmp(action, "clear_swr") == 0) {
         // The web equivalent of tapping the Tab5's own SWR-fault prompt
         // (Randy N4OPI: the web UI had no way to see the fault OR clear it).
@@ -2104,6 +2291,50 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(f, "step_ms",    pr->step_ms[k]);
             cJSON_AddNumberToObject(f, "delta_ms",   pr->delta_ms[k]);
             cJSON_AddItemToArray(fl, f);
+        }
+        free(pr);
+        char *txt = cJSON_PrintUnformatted(res);
+        cJSON_Delete(res);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, txt ? txt : "{\"ok\":false}");
+        free(txt);
+        return ESP_OK;
+    } else if (action && strcmp(action, "ta_probe") == 0) {
+        /* M2 (docs/js8-feasibility.md): how long does one TA; write take, and
+         * how late does it get issued, at a given cadence. Decides whether JS8
+         * Fast's 80 ms symbol period is reachable over CAT tone-stepping.
+         *
+         * ⭐ DOES NOT KEY THE RADIO - no TX; is sent, so TA only sets the
+         * tone register. Safe with an antenna connected. See cat.h.
+         *
+         * {"action":"ta_probe","count":300,"interval_ms":80,"logged":false} */
+        cJSON *cj = cJSON_GetObjectItem(root, "count");
+        cJSON *ij = cJSON_GetObjectItem(root, "interval_ms");
+        cJSON *lj = cJSON_GetObjectItem(root, "logged");
+        int  count    = cJSON_IsNumber(cj) ? cj->valueint : 300;
+        int  interval = cJSON_IsNumber(ij) ? ij->valueint : 80;
+        bool logged   = cJSON_IsTrue(lj);
+        cJSON_Delete(root);
+
+        cat_ta_probe_t *pr = calloc(1, sizeof(*pr));
+        if (!pr) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no mem"); return ESP_FAIL; }
+        esp_err_t perr = cat_ta_latency_probe(count, interval, logged, pr);
+
+        cJSON *res = cJSON_CreateObject();
+        cJSON_AddBoolToObject(res, "ok", perr == ESP_OK);
+        cJSON_AddNumberToObject(res, "err", perr);
+        cJSON_AddNumberToObject(res, "interval_ms", pr->interval_ms);
+        cJSON_AddBoolToObject(res, "logged", pr->logged);
+        cJSON_AddNumberToObject(res, "n", pr->n);
+        cJSON_AddNumberToObject(res, "fails", pr->fails);
+        /* Every sample, not a summary: a distribution with a tail is the whole
+         * point, and an average would hide exactly the writes that break a
+         * symbol. The firmware log carries the percentiles as well. */
+        cJSON *w = cJSON_AddArrayToObject(res, "w_us");
+        cJSON *sl = cJSON_AddArrayToObject(res, "slip_us");
+        for (int i = 0; i < pr->n; i++) {
+            cJSON_AddItemToArray(w,  cJSON_CreateNumber(pr->w_us[i]));
+            cJSON_AddItemToArray(sl, cJSON_CreateNumber(pr->slip_us[i]));
         }
         free(pr);
         char *txt = cJSON_PrintUnformatted(res);
@@ -4973,11 +5204,11 @@ static esp_err_t js8_get_handler(httpd_req_t *req)
                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!sc) { cJSON_Delete(root); return httpd_resp_send_500(req); }
 
-        int n = js8_chat_count();
-        if (n > JS8_CHAT_MAX_MSGS) n = JS8_CHAT_MAX_MSGS;
-        int have = 0;
-        for (int i = 0; i < n; i++)
-            if (js8_chat_at(i, &sc->msgs[have])) have++;
+        /* The same filtered copy the glass draws - one selection, one list,
+         * both surfaces. See js8_chat_copy(). */
+        char sel[FT8_CALL_MAX_LEN];
+        js8_target_get(sel, sizeof(sel));
+        int have = js8_chat_copy(sel, sc->msgs, JS8_CHAT_MAX_MSGS);
 
         /* AGE is measured against the CALLER's clock - js8_page.c has none,
          * and the glass passes the same system time. */
@@ -5399,6 +5630,11 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
             cJSON_AddNumberToObject(ra, "pan_blend_x100", settings_get_rxaud_pan_blend_x100());
             cJSON_AddNumberToObject(ra, "pan_ovlp_x100",  settings_get_rxaud_pan_ovlp_x100());
             cJSON_AddNumberToObject(ra, "agc_attack_ms",  settings_get_rxaud_agc_attack_ms());
+            /* The AM filter the Tab5 demodulates through, as the RF width the
+             * operator sees - NOT the radio's fixed 3.2 kHz, which is in its
+             * own audio and not in the I/Q path. */
+            cJSON_AddNumberToObject(ra, "am_bw_hz",
+                                    settings_get_rxaud_am_half_bw_h100() * 200);
             cJSON_AddNumberToObject(ra, "agc_release_ms", settings_get_rxaud_agc_release_ms());
             cJSON_AddBoolToObject  (ra, "agc_off",        settings_get_rxaud_agc_off());
             cJSON_AddBoolToObject  (ra, "hp_mute_en",     settings_get_hp_mute_en());
@@ -6087,6 +6323,13 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                 int g = RA_CLAMP((int)v->valuedouble, 5, 150);
                 settings_set_rxaud_gain_d10((uint8_t)g);
                 rx_audio_set_agc_gain_max((float)g * 10.0f);
+            }
+            if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "am_bw_hz"))) {
+                /* RF width in, half-bandwidth stored - same convention as the
+                 * Tab5's own picker. settings clamps to 20..48 (x100 Hz). */
+                int half = (int)v->valuedouble / 2;
+                rx_audio_set_am_half_bw_hz(half);
+                settings_set_rxaud_am_half_bw_h100((uint8_t)(half / 100));
             }
             if (cJSON_IsNumber(v = cJSON_GetObjectItem(ra, "pan_width_x10"))) {
                 int w = RA_CLAMP((int)v->valuedouble, 0, 30);

@@ -7,6 +7,7 @@
 
 #include "esp_log.h"
 
+#include "ft8_status.h"
 #include "ft8_tx.h"
 #include "ft8_test.h"
 #include "ft8/js8.h"
@@ -19,6 +20,10 @@ static const char *TAG = "js8_ftx";
  * operator is agreeing to is frames x this, which is the number they must see
  * before anything is keyed. */
 #define JS8_FTX_SLOT_SECS 15
+
+/* display_text is 32 bytes and the frame counter has to fit in it with room
+ * for "free text, frame NN of NN" - see js8_ftx_start(). */
+_Static_assert(JS8_FTX_MAX_FRAMES < 100, "frame counter assumes two digits");
 
 typedef struct {
     ft8_tx_request_t req[JS8_FTX_MAX_FRAMES];
@@ -111,13 +116,29 @@ bool js8_ftx_start(const char *text, int audio_freq_hz,
         r->kind           = FT8_TX_KIND_CQ;   /* no target call; not a ladder step */
         r->audio_freq_hz  = tone;
         r->use_parity     = false;            /* consecutive slots, either parity */
-        r->protocol       = FTX_PROTOCOL_JS8;
-        js8_encode(&fr[(size_t)i * JS8_FRAME_BYTES], it[i], r->tones);
+        /* ⛔ THE SELECTED SUBMODE, not a hardcoded Normal. Every frame of a
+         * multi-frame run must be built for the physical layer the slot loop
+         * is about to transmit on - the sync arrays differ, and a run encoded
+         * for Normal and sent at Turbo's symbol rate decodes nowhere. */
+        r->protocol       = ft8_op_mode_protocol();
+        js8_encode(&fr[(size_t)i * JS8_FRAME_BYTES], it[i], r->protocol, r->tones);
         /* What the status line shows for this frame. The whole message does
          * not fit, and the frame number is what tells the operator how much
-         * is left to go. */
+         * is left to go.
+         *
+         * ⚠ THIS STRING IS THE FRAME COUNTER ON BOTH SURFACES. It becomes
+         * tx_text in ft8_tx_get_status(), which the Tab5 label (t_clock_cb)
+         * and /api/status both build their TX line from - so it is read by an
+         * operator, not by a developer, and "2/7" was too terse to be one.
+         * Ryan KK6DZB held a JS8 QSO on v1.18.0 and said he "could not tell
+         * if it had transmitted my full message yet". */
+        /* ⚠ THE MODULO IS FOR THE COMPILER, not for the arithmetic. n is
+         * at most JS8_FTX_MAX_FRAMES (12) - see the loop bound and the
+         * static assert below - but -Werror=format-truncation reasons about
+         * `int`, so a 10-digit frame number against a 32-byte field is a
+         * build failure without it. */
         snprintf(r->display_text, sizeof(r->display_text),
-                 "free text %d/%d", i + 1, n);
+                 "free text, frame %d of %d", (i + 1) % 100, n % 100);
     }
 
     char err[64];
@@ -150,6 +171,21 @@ void js8_ftx_tick(void)
         s_run.sent++;
         if (s_run.sent >= s_run.total) {
             ESP_LOGI(TAG, "free text complete: %d frame(s) sent", s_run.sent);
+            /* ⛔ THE COMPLETION MESSAGE IS NOT SET HERE, AND THE FIRST CUT
+             * OF IT WAS. ft8_status_set() looked like the right home - it is
+             * the one line both surfaces show while idle - but the decode loop
+             * writes "RX: capturing..." to that same line every slot, so the
+             * message was gone inside a second.
+             *
+             * MEASURED on the bench, 2026-10-14: a two-frame run finished and
+             * /api/status already read "RX: capturing..." at the first poll
+             * after it. The operator would have seen nothing, which is the
+             * complaint this was meant to answer.
+             *
+             * ft8_screen_view watches this run go active -> idle on its 1 Hz
+             * timer and says so there, in the two places that persist: a toast
+             * on the glass and the STICKY web result, the same one a completed
+             * QSO uses precisely because it must not expire unasked. */
             memset(&s_run, 0, sizeof(s_run));
             return;
         }
@@ -166,6 +202,8 @@ void js8_ftx_tick(void)
          * worse than an obvious failure. */
         ESP_LOGW(TAG, "free text stopped at frame %d/%d: %s",
                  s_run.sent + 1, s_run.total, err);
+        ft8_status_set("Free text STOPPED at frame %d of %d: %s",
+                       s_run.sent + 1, s_run.total, err);
         memset(&s_run, 0, sizeof(s_run));
         return;
     }
@@ -176,6 +214,8 @@ void js8_ftx_cancel(void)
 {
     if (!s_run.active) return;
     ESP_LOGI(TAG, "free text cancelled at frame %d/%d", s_run.sent + 1, s_run.total);
+    ft8_status_set("Free text cancelled at frame %d of %d",
+                   s_run.sent + 1, s_run.total);
 
     /* Disarm what has not started; wind down anything already on the air so
      * the radio is never left keyed. One of the two is a no-op. */
@@ -189,11 +229,4 @@ bool js8_ftx_active(int *sent, int *total)
     if (sent)  *sent  = s_run.sent;
     if (total) *total = s_run.total;
     return s_run.active;
-}
-
-void js8_ftx_status(char *out, size_t out_len)
-{
-    if (!out || !out_len) return;
-    if (!s_run.active) { out[0] = '\0'; return; }
-    snprintf(out, out_len, "free text %d/%d", s_run.sent + 1, s_run.total);
 }

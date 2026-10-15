@@ -112,7 +112,7 @@ static bool encode_request_tones(ft8_tx_request_t *req, const char *text,
                                  const char *third,
                                  char *out_err, size_t out_err_len)
 {
-    if (req->protocol == FTX_PROTOCOL_JS8) {
+    if (ftx_protocol_is_js8(req->protocol)) {
         uint8_t frame[JS8_FRAME_BYTES];
         uint8_t itype = 0;
         if (!js8_text_to_frame(text, frame, &itype)) {
@@ -121,7 +121,7 @@ static bool encode_request_tones(ft8_tx_request_t *req, const char *text,
             ESP_LOGW(TAG, "JS8 encode refused: '%s'", text);
             return false;
         }
-        js8_encode(frame, itype, req->tones);
+        js8_encode(frame, itype, req->protocol, req->tones);
         return true;
     }
 
@@ -188,6 +188,20 @@ float ft8_tx_get_last_power_swr(float *power_w, float *swr)
     if (swr) *swr = s_last_swr;
     if (s_last_pwr_swr_us < 0) return -1.0f;
     return (float)(esp_timer_get_time() - s_last_pwr_swr_us) / 1e6f;
+}
+
+/* ⭐ THE LATCH IS THE STATION'S, NOT FT8'S, and it is deliberately NOT
+ * duplicated for WSPR. "The antenna is bad enough to stop transmitting" is a
+ * fact about the aerial on the roof, not about which mode noticed it: a trip
+ * raised by a WSPR burst must refuse the next FT8 burst too, and the reverse.
+ * A second parallel latch would be the copy-that-drifts shape this project
+ * keeps paying for. It lives here because the UI and the web page already read
+ * it from here; wspr_tx.c raises it through this function. */
+void ft8_tx_trip_swr(float swr)
+{
+    if (s_swr_tripped) return;        /* first trip wins - keep its value */
+    s_swr_trip_value = swr;
+    s_swr_tripped    = true;
 }
 
 bool ft8_tx_swr_tripped(float *swr_out)
@@ -669,7 +683,7 @@ bool ft8_tx_build_request_fd(ft8_tx_kind_t kind,
      * engine is decoding JS8, so the burst would be unintelligible to the
      * JS8 stations the operator believes they are working, and to us. Refuse,
      * rather than transmit an FT8 frame under a JS8 label. */
-    if (ft8_op_mode_protocol() == FTX_PROTOCOL_JS8) {
+    if (ftx_protocol_is_js8(ft8_op_mode_protocol())) {
         if (out_err) snprintf(out_err, out_err_len,
                               "Field Day has no JS8 message - switch to FT8");
         return false;
@@ -791,7 +805,7 @@ bool ft8_tx_build_request_text(const char *message_text,
      * exception is a CQ suffix ("CQ POTA OZ1LAV" -> "CQ OZ1LAV"), which JS8's
      * Heartbeat has no field for - the same class of loss FT8's guard already
      * permits for tokens the 77-bit packer drops. */
-    if (out_req->protocol == FTX_PROTOCOL_JS8) {
+    if (ftx_protocol_is_js8(out_req->protocol)) {
         uint8_t frame[JS8_FRAME_BYTES];
         uint8_t itype = 0;
         if (!js8_text_to_frame(message_text, frame, &itype)) {
@@ -819,7 +833,7 @@ bool ft8_tx_build_request_text(const char *message_text,
                 return false;
             }
         }
-        js8_encode(frame, itype, out_req->tones);
+        js8_encode(frame, itype, out_req->protocol, out_req->tones);
         ESP_LOGI(TAG, "built JS8 text: '%s' @ %d Hz", out_req->display_text, audio_freq_hz);
         return true;
     }
@@ -1220,8 +1234,14 @@ void ft8_tx_run(const ft8_tx_request_t *req)
     // re-read from the live ft8_op_mode_get() mid-burst - see ft8_tx.h).
     const bool    is_ft4         = (req->protocol == FTX_PROTOCOL_FT4);
     const int     nn             = is_ft4 ? FT4_NN : FT8_NN;
-    const int64_t symbol_period_us = is_ft4 ? FT4_SYMBOL_PERIOD_US : FT8_SYMBOL_PERIOD_US;
-    const float   tone_spacing_hz  = is_ft4 ? FT4_TONE_SPACING_HZ : FT8_TONE_SPACING_HZ;
+    /* ⛔ ASKED, NOT TERNARIED. These two lines used to read
+     *   is_ft4 ? FT4_... : FT8_...
+     * which is the exact shape constants.h warns about: a two-way ternary
+     * cannot express a six-way fact, and it put every JS8 submode on FT8's
+     * 160 ms / 6.25 Hz. Turbo would have keyed 79 symbols at a third of its
+     * rate and nobody would ever have decoded it. */
+    const int64_t symbol_period_us = ftx_protocol_symbol_period_us(req->protocol);
+    const float   tone_spacing_hz  = ftx_protocol_tone_spacing_hz(req->protocol);
     const int     slot_ms          = ftx_protocol_slot_ms(req->protocol);
 
     /* ⛔ JS8 would reach here with FT8's timing - which is CORRECT for Normal,
@@ -1333,7 +1353,8 @@ void ft8_tx_run(const ft8_tx_request_t *req)
         // Live power/SWR: fire ONE non-blocking PC;SW; once the PA has settled
         // (symbol 6 ≈ 1 s in), then read the async response a few symbols later
         // (symbol 14). Both steps fit inside the 160 ms inter-symbol slack (the
-        // send is a ~ms CDC write bounded to 50 ms; the read just parses
+        // send is a CDC write measured at ~250 us (M2, 2026-10-14 - the "50 ms"
+        // this line used to quote is the write's TIMEOUT, not its cost); the read just parses
         // buffers), so symbol timing is undisturbed - unlike cat_query_power_swr()'s
         // ~600 ms blocking wait, which is why that one only runs at burst end.
         // Result populates s_last_* so the "TRANSMITTING:" line shows the CURRENT
@@ -1384,9 +1405,18 @@ void ft8_tx_run(const ft8_tx_request_t *req)
             // comment used to add "forced sim anyway - !sim is always false here
             // when is_ft4", contradicting the correction eight lines below it.
 #if FT8_TX_SEND_LIVE
-            // FT8 only. FT4's symbol period is 48 ms and a CDC write is bounded
-            // at 50 ms, so a mid-burst query does not fit in the slack and would
-            // shift symbol timing. FT4 relies on the post-burst check below,
+            // FT8 only. FT4's symbol period is 48 ms, and a mid-burst query
+            // does not fit in the slack, so it would shift symbol timing.
+            // ⚠ THE REASON THIS COMMENT USED TO GIVE WAS WRONG: it said "a CDC
+            // write is bounded at 50 ms", which is the TIMEOUT argument passed to
+            // cdc_acm_host_data_tx_blocking(), not what a write costs. M2
+            // measured 1800 writes on 2026-10-14: p50 250 us, p99 1.9 ms, max
+            // 3.6 ms (cat_ta_latency_probe, docs/js8-feasibility.md fact 1). The
+            // WRITE was never the problem here. What does not fit is the ROUND
+            // TRIP - send PC;SW;, wait for the radio to answer - and that cost
+            // has NOT been measured. So the behaviour stands on an unmeasured
+            // assumption now rather than a mismeasured one; do not "fix" it by
+            // enabling FT4 sampling until the round trip is timed. FT4 relies on the post-burst check below,
             // which still latches the transmitter off for every LATER burst -
             // the fault is caught one burst later, not never.
             // (Comments here and in ft8_test.c used to claim FT4 TX was
@@ -1461,8 +1491,11 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                  *
                  * Same rule as never writing 599 into an ADIF record: a number
                  * nobody measured must not be presented as a measurement. FT4
-                 * genuinely cannot be sampled mid-burst (48 ms symbols, a CDC
-                 * write is bounded at 50 ms), so the honest answer is no
+                 * is not sampled mid-burst (48 ms symbols; the PC;SW; ROUND TRIP
+                 * does not fit - ⚠ this used to cite a "50 ms CDC write bound",
+                 * which is a timeout, not a cost, and M2 has since measured the
+                 * write at 250 us; see the symbol loop above), so the honest
+                 * answer is no
                  * reading at all - see #300 for why the post-burst query is not
                  * a substitute either. */
                 // Simulated burst (settings' sim mode): no real PA to query,

@@ -1140,6 +1140,32 @@ static void bw_preset_cb(lv_event_t *e)
     uint32_t hz = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     bw_popup_close();
     const char *mode = cat_get_mode_str();
+    if (strcmp(mode, "AM") == 0) {
+        /* The Tab5's own AM filter - NOTHING is written to the radio, whose AM
+         * bandwidth is fixed and not in the I/Q path. The list is RF widths, so
+         * halve it for the half-bandwidth the demodulator works in.
+         *
+         * ui_update_passband_width() is deliberately NOT called: that tracks
+         * the RADIO's filter and the FW poll would overwrite it with 3200
+         * within ~150 ms. compute_passband_edges_hz()'s AM branch reads
+         * rx_audio_get_am_half_bw_hz() instead, so the tint follows this. */
+        int half = (int)hz / 2;
+        rx_audio_set_am_half_bw_hz(half);
+        settings_set_rxaud_am_half_bw_h100((uint8_t)(half / 100));
+        /* Re-render the top bar and the passband tint NOW rather than waiting
+         * for the next FW poll - which in AM reports an UNCHANGED 3200 every
+         * time, so there is no guarantee it refreshes anything. Passing the
+         * radio's current figure leaves s_passband_width_hz alone; the label
+         * block inside substitutes the AM width itself.
+         *
+         * ⚠ ui_get_passband_width_hz(), not s_passband_width_hz - this
+         * callback sits above that static's definition. And no explicit
+         * recompute_zoom_pan() here: it is defined further down too, and the
+         * draw path re-reads compute_passband_edges_hz() every frame, so the
+         * tint follows on its own. */
+        ui_update_passband_width(ui_get_passband_width_hz());
+        return;
+    }
     if (strcmp(mode, "CW") == 0 || strcmp(mode, "CW-R") == 0) {
         cat_request_cw_passband(hz);  // deferred MMCW write via poll task
         // Same bookkeeping the SSB branch below already does - without this,
@@ -1212,6 +1238,28 @@ static void bw_popup_open(void)
     } else if (strcmp(cur_mode, "USB") == 0 || strcmp(cur_mode, "LSB") == 0) {
         bw_list = ssb_bw;
         lbl_list = ssb_lbl;
+        n_bw = 4;
+    } else if (strcmp(cur_mode, "AM") == 0) {
+        /* ⛔ IN AM THIS CONTROL IS NOT THE RADIO'S FILTER. The QMX's AM
+         * bandwidth is FIXED at 3.2 kHz and sits in the radio's own audio, not
+         * in the I/Q we demodulate from - so there is nothing on the radio to
+         * set, and until 2026-10-15 this function simply returned here and the
+         * operator got no popup at all: "the top bar BW is not reacting and
+         * stays at 3.2 kHz". Correct for the radio, useless to him.
+         *
+         * These widths are the TAB5's AM filter. The labels are the RF width
+         * the operator sees on the waterfall (twice the half-bandwidth), which
+         * is the same convention the SSB figures above use.
+         *
+         * ⚠ 9.6k IS OFFERED BUT IS NOT THE DEFAULT, and the reason is the
+         * band rather than the DSP: shortwave broadcast channels are spaced
+         * 5 kHz, so at 9.6k the filter edge sits about 45 Hz from the
+         * NEIGHBOUR's carrier (measured, test/am_demod_harness.c). It is there
+         * for a clear channel, where it buys a broadcaster's full 4.5 kHz. */
+        static const uint32_t am_bw[]  = {4000, 6000, 8000, 9600};
+        static const char    *am_lbl[] = {"4.0k","6.0k","8.0k","9.6k"};
+        bw_list = am_bw;
+        lbl_list = am_lbl;
         n_bw = 4;
     } else {
         return;
@@ -3088,6 +3136,12 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  * the radio is in a bag and the Tab5 is the thing in your hand, so walking to
  * the QMX's own encoder is exactly what you cannot do. */
 #define DRAWER_SEC_KEYER      49
+/* JS8 submode picker. Shown ONLY on the FT8 page with the JS8 sub-mode
+ * selected - see drawer_sec_visible(). Each submode is a different physical
+ * layer (slot period, symbol rate, tone spacing, sync arrays), so this is not
+ * a quality knob: two stations must agree on it before they can hear each
+ * other at all. */
+#define DRAWER_SEC_JS8SUB     50
 // ⛔ THE NEXT ONE MUST RAISE N_DRAWER_SECTIONS TOO - see CLAUDE.md's "fixed-
 // size array indexed by an enum will be overrun" section. IDs are 0..47.
 //
@@ -3101,14 +3155,14 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
 //   lv_obj_has_flag_any <- lv_obj_is_layout_positioned
 //
 // A comment cannot stop this on its own, so the assert below now does.
-#define N_DRAWER_SECTIONS     51
+#define N_DRAWER_SECTIONS     52
 // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 // or one plugged into a NAS running tools/nas-relay. Same effect as the web
 // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 // cat_reconnect), so the switch no longer needs a computer.
-// (50: upstream v1.18.0 took 47 PORTA, 48 GPSSTATS, 49 KEYER.)
-#define DRAWER_SEC_RADIOSRC   50
-// ⛔ IDs are 0..50 now. The next one raises N_DRAWER_SECTIONS AND gets an
+// (51: upstream took 47 PORTA, 48 GPSSTATS, 49 KEYER, 50 JS8SUB.)
+#define DRAWER_SEC_RADIOSRC   51
+// ⛔ IDs are 0..51 now. The next one raises N_DRAWER_SECTIONS AND gets an
 // assert below - see the 2026-10-03 note above.
 
 /* Catches the mistake above at COMPILE time instead of as a crash minutes into
@@ -3119,6 +3173,7 @@ _Static_assert(DRAWER_SEC_SDEJECT < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
 _Static_assert(DRAWER_SEC_OUTPWR  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_PORTA   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_KEYER   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_JS8SUB  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
 static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
@@ -3220,6 +3275,10 @@ static const drawer_item_t GRP_WSPR[] = {
 };
 static const drawer_item_t GRP_FT8[] = {
     { DRAWER_SEC_DISTANCE, "Distance, fast pounce, PSK Reporter", true },
+    /* Basic: picking the submode is the first thing anyone running JS8 does,
+     * and it is invisible in every other sub-mode anyway, so hiding it behind
+     * Advanced would hide it from exactly the operator who went looking. */
+    { DRAWER_SEC_JS8SUB, "JS8 submode", true },
     { DRAWER_SEC_SIMMODE, "Simulation mode", false },
 };
 static const drawer_item_t GRP_SPECTRUM[] = {
@@ -3476,6 +3535,13 @@ static bool drawer_sec_visible(int id, ui_mode_t mode, bool tune_ok)
      *    is now DRAWER_SEC_WSPRDIST, a checkbox of its own in the WSPR group,
      *    which is what was wanted all along: the borrowed section also carried
      *    fast pounce and PSK Reporter, both FT8-only. */
+    /* ⛔ FT8 PAGE **AND** THE JS8 SUB-MODE. The sub-mode is not a ui_mode_t -
+     * JS8 lives inside UI_MODE_FT8 - so `ft8` alone would show a JS8-only
+     * control while the operator is running FT8 or FT4, which this file calls
+     * a bright control that does nothing. apply_freq_preset() re-lays the
+     * drawer after every sub-mode change so this is re-evaluated. */
+    if (id == DRAWER_SEC_JS8SUB)
+        return ft8 && ft8_op_mode_get() == FT8_OP_MODE_JS8;
     if (id == DRAWER_SEC_SIMMODE) return ft8;
     if (id == DRAWER_SEC_DISTANCE) return ft8;
     if (id == DRAWER_SEC_FT8SYNC) return ft8;
@@ -3679,6 +3745,57 @@ static void drawer_dropdown_tunesnap_cb(lv_event_t *e)
 static void drawer_dropdown_freqsep_cb(lv_event_t *e);
 static void drawer_dropdown_cmap_open_cb(lv_event_t *e);
 static void drawer_dropdown_sleep_open_cb(lv_event_t *e);
+
+/* ---- JS8 submode picker --------------------------------------------------
+ *
+ * ⛔ READ-BACK IS NOT OPTIONAL. The submode is also settable over
+ * /api/cmd {"action":"js8_submode"}, so a dropdown that only ever WRITES would
+ * be a second source of truth - the mistake the web Pause button shipped with
+ * (operator, 2026-09-22: "clicking the web Pause does what it should do if you
+ * check the Tab5, but stays the same and still says Pause"). The section is
+ * built once per boot, so the selection is re-read on every drawer open.
+ *
+ * The option ORDER is this array; JS8Call's own NSUBMODE numbering is NOT
+ * dense (0,1,2,4 - 3 does not exist, 8 is Ultra, which this firmware does not
+ * implement), so the index and the value are deliberately kept apart. */
+static lv_obj_t *s_js8sub_dd = NULL;
+static const uint8_t s_js8_submode_vals[] = { 0, 1, 2, 4 };
+#define N_JS8_SUBMODES ((int)(sizeof(s_js8_submode_vals)/sizeof(s_js8_submode_vals[0])))
+
+static void drawer_refresh_js8_submode(void)
+{
+    if (!s_js8sub_dd) return;
+    uint8_t cur = settings_get_js8_submode();
+    uint32_t sel = 0;
+    for (int i = 0; i < N_JS8_SUBMODES; i++)
+        if (s_js8_submode_vals[i] == cur) { sel = (uint32_t)i; break; }
+    lv_dropdown_set_selected(s_js8sub_dd, sel);
+}
+
+static void drawer_js8_submode_cb(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t  i  = lv_dropdown_get_selected(dd);
+    if (i >= (uint32_t)N_JS8_SUBMODES) return;
+
+    /* ⛔ REFUSED MID-EXCHANGE, AND IT SAYS SO. Changing submode changes the
+     * physical layer, so it abandons whoever is being worked - and an armed
+     * request already carries tones built for the OLD submode. The API handler
+     * refuses on exactly the same test; a control that silently did nothing
+     * instead would read as a broken dropdown. */
+    if (ft8_qso_is_busy(NULL, 0) ||
+        ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE) {
+        ui_toast("Busy - finish or cancel the QSO first");
+        drawer_refresh_js8_submode();     /* snap back to what is really set */
+        return;
+    }
+
+    settings_set_js8_submode(s_js8_submode_vals[i]);
+    /* The slot loop picks this up through ft8_op_mode_protocol() and rebuilds
+     * the monitor pool at the top of the next slot - nothing to do here. */
+    ESP_LOGI("ui", "JS8 submode -> %s",
+             ftx_protocol_label(ft8_op_mode_protocol()));
+}
 static void drawer_dropdown_bpregion_cb(lv_event_t *e);
 static void drawer_dropdown_port_a_mode_cb(lv_event_t *e);
 static void porta_warn_refresh(uint8_t mode);
@@ -8855,8 +8972,24 @@ void ui_update_passband_width(uint32_t hz)
     }
     if (s_bw_label && display_lock(20)) {
         char buf[20];
-        if (hz >= 1000) snprintf(buf, sizeof(buf), "BW: %lu.%01lu kHz", (unsigned long)(hz/1000), (unsigned long)((hz%1000)/100));
-        else            snprintf(buf, sizeof(buf), "BW: %lu Hz", (unsigned long)hz);
+        /* ⛔ IN AM THE LABEL MUST SHOW THE TAB5'S FILTER, NOT THE RADIO'S.
+         *
+         * Everything above deliberately keeps tracking the radio's reported
+         * width - other things read s_passband_width_hz - but the number on the
+         * top bar is what the operator reads as "the bandwidth I am listening
+         * through", and in AM that is ours: the QMX's AM filter is fixed at
+         * 3.2 kHz and sits in its own audio, not in the I/Q we demodulate.
+         *
+         * He hit exactly this on 2026-10-15: "the top bar BW is not reacting
+         * and stays at 3.2 kHz". It was faithfully reporting the radio while
+         * the audio came from a different filter entirely. Doubled because the
+         * demodulator works in half-bandwidth and this label, like the SSB
+         * figures, is the RF width. */
+        uint32_t shown = hz;
+        const char *m = cat_get_mode_str();
+        if (m && strcmp(m, "AM") == 0) shown = (uint32_t)(rx_audio_get_am_half_bw_hz() * 2);
+        if (shown >= 1000) snprintf(buf, sizeof(buf), "BW: %lu.%01lu kHz", (unsigned long)(shown/1000), (unsigned long)((shown%1000)/100));
+        else               snprintf(buf, sizeof(buf), "BW: %lu Hz", (unsigned long)shown);
         lv_label_set_text(s_bw_label, buf);
         display_unlock();
     }
@@ -8900,9 +9033,31 @@ static void compute_passband_edges_hz(int32_t *out_low, int32_t *out_high)
         low = -(PB_SSB_LOW_HZ + (int32_t)w);
         high = -PB_SSB_LOW_HZ;
     } else if (strstr(s_current_mode, "AM")) {
-        if (w == 0) w = 6000;
-        low = -(int32_t)w / 2;
-        high = (int32_t)w / 2;
+        /* ⛔ AM IGNORES THE RADIO'S REPORTED FILTER, to agree with the audio.
+         *
+         * The QMX's AM bandwidth is FIXED at 3.2 kHz (operator, 2026-10-14)
+         * and that filter sits in the radio's own audio, NOT in the I/Q: the
+         * CAT manual's Q9 says "in IQ Mode, the raw I & Q samples from the ADC
+         * are streamed directly to the USB Sound card", which is also why this
+         * display can show a 24 kHz span at all.
+         *
+         * So in AM the passband that MATTERS is the Tab5's own demodulator
+         * bandwidth, and the tint must draw that or it describes a filter
+         * nobody is listening through. Reading the radio's 3200 as a width
+         * drew +/-1600 here while rx_audio.c independently made the same
+         * mistake and sounded, in the operator's words, "like you had your ear
+         * in a cup".
+         *
+         * The number itself is rx_audio.h's RX_AUDIO_AM_HALF_BW_HZ, exported
+         * precisely so the tint and the filter cannot drift apart - it was a
+         * literal in both files for one commit, which is how that happens. */
+        (void)w;
+        /* The LIVE value, not the default - the operator can change it from the
+         * top bar now. A tint drawn from the compile-time figure would describe
+         * a filter nobody is listening through, which is the mistake 7fcd1b1f
+         * made with the radio's number. */
+        low  = -rx_audio_get_am_half_bw_hz();
+        high =  rx_audio_get_am_half_bw_hz();
     } else if (strstr(s_current_mode, "FM")) {
         if (w == 0) w = 10000;
         low = -(int32_t)w / 2;
@@ -14537,6 +14692,43 @@ static void drawer_build(void)
         lv_obj_align(s_check_pskrep, LV_ALIGN_TOP_RIGHT, 0, 118);
         y += 168;
     }
+    /* JS8 submode. Sits directly above Simulation mode, in the FT8 group,
+     * visible only while the JS8 sub-mode is selected (drawer_sec_visible).
+     *
+     * The labels carry the cycle length because that is the number an operator
+     * can actually act on - it is what decides how long a message takes and
+     * whether anyone else on the band is using the same one. Normal is named
+     * first and is what every JS8Call station runs by default.
+     *
+     * ⚠ Fast, Turbo and Slow have never been exchanged with a real JS8Call
+     * station. They are implemented and unverified - see
+     * docs/js8-feasibility.md - so this control is offered without a promise
+     * that the far end will hear it. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_JS8SUB, y, 100);
+        lv_obj_t *js_hdr = lv_label_create(sec);
+        lv_label_set_text(js_hdr, "JS8 submode");
+        lv_obj_set_style_text_color(js_hdr, lv_color_hex(0xA0E0A0), 0);
+        lv_obj_set_style_text_font(js_hdr, &lv_font_montserrat_28, 0);
+        lv_obj_align(js_hdr, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        s_js8sub_dd = lv_dropdown_create(sec);
+        /* Order matches s_js8_submode_vals[]. */
+        lv_dropdown_set_options(s_js8sub_dd,
+                                "Normal - 15 s\n"
+                                "Fast - 10 s\n"
+                                "Turbo - 6 s\n"
+                                "Slow - 30 s");
+        lv_obj_set_size(s_js8sub_dd, DRAWER_W - 32, 50);
+        lv_obj_align(s_js8sub_dd, LV_ALIGN_TOP_LEFT, 0, 40);
+        lv_obj_set_style_text_font(s_js8sub_dd, &lv_font_montserrat_28, 0);
+        drawer_refresh_js8_submode();
+        lv_obj_add_event_cb(s_js8sub_dd, drawer_js8_submode_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        /* Unfold the whole list rather than scrolling four items - same
+         * reasoning as the frequency-format dropdown above. */
+        lv_obj_add_event_cb(s_js8sub_dd, drawer_dropdown_sleep_open_cb, LV_EVENT_CLICKED, NULL);
+        y += 100;
+    }
     // FT8 simulation mode: phantom-station practice partner, real radio
     // never keyed (see ft8_sim.h). FT8-only - same exclusive-to-FT8-mode
     // pattern as DRAWER_SEC_DISTANCE above, not a Panadapter-mode setting.
@@ -15109,6 +15301,8 @@ static void drawer_open(void)
     output_power_area_refresh();
     /* Profiles are edited on the web page, so re-read them here (#359). */
     drawer_refresh_cw_profiles();
+    /* The submode is settable over the API too - see drawer_refresh_js8_submode. */
+    drawer_refresh_js8_submode();
     /* ...and so is every other checkbox in here - see drawer_refresh_checkboxes. */
     drawer_refresh_checkboxes();
     s_drawer_open = true;
@@ -15155,6 +15349,22 @@ void ui_set_drawer_expert(bool expert)
 // screenshotted otherwise, so its layout could only ever be taken on trust -
 // and a section whose height and `y +=` disagree overlaps the one below it,
 // which is precisely the mistake this file warns about. Dev action only.
+/* Re-lay the drawer for the CURRENT mode and sub-mode.
+ *
+ * ⛔ THE FT8 SUB-MODE IS NOT A ui_mode_t. FT8, FT4 and JS8 all live inside
+ * UI_MODE_FT8, so nothing in the existing mode plumbing notices when one
+ * becomes another - and DRAWER_SEC_JS8SUB has to appear and disappear with it.
+ * ft8_screen_view.c calls this right after ft8_op_mode_set(). Safe to call from
+ * taskLVGL (where that path already runs) and from anywhere else: the display
+ * lock is recursive. */
+void ui_drawer_relayout(void)
+{
+    if (display_lock(200)) {
+        drawer_set_mode(ui_mode_get());
+        display_unlock();
+    }
+}
+
 void ui_set_drawer_scroll_y(int y)
 {
     if (!s_drawer || !s_drawer_open) return;

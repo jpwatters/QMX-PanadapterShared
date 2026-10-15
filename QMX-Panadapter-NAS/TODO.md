@@ -1,12 +1,100 @@
 # QMX Panadapter — Master Todo List + Status Assessment
 
-**Last updated:** 2026-10-12
+**Last updated:** 2026-10-14
 **Scope:** v1.0 release gates → open investigations → feature requests → roadmap → full shipped history
 **Source:** CLAUDE.md + README.md + groups.io feature requests + session work
 **Assessment:** Code grep + git log + memory system
-**Repo state:** **v1.17.1 released 2026-10-11.** Prior: v1.17.0 (2026-10-10, JS8 Normal, GPS stats, line in, keyer speed), v1.16.12 (2026-10-07), v1.16.11 (2026-10-03), v1.16.10 (2026-10-02). The per-version changelog is `docs/version-history.md` and is complete to v1.17.1 — this file does not duplicate it.
+**Repo state:** **v1.18.0 released 2026-10-12** (PA-voltage ceiling, Bryan N0LUF's Output power write fix, JS8 compound callsigns proven on air, the SPIFFS diag-log budget). Prior: v1.17.1 (2026-10-11), v1.17.0 (2026-10-10, JS8 Normal, GPS stats, line in, keyer speed), v1.16.12 (2026-10-07), v1.16.11 (2026-10-03), v1.16.10 (2026-10-02). The per-version changelog is `docs/version-history.md` and is complete to v1.17.1 — this file does not duplicate it.
 
 ⛔ **THE HEADLINE IN THIS FILE WAS TEN DAYS AND FOUR RELEASES STALE** (it read "v1.5.0 released 2026-08-06", then "v1.16.10 is out"). A version banner in prose cannot keep up with a release cadence of days, which is the same rot `CLAUDE.md` records for its patch count. **Read `git tag --sort=-creatordate` for what shipped; read this file only for what is OPEN.**
+
+---
+
+## ▶▶ THE WORK QUEUE, 2026-10-13 — READ THIS FIRST
+
+Agreed order, written after replying to five operators. **The order in A is
+what Sam W7STF has been TOLD**, in a reply that was sent, so it is not free to
+re-shuffle without telling him again.
+
+⛔ **Before assessing any of these, read the document that already exists.**
+`docs/web-audio-feasibility.md` (271 lines, written for A1 on the day it was
+asked) and `docs/remote-iq-assessment.md` (the I/Q-server idea, with its own
+suggested order) answer most of the "how big is it" questions. On 2026-10-13 I
+re-derived both from git archaeology and got a WORSE answer - see
+`feedback_read_docs_before_assessing` in memory.
+
+### A. Sam W7STF's list, oldest first — the order he has been promised
+
+| # | What | Size | Where the thinking already is |
+|---|---|---|---|
+| **A1** | **Web-UI audio + server mode.** His since **2026-07-15** (TODO #43). ⚠ The roadmap claimed for three months that this was "already working in development, held back for a soak". It was not: one WIP commit, 1702 behind, and the "restart" branch is EMPTY. Corrected in `d3a17722` | Medium — but **a reimplementation of a known design, not a restart**. The demodulator ships (the `dsp.c` FT8 branch IS a USB demodulator); `/ws` already carries binary frames and `webserver_ws.c:409` says an older browser ignores an unknown frame type; `ws_push_task` already runs. So: µ-law encode, frame type `0x02`, an AudioWorklet. **96 kbps** on top of the existing ~82. Gate is an overnight WiFi soak - the SDIO link is the scarce resource, not CPU | `docs/web-audio-feasibility.md` |
+| **A2** | **AM audio.** ⚠ **The Tab5 is SILENT in AM today**, confirmed in code: `mode_from_cat_str()` (`rx_audio.c:75`) returns `RXAUD_MODE_NONE` for AM. His words: *"AM is silent, so an AM station means putting the radio in USB"* | Small, self-contained. An `RXAUD_MODE_AM` branch, magnitude + DC block, and an AM case in `ui.c`'s `compute_passband_edges_hz()` | TODO row I(4) |
+| **A3** | **CW decode, two rows to four.** ⚠ I told him "one line" and he corrected me - it is `CW_LINE_ROWS 2` x `CW_LINE_COLS 72` on both surfaces | Nearly free. One constant; `CW_GRID_CELLS` derives from it and both the buffer and the Tab5 paint (`ui.c:4493`) loop over it. ⛔ The **browser hardcodes two row elements** (`rowEls`), and `ui.c` static-asserts `84 - CW_PREFIX_COLS == CW_LINE_COLS` - do not touch the column count | |
+| **A4** | PSD amplitude peak hold, adjustable persistence; then CW-Tune; then the CW peak filter | Moderate, render/DSP | |
+| **A5** | Digital noise reduction for AM and SSB | Largest, and it wants A2 done first. ⭐ The feasibility note says DNR can run **client-side** (RNNoise-class WASM) on demodulated audio and never needs to fit on the P4 | `docs/web-audio-feasibility.md` |
+
+⭐ **Already done, he did not know:** his biggest architectural ask - make
+disabled digital modes computationally inert. `ft8_test.c:2939` is literally
+`while (ui_mode_get() == UI_MODE_FT8)` and exits when the operator leaves the
+page; WSPR gates on `s_run`/`wspr_en`. The remaining cost is the RENDER, so the
+honest form is "make the waterfall cheaper" = #285's open taskLVGL/DMA work.
+
+⛔ **Declined:** "do not even LOAD a feature unless enabled" - that means
+compile-time config and different binaries for different operators. One image
+for everyone.
+
+### B. This week's reports
+
+| # | What | State |
+|---|---|---|
+| **B1** | **The saved diagnostic log destroys 4 bytes in every 32-byte block** (John W5JSS) | ⛔ **OPEN, NOT REPRODUCED.** 9,740 events, ~11% of a 343 KB file. The RAM copy from the same download is CLEAN, so it is the SPIFFS path, not HTTP or the browser. Not reproducible on the bench (199 KB, 2 runs, no stride). **Next lead: his answer on whether he was band hopping.** This is the evidence channel for every field report, so it costs every future diagnosis |
+| **B2** | **Ryan KK6DZB's JS8 UI draft** (full list received 2026-10-13 evening) | ✅ **BEHAVIOUR HALF DONE, FLASHED AND PROVEN ON AIR 2026-10-14** `9f440da9`. Tap selects (no TX), SNR + GRID buttons, conversation filters to the selection, free text opens "THEM US ", JS8 CQ calls once. ⛔ **The old claim in this row was WRONG**: the frame counter was never composer-only - `display_text` carried it to both surfaces all along. The real defects were the wording, no "finished" message, and `ftx_result` discarded by the browser. ▶ **STILL OPEN: the three-pane layout** (stations / this station's messages / type box, losing the Free text button) and **printing the message as it sends** - cheap, see the commit message |
+| **B3** | **JS8 CQ repeats because FT8 does** (Ryan KK6DZB) | ✅ **ANSWERED BY HIM AND DONE** `9f440da9`, flashed 2026-10-14. His words: "Calling CQ only once. You must hit CQ again to send again." FT8 untouched |
+| **B4** | **JS8 canned messages / macros, one-button recall** (Gyula HA3HZ) | ⏸ **WAITING ON HIM** for which substitutions he actually uses. ⭐ Half built: `cq_msg[3][28]` in `settings.h:361` is persisted and in the `[cq]` config backup - same mechanism. Sizing: free text takes **160** chars so presets want to be longer than 28, and three is too few. ⚠ `js8_presets` in the API is FREQUENCY presets, not messages |
+| **B5** | ⚠ **JS8 AUTO-QSO IS LIVE AND UNAUDITED** (Gyula HA3HZ) | ▶ **PARTLY ADDRESSED** `9f440da9`: a JS8 tap/click can no longer start an exchange, so the hand-operated path is now press-per-message. ⛔ **THE ROBOT IS UNTOUCHED** - `ft8_robot` -> `ft8_qso_start()` is what answered Gyula's four callers, it is opt-in (`robot_en`), and nobody has yet tested what it looks like from the far end. The unattended count is STILL 6. The narrow real gap remains: the directed command `SNR?` (cmd 0) is unhandled |
+| **B6** | ~~The browser bypassed the WSPR page's top-bar guard~~ | ✅ **FIXED AND VERIFIED** `057a98b1`. Four of John's six reports were this one bug |
+| **B7** | **A finished QSO stayed busy for a whole extra cycle** (Bruce N9JCV, POTA) | ✅ **FIXED `6198189b`, FLASHED AND PROVEN ON AIR.** The WAIT_DONE check lived in `ft8_qso_advance()`, which runs once per SLOT - the closing 73 stops ~12.6 s into a 15 s slot and nothing re-evaluated it until the next cycle, so he could not start another station. Now also polled from the decode task's idle wait, gated on 1200 ms of margin. ⭐ The measurement the code demanded was already in the capture: wrap-up 31-342 ms, dominated by the ADIF write. ✅ **PROVEN ON AIR 2026-10-14**: QSO with EX7CQ (Kyrgyzstan), final RR73 off the air at `I (530705)`, QSO closed at `I (530724)` - **19 ms**, where it used to be a whole slot. Wrap-up 49 ms, logged as QSO #34 |
+
+| **B8** | **M2 — how fast can JS8 go? The CAT write was never the limit** | ✅ **MEASURED 2026-10-14, and it overturns the feasibility doc.** 1800 `TA<freq>;` writes to a live QMX at 160/80/40 ms, 0 failures: write p50 **250 µs**, p99 1.9 ms; worst *slip* against the ideal symbol instant **3.7 ms**, at a 40 ms cadence. ⛔ The old "Turbo is unreachable, a CDC write is bounded at 50 ms" rested on a **timeout mistaken for a cost**. Host side: Fast and Turbo both fit. ⛔ **The RADIO side is unmeasured** - whether the QMX parses and retunes at 12.5 or 25 commands/s needs an on-air decode by a real JS8Call station, not a bench number. ⭐ Side finding: the `ESP_LOGI` in `cat_send_raw_cmd()` costs up to **19.8 ms**, 20× the wire. Instrument: `cat_ta_latency_probe()`, `/api/cmd {"action":"ta_probe"}` - never sends `TX;` |
+
+### C. Decisions owed by the operator
+
+1. **Push?** 12 commits unpushed on top of v1.18.0. ⚠ A count in prose rots -
+   `git log --oneline origin/main..HEAD` is the authority.
+2. **Randy N4OPI: an ESP32-P4 stamp running the web UI only**, tucked inside the
+   QMX+ (M5Stamp ESP32P4 + Stamp C6, ~$20). His own words say it is not a
+   demand. ⚠ It needs a USB HOST connector the module does not fit, and
+   GPIO53/54 do not exist on it. NOT ASSESSED - no port has been looked at.
+3. **Bruce N9JCV: let an operator turn the web UI OFF** - ✅ **ANSWERED, no work needed.** Measured: with no browser attached the server wakes on its
+   timer, finds no session and sleeps; the cost is a CONNECTED browser (closing
+   one moved idle0 0.1% -> 2.9%). So "do not open the page" already is the
+   feature. A switch would only free the server's memory and keep others off a
+   shared hotspot. ⛔ "WiFi off" is NOT the same thing - it also takes the clock
+   (FT8 waits for SNTP without a GPS module), OTA and spotting.
+4. **The I/Q server** - is it a direction, or is A1 the end of it? They are
+   different things and should not be conflated: A1 is **96 kbps** and needs
+   none of the I/Q measurement.
+
+### D. The one measurement that gates the big idea
+
+⛔ **Can `esp_hosted` → C6 → lwIP → httpd websocket sustain ~1.5 Mbit/s
+with low enough jitter? NOBODY HAS MEASURED IT**, and
+`docs/remote-iq-assessment.md` says everything else waits on the answer. Full
+I/Q is 48 kHz x 2 x 16-bit = 1.54 Mbit/s and the PC needs all of it.
+
+The experiment is small: a streaming-mode boot path that starts nothing but USB
+host, CAT, WiFi and a websocket sink, then measure throughput and jitter. It is
+a branch in `app_main` and a socket.
+
+⭐ **A fallback is already identified** if the number comes back bad: stream
+only a downconverted passband (NCO shift, reuse the existing decimate-by-8,
+**~192 kbit/s**), which keeps the full panadapter view. Rejected as the
+*destination* because it leaves the decoders on the Tab5, but sound as a
+fallback.
+
+⚠ **Boot mode, not a runtime switch** - nothing in this codebase has a
+teardown path, and the early allocations are deliberately early. Persist the
+mode to NVS and reboot into it.
 
 ---
 

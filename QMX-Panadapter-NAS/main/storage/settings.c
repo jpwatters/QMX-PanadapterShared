@@ -103,6 +103,7 @@ static const char *TAG = "settings";
 #define KEY_CW_TX_OFF    "cw_tx_off"
 #define KEY_CQ_LISTEN    "cq_listen"
 #define KEY_SWR_LIMIT    "swr_lim"
+#define KEY_JS8_SUBMODE  "js8_sub"
 #define KEY_RXA_GAIN     "rxa_gain"
 #define KEY_RXA_PWIDTH   "rxa_pw"
 #define KEY_RXA_PBLEND   "rxa_pb"
@@ -110,6 +111,7 @@ static const char *TAG = "settings";
 #define KEY_RXA_ATTACK   "rxa_atk"
 #define KEY_RXA_RELEASE  "rxa_rel"
 #define KEY_RXA_AGCOFF   "rxa_agcoff"
+#define KEY_RXA_AMBW     "rxa_ambw"
 #define KEY_HP_MUTE      "hp_mute"
 #define KEY_ACT_TYPE     "act_type"
 #define KEY_ACT_REF      "act_ref"
@@ -241,7 +243,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      5                        /* 160 bits; highest used 140, 19 spare */
+#define DIRTY_WORDS      5                        /* 160 bits; highest used 142, 17 spare */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -387,6 +389,8 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_TX_OFFSET   78
 #define DIRTY_CQ_LISTEN      79
 #define DIRTY_SWR_LIMIT      80
+#define DIRTY_JS8_SUBMODE   140   /* JS8 Fast/Turbo/Slow selector */
+#define DIRTY_RXA_AMBW      141   /* AM demodulator bandwidth (Tab5's own, not the radio's) */
 // One bit for both activation fields: they are only ever written together by
 // settings_set_activation(), so a second bit would buy nothing.
 #define DIRTY_ACTIVATION     81
@@ -445,7 +449,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_GNSS_MBUS       136  /* M-Bus GNSS receiver enable */
 #define DIRTY_RX_SOURCE       137  /* RX input source: qmx_usb | line_in */
 #define DIRTY_LINEIN_GAIN     138  /* line-in analogue gain, dB */
-#define DIRTY_RELAY           140  /* network radio: relay_host + relay_port (139 is DIRTY_PA_CEILING); 19 spare */
+#define DIRTY_RELAY           142  /* network radio: relay_host + relay_port (140/141 are upstream's JS8_SUBMODE/RXA_AMBW); 17 spare */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -474,7 +478,7 @@ static const uint8_t s_config_export_bits[] = {
     DIRTY_DISP_FLIP, DIRTY_QMX_VOL, DIRTY_RX_AUD_VOL, DIRTY_CHARGE_LIM_EN,
     DIRTY_CHARGE_LIM_PCT, DIRTY_GPIO_RELAY, DIRTY_FREQ_SEP,
     DIRTY_LOTW_DXCC, DIRTY_LOTW_CQZ, DIRTY_LOTW_ITUZ, DIRTY_DISP_SLEEP,
-    DIRTY_TX_TONE_HZ, DIRTY_TX_TONE_HOLD, DIRTY_CQ_MAX_CALLS,
+    DIRTY_TX_TONE_HZ, DIRTY_TX_TONE_HOLD, DIRTY_CQ_MAX_CALLS, DIRTY_JS8_SUBMODE,
     DIRTY_SPOTS_EN, DIRTY_RBN_EN, DIRTY_SPOTMAP_EN, DIRTY_WIFI_KNOWN, DIRTY_CW_TX_OFFSET,
     DIRTY_CQ_LISTEN, DIRTY_SWR_LIMIT, DIRTY_PSK_RX_EN, DIRTY_BT_MOUSE_EN,
     DIRTY_CLUSTER_EN, DIRTY_SOTA_EN, DIRTY_HOUND_MODE,
@@ -484,7 +488,8 @@ static const uint8_t s_config_export_bits[] = {
      * the same reason the power calibration does - nobody can recreate it from
      * memory. config_io_export() prints all four. */
     DIRTY_RXA_GAIN, DIRTY_RXA_PWIDTH, DIRTY_RXA_PBLEND, DIRTY_RXA_POVLP,
-    DIRTY_RXA_ATTACK, DIRTY_RXA_RELEASE, DIRTY_RXA_AGCOFF, DIRTY_HP_MUTE,
+    DIRTY_RXA_ATTACK, DIRTY_RXA_RELEASE, DIRTY_RXA_AGCOFF, DIRTY_RXA_AMBW,
+    DIRTY_HP_MUTE,
     DIRTY_WIFI_STATIC_SSID,
     DIRTY_PORT_A_MODE,   /* config_io_export() prints port_a_mode; the import
                           * must land in the same mode the file left behind */
@@ -662,6 +667,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_QMX_VOL))     nvs_set_u8(s_nvs, KEY_QMX_VOL,   snap.qmx_vol_db);
         if (dirty_test(&dirty_local, DIRTY_CW_TX_OFFSET)) nvs_set_i16(s_nvs, KEY_CW_TX_OFF, snap.cw_tx_offset_hz);
         if (dirty_test(&dirty_local, DIRTY_SWR_LIMIT))    nvs_set_u8(s_nvs, KEY_SWR_LIMIT, snap.swr_limit_x10);
+        if (dirty_test(&dirty_local, DIRTY_JS8_SUBMODE)) nvs_set_u8(s_nvs, KEY_JS8_SUBMODE, snap.js8_submode);
         if (dirty_test(&dirty_local, DIRTY_RXA_GAIN))     nvs_set_u8(s_nvs, KEY_RXA_GAIN,   snap.rxaud_gain_d10);
         if (dirty_test(&dirty_local, DIRTY_RXA_PWIDTH))   nvs_set_u8(s_nvs, KEY_RXA_PWIDTH, snap.rxaud_pan_width_x10);
         if (dirty_test(&dirty_local, DIRTY_RXA_PBLEND))   nvs_set_u8(s_nvs, KEY_RXA_PBLEND, snap.rxaud_pan_blend_x100);
@@ -669,6 +675,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_RXA_ATTACK))   nvs_set_u8(s_nvs, KEY_RXA_ATTACK, snap.rxaud_agc_attack_ms);
         if (dirty_test(&dirty_local, DIRTY_RXA_RELEASE))  nvs_set_u16(s_nvs, KEY_RXA_RELEASE, snap.rxaud_agc_release_ms);
         if (dirty_test(&dirty_local, DIRTY_RXA_AGCOFF))   nvs_set_u8(s_nvs, KEY_RXA_AGCOFF, snap.rxaud_agc_off ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_RXA_AMBW))     nvs_set_u8(s_nvs, KEY_RXA_AMBW,   snap.rxaud_am_half_bw_h100);
         if (dirty_test(&dirty_local, DIRTY_HP_MUTE))      nvs_set_u8(s_nvs, KEY_HP_MUTE, snap.hp_mute_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_ACTIVATION)) {
             nvs_set_u8(s_nvs, KEY_ACT_TYPE, snap.act_type);
@@ -978,6 +985,7 @@ static void load_from_nvs(qmx_settings_t *out)
     // normal way this goes wrong in the field. 3.0 is high enough not to trip
     // on a merely mediocre match; the drawer can raise it or turn it off.
     out->swr_limit_x10 = 30;
+    out->js8_submode   = 0;    /* Normal - what every station runs */
     /* Defaults mirror rx_audio.h's documented ones (200 / 1.8 / 0.15 / 0.30),
      * which are the values tuned on the air 2026-09-20. */
     out->rxaud_gain_d10       = 20;
@@ -985,6 +993,7 @@ static void load_from_nvs(qmx_settings_t *out)
     out->rxaud_pan_blend_x100 = 15;
     out->rxaud_pan_ovlp_x100  = 30;
     out->rxaud_agc_attack_ms  = 3;
+    out->rxaud_am_half_bw_h100 = 30;   /* 3000 Hz half-bw = a 6 kHz wide AM signal */
     out->rxaud_agc_release_ms = 150;
     out->rxaud_agc_off        = false;   /* tracking AGC, as before */
     out->hp_mute_en           = true;    /* what everyone expects */
@@ -1094,11 +1103,13 @@ static void load_from_nvs(qmx_settings_t *out)
     nvs_get_u8(s_nvs, KEY_HOUND_MODE, &out->hound_mode);
     nvs_get_u8(s_nvs, KEY_CQ_LISTEN, &out->cq_listen_every);
     nvs_get_u8(s_nvs, KEY_SWR_LIMIT, &out->swr_limit_x10);
+    nvs_get_u8(s_nvs, KEY_JS8_SUBMODE, &out->js8_submode);
     nvs_get_u8(s_nvs, KEY_RXA_GAIN,   &out->rxaud_gain_d10);
     nvs_get_u8(s_nvs, KEY_RXA_PWIDTH, &out->rxaud_pan_width_x10);
     nvs_get_u8(s_nvs, KEY_RXA_PBLEND, &out->rxaud_pan_blend_x100);
     nvs_get_u8(s_nvs, KEY_RXA_POVLP,  &out->rxaud_pan_ovlp_x100);
     nvs_get_u8(s_nvs, KEY_RXA_ATTACK,  &out->rxaud_agc_attack_ms);
+    nvs_get_u8(s_nvs, KEY_RXA_AMBW,    &out->rxaud_am_half_bw_h100);
     nvs_get_u16(s_nvs, KEY_RXA_RELEASE, &out->rxaud_agc_release_ms);
     { uint8_t b; if (nvs_get_u8(s_nvs, KEY_RXA_AGCOFF, &b) == ESP_OK) out->rxaud_agc_off = (b != 0); }
     { uint8_t b; if (nvs_get_u8(s_nvs, KEY_HP_MUTE,    &b) == ESP_OK) out->hp_mute_en     = (b != 0); }
@@ -2499,6 +2510,32 @@ uint8_t settings_get_swr_limit_x10(void)
     return v;
 }
 
+/* ⛔ CLAMPED HERE, NOT AT THE UI. NVS and an imported config file are both
+ * writers this module cannot see, and a stored 3 or 7 is not a submode - it
+ * would reach ft8_op_mode_protocol() and select whatever the switch's trailing
+ * return happens to be. Unknown falls back to Normal, which is the one every
+ * station can hear. */
+void settings_set_js8_submode(uint8_t v)
+{
+    if (!s_ready) return;
+    if (v != 0 && v != 1 && v != 2 && v != 4) v = 0;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.js8_submode == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.js8_submode = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_JS8_SUBMODE);
+}
+
+uint8_t settings_get_js8_submode(void)
+{
+    if (!s_ready) return 0;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint8_t v = s_pending.js8_submode;
+    xSemaphoreGive(s_mutex);
+    if (v != 0 && v != 1 && v != 2 && v != 4) v = 0;
+    return v;
+}
+
 /* ---- RX audio -------------------------------------------------------------
  *
  * Clamps are the ranges rx_audio.h documents, applied HERE rather than trusting
@@ -2555,6 +2592,11 @@ void settings_set_rxaud_pan_ovlp_x100(uint8_t v) { RXA_SET_U8(rxaud_pan_ovlp_x10
 uint8_t settings_get_rxaud_pan_ovlp_x100(void)   { RXA_GET_U8(rxaud_pan_ovlp_x100,  30); }
 /* Attack/release exposed in ms (the units an operator can reason about);
  * rx_audio.c converts to its per-sample coefficient - see rx_audio_set_agc_attack_ms(). */
+/* 20..48: below 2000 Hz an AM filter is narrower than the radio's own fixed
+ * 3.2 kHz and there is no reason to go there, and 4800 is the measured ceiling
+ * of the AM chain (RX_AUDIO_AM_HALF_BW_MAX_HZ). */
+void settings_set_rxaud_am_half_bw_h100(uint8_t v) { RXA_SET_U8(rxaud_am_half_bw_h100, DIRTY_RXA_AMBW, 20, 48); }
+uint8_t settings_get_rxaud_am_half_bw_h100(void)   { RXA_GET_U8(rxaud_am_half_bw_h100, 30); }
 void settings_set_rxaud_agc_attack_ms(uint8_t v)   { RXA_SET_U8(rxaud_agc_attack_ms,   DIRTY_RXA_ATTACK,  1, 50); }
 uint8_t settings_get_rxaud_agc_attack_ms(void)     { RXA_GET_U8(rxaud_agc_attack_ms,   3); }
 void settings_set_rxaud_agc_release_ms(uint16_t v) { RXA_SET_U16(rxaud_agc_release_ms, DIRTY_RXA_RELEASE, 10, 500); }

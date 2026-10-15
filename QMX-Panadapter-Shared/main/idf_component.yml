@@ -1,5 +1,5 @@
 # network-radio: four components are pinned to the versions identified in an
-# official release firmware image (2026-10-04); v1.18.0-NAS is built and tested
+# official release firmware image (2026-10-04); the NAS builds are made and tested
 # with these pins. A fresh fetch resolved newer ones (cdc_acm 2.4.1, usb_host_hid 1.2.1,
 # esp_codec_dev 1.6.2, mdns 1.14.0) and that build had NO working touch input on
 # the Tab5, while the official binary of the same source had it.

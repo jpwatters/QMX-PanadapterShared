@@ -404,22 +404,84 @@ sleeping to the next symbol boundary (`sleep_until`, `ft8_tx.c:1297`). There is
 no waveform generation anywhere in this project — the QMX's own synthesiser makes
 the tone, and we steer it.
 
-A CDC write is bounded at **50 ms** (stated three times in `ft8_tx.c`, and the
-reason FT4's 48 ms symbol period cannot fit a mid-burst PWR query). Tone spacing
-and symbol period are reciprocal in JS8, so each submode's spacing fixes its
-symbol period:
+⚠ **This section used to say a CDC write is "bounded at 50 ms" and reason from
+that number. 50 ms is the TIMEOUT passed to `cdc_acm_host_data_tx_blocking()`,
+not what the write costs.** A timeout is a ceiling on failure, not a measurement
+of success, and treating it as the cost ruled out Turbo on paper. M2 measured
+the real distribution on 2026-10-14 and the conclusion below is now data.
 
-| Submode | Cycle | Tone spacing | Symbol period | Reachable by CAT tone-stepping? |
-|---|---|---|---|---|
-| **Slow** | 30 s | 3.125 Hz | 320 ms | Yes, with ample margin |
-| **Normal** | 15 s | 6.25 Hz | 160 ms | **Yes — this is what works today** |
-| **Fast** | 10 s | 12.5 Hz | 80 ms | Marginal: 30 ms of margin, no room for a poll. MEASURE IT |
-| **Turbo** | 6 s | 25 Hz | 40 ms | **No. Shorter than one write's bound** |
+**M2, measured 2026-10-14** — 1800 `TA<freq>;` writes to a live QMX
+(1_04_010) over `cat_ta_latency_probe()`, 300 per run, at 160/80/40 ms cadence,
+**0 failures**. Two quantities, and they are different questions: the write
+duration, and the *slip* — how late the write was issued against its ideal
+symbol instant, which is what desyncs a decoder.
 
-⛔ **So the submodes are not a matter of adding tables.** Turbo is unreachable
-by the mechanism this project transmits with, and Fast is an open measurement.
-Any plan that treats "add the other submodes" as a table-extraction task is
-wrong about this firmware.
+| Cadence | Path | Write p50 | Write p99 | Write max | **Slip p99** | **Slip max** |
+|---|---|---|---|---|---|---|
+| 160 ms | bare CDC write | 246 µs | 1907 µs | 3623 µs | 2197 µs | 2502 µs |
+| 80 ms | bare CDC write | 247 µs | 989 µs | 2620 µs | 2527 µs | 2626 µs |
+| 80 ms | via `cat_send_raw_cmd()` | 430 µs | 7710 µs | **19796 µs** | 2810 µs | 3500 µs |
+| 40 ms | bare CDC write | 274 µs | 1938 µs | 2786 µs | 70 µs | 845 µs |
+| 40 ms | via `cat_send_raw_cmd()` | 362 µs | 8942 µs | 12954 µs | 2547 µs | 3714 µs |
+
+⭐ **The CAT write is not the constraint, at any JS8 submode.** The worst slip
+over all 1800 writes was 3.7 ms, against a 40 ms budget — under 10%. The write
+itself costs a quarter of a millisecond at the median.
+
+⭐ **The `ESP_LOGI` inside `cat_send_raw_cmd()` costs more than the wire does**
+— up to 19.8 ms for one line, 20× the bare write and 50× its own median. It
+still fits a 40 ms symbol, but it is the dominant per-symbol cost and the first
+thing to drop if a submode ever runs tight. The bare path is what the numbers
+above call "bare CDC write"; it is what `cat_ta_latency_probe(logged=false)`
+sends, byte for byte what the transmitter sends.
+
+⚠ **THE SUBMODE FIGURES IN THIS TABLE WERE WRONG UNTIL 2026-10-14.** They were
+derived by assuming each submode doubles Normal's 6.25 Hz spacing, which gave
+Fast 12.5 Hz / 80 ms and Turbo 25 Hz / 40 ms. JS8Call does not do that: the
+submodes are round BAUD rates, so the real numbers are 10 and 20 baud. Read
+from the source rather than inferred: `commons.h`'s `JS8[ABCE]_SYMBOL_SAMPLES`
+and `lib/js8/js8[abce]_params.f90`'s `NSPS`, with
+tone spacing = 12000 / NSPS and symbol period = NSPS / 12000.
+
+⚠ One more trap in the same place: `js8e_params.f90` says `NTXDUR=28` for Slow
+while `commons.h` says `JS8E_TX_SECONDS=30`. They are different quantities -
+`JS8Submode.cpp` takes the slot PERIOD from the 30, and the Fortran's 28 sizes
+the decoder's analysis window. Reading the params file alone gives 28 and is
+wrong for the slot. For every other submode the two are equal, so the
+distinction is invisible there.
+
+| Submode | NSPS | Cycle | Tone spacing | Symbol period | Signal | Costas | Reachable by CAT tone-stepping? |
+|---|---|---|---|---|---|---|---|
+| **Slow** | 3840 | 30 s | 3.125 Hz | 320 ms | 25.28 s | MODIFIED | Yes, with ample margin |
+| **Normal** | 1920 | 15 s | 6.25 Hz | 160 ms | 12.64 s | ORIGINAL | **Yes — this is what works today** |
+| **Fast** | 1200 | 10 s | 10 Hz | 100 ms | 7.90 s | MODIFIED | **Yes on the host side** — slip max 2.6 ms measured at a tighter 80 ms |
+| **Turbo** | 600 | 6 s | 20 Hz | 50 ms | 3.95 s | MODIFIED | **Host side yes** — slip max 3.7 ms measured at a tighter 40 ms. Radio side UNMEASURED |
+
+⭐ The correction makes M2's answer MORE comfortable, not less: the probe was
+run at 80 ms and 40 ms, and the real budgets turn out to be 100 ms and 50 ms.
+The measurement bounds the real case rather than approximating it.
+
+⛔ **THE COSTAS COLUMN IS THE EASY ONE TO MISS.** Normal uses NCOSTAS=1, one
+7-symbol array repeated in all three sync blocks. Every other submode uses
+NCOSTAS=2 - **three DIFFERENT arrays** (`genjs8.f90`'s `icos7a/b/c`:
+`{0,6,2,3,5,4,1}`, `{1,5,0,2,3,6,4}`, `{2,5,0,6,4,1,3}`). Use the first for all
+three and the frame still encodes, the radio still transmits, and nothing
+anywhere ever syncs. There is no error message for that failure.
+
+⛔ **What M2 does NOT prove.** The probe measures the HOST handing bytes to
+USB. `ESP_OK` means the write completed, not that the QMX parsed it, retuned its
+DDS and settled before the next one arrived. Whether the radio's own CAT parser
+and synthesiser keep up at 25 or 40 commands per second is a separate question
+that only an on-air decode by a real JS8Call station can answer. Nothing here
+licenses shipping Fast or Turbo — it removes the HOST as the reason not to try.
+
+⛔ The probe is also unkeyed and ran with the board idle on the FT8 screen. A
+real burst runs the same symbol loop while the decoder works the previous slot.
+That load was not in this measurement.
+
+⭐ Re-run it any time: `/api/cmd {"action":"ta_probe","count":300,
+"interval_ms":80,"logged":false}`. It never sends `TX;`, so the radio is not
+keyed and it is safe with an antenna connected. See `cat.h` for the argument.
 
 ⭐ **There may be a way past it, and it is unexplored.** The QMX exposes a UAC
 **TX** (host → radio) interface, and we ignore it:
@@ -470,7 +532,7 @@ without spending somebody else's air time on frames that may be nonsense.
 | | Task | Why it gates something | Cost |
 |---|---|---|---|
 | **M1** | ~~Record a JS8 WAV corpus off air~~ — **DONE 2026-10-09**, see below | — | — |
-| **M2** | Measure the `TA;` write latency distribution at symbol rate: p50/p99 over a full burst | Decides whether Fast (80 ms) is reachable at all | Small — instrument `tx_cmd` and run one burst |
+| **M2** | ~~Measure the `TA;` write latency distribution at symbol rate~~ — **DONE 2026-10-14**, see fact 1 above. The host is not the constraint at any submode; the old "50 ms bound" was a timeout, not a cost | — | — |
 | **M3** | Probe the UAC TX interface: open it, feed a steady tone while keyed in DIGI, look for RF | Decides whether Turbo and clean waveform TX are possible, i.e. whether the ceiling in fact 1 is real or just current | Medium. ⚠ Keys the radio — needs a dummy load and the operator present |
 
 ## Phases
@@ -623,9 +685,27 @@ foundation of everything below.
 **Needs built:** the remaining vocabulary (the table already spells all 32 for
 display); a responder with a rate limit; an operator switch per command class.
 **Verification:** query it from JS8Call and check every answer.
-**Risk:** ⛔ **this is the first phase where the radio transmits without a human
-deciding to.** It needs the same interlock discipline the FT8 robot has, and
-`feedback_never_leave_the_radio_transmitting` applies in full.
+**Risk:** ⛔ **THIS CLAIM WAS WRONG AND IT COST REAL CREDIBILITY.** It used to
+read *"this is the first phase where the radio transmits without a human deciding
+to"*. It is not. **J4 already did that**, in v1.17.0: `d6ff5c1e` wired
+`ft8_qso.c` and `ft8_robot.c` to JS8 - its own commit message says *"ft8_robot.c
+opened its pounce with a grid; it now opens with a report in JS8"* - so a JS8
+caller has been answered automatically since that release.
+
+Gyula HA3HZ proved it on 2026-10-13 with his own diagnostic log, after being
+told twice that it could not happen: four stations answered unattended with
+`'IU2ITE HA3HZ -14'`, `'HB9ETH HA3HZ -07'`, `'DM3ME HA3HZ -18'`,
+`'9A3SWO HA3HZ -15'`.
+
+⚠ **A phase plan that misstates WHEN a risk arrives is worse than one that
+does not mention the risk**, because it is read as an assurance. This line was
+quoted back as a reason not to worry about unattended JS8 TX, in a release that
+already did it.
+
+What is still true of J10: it adds *more* commands the station answers on its
+own, so it needs the same interlock discipline the FT8 robot has, and
+`feedback_never_leave_the_radio_transmitting` applies in full. What is NOT true
+is that it is the first such phase.
 **Effort:** 2 sessions.
 
 ### J11 — Heartbeat network participation
@@ -664,18 +744,47 @@ nothing else competes for the slot.
 Tab5.
 **Effort:** 2 sessions.
 
-### J14 — Submodes, gated on M2 and M3
-**Goal:** Slow, then Fast if it fits, then Turbo only if the audio path works.
+### J14 — Submodes. BUILT 2026-10-14, and not proven on air
+⭐ **The physical layer for Fast, Turbo and Slow is implemented.**
+`ftx_protocol_t` carries the submode, the protocol-fact functions in
+`constants.c` hold NSPS / slot period / tone spacing / start delay / Costas
+set, the sync scorer takes three arrays instead of one, `monitor_init()` and
+the TX symbol loop ask per protocol instead of `is_ft4 ? :`, and the slot gate
+derives every timing bound from the protocol. Selected with
+`/api/cmd {"action":"js8_submode","submode":0|1|2|4}`, persisted as
+`js8_submode`.
+
+**Evidence:** `test/js8_submode_harness.c` - every submode round-trips text
+through encode, synthesis and decode, AND the cross-reject matrix is clean
+(a signal built for one submode decodes in no other). That second half is what
+proves the per-submode parameters actually reach the physical layer rather
+than silently falling back to Normal.
+
+⛔ **NOT PROVEN:** no JS8Call station has decoded a Fast, Turbo or Slow frame
+of ours, and we have decoded none of theirs. Both ends of the harness are our
+own code. There is also **no Tab5 control yet** - the submode is reachable only
+over the API - and no corpus of real off-air Fast/Turbo/Slow audio, so RX for
+those submodes is unguarded by any regression test.
+
+### What remains (the original J14 note)
+**Goal:** Slow, then Fast, then Turbo — each proven by an outside decode.
 **Why in this order:** Slow is the easiest (320 ms symbols, ample CAT margin)
 *and* the most valuable — it is more sensitive than FT8, which is a capability
-this project does not otherwise have. Fast is an open measurement (M2). Turbo is
-blocked on M3 and may be permanently out of reach.
+this project does not otherwise have. ⭐ **M2 (2026-10-14) measured the CAT
+write and found it costs ~250 µs with a worst slip of 3.7 ms at a 40 ms
+cadence.** Fast is no longer an open question on the host side, and Turbo is no
+longer ruled out on paper — the old "no" rested on a 50 ms timeout mistaken for
+a cost. What is still unmeasured for both is the RADIO: whether the QMX parses
+and retunes at 12.5 or 25 commands per second. That is an on-air test against a
+real JS8Call station, not a bench calculation, and it is cheap to run once the
+tables exist. M3 remains the route to a clean waveform, not the gate on Turbo.
 **Needs built:** per-submode parameter tables extracted from `JS8Submode.cpp`
 and the `js8*_params.f90` files (⛔ by script); a submode selector; ⚠ the
 "MODIFIED" Costas arrays the submodes use, which are **not** Normal's.
 **Risk:** the slot engine's timing assumptions. 30 s and 10 s cycles are new
 ground for `ft8_test.c`'s slot loop, which has only ever run 15 s and 7.5 s.
-**Effort:** 1 session for Slow, 1 for Fast, unknown for Turbo.
+**Effort:** 1 session for Slow, 1 for Fast, 1 for Turbo plus an on-air test
+per submode. M2 no longer makes any of them open-ended.
 
 ### J15 — APRS gateway
 **Goal:** send and receive APRS messages via a gateway station.
@@ -698,7 +807,10 @@ something already shipped rather than adding something new.
 - **A second Tab5 as the test partner.** Not a scope decision, a validity one.
 - **Anything that keys the radio unattended before J6 passes.** We would be
   transmitting frames nobody can read.
-- **Turbo**, unless M3 says the audio path works.
+- ~~**Turbo**, unless M3 says the audio path works.~~ ⚠ **Withdrawn 2026-10-14.**
+  This line rested on the 50 ms figure that M2 has now shown to be a timeout,
+  not a cost. Turbo is back in scope as an experiment, not as a commitment:
+  the host side is proven, the radio side is not, and it is still last.
 
 ## Risks, re-ordered for this plan
 
@@ -707,7 +819,8 @@ something already shipped rather than adding something new.
 2. **No JS8 regression corpus** (M1). The FT8 corpus has caught silent
    sensitivity loss more than once; JS8 has no equivalent, so any RX change from
    J7 on is currently unguarded. Perishable: it needs signals on the band.
-3. **The submode ceiling may be structural** (M2/M3). If the UAC TX interface is
+3. **The submode ceiling is NOT the CAT write** — M2 measured it, 2026-10-14.
+   What is still unknown is the radio's own command rate (M3 territory). If the UAC TX interface is
    not modulated by the QMX, then Normal and Slow are the whole story on this
    hardware, and that should be written down as a fact rather than rediscovered.
 4. **Unattended transmission** (J10 onwards). The failure mode is not a bad

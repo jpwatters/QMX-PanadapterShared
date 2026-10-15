@@ -88,6 +88,7 @@ char *config_io_export(size_t *out_len)
     APP("qmx_vol_db         = %u\n", (unsigned)c.qmx_vol_db);
     APP("cw_tx_offset_hz    = %d\n", (int)c.cw_tx_offset_hz);   // 0 = off (CW only)
     APP("swr_limit_x10      = %u\n", (unsigned)c.swr_limit_x10); // 0 = off, else x10 (30 = 3.0:1)
+    APP("js8_submode        = %u\n", (unsigned)c.js8_submode);   // JS8Call NSUBMODE: 0 Normal 1 Fast 2 Turbo 4 Slow
     /* ⛔ THE ONE SETTING THAT EXISTS TO PROTECT THE RADIO, and it was
      * missing from the backup until 2026-10-12, the same cycle that added
      * it. A restore silently returned the operator to "no ceiling", on a
@@ -101,6 +102,10 @@ char *config_io_export(size_t *out_len)
     APP("rxaud_pan_overlap  = %u\n", (unsigned)c.rxaud_pan_ovlp_x100);  // filter overlap x100 (30 = 0.30)
     APP("rxaud_agc_attack_ms  = %u\n", (unsigned)c.rxaud_agc_attack_ms);  // AGC attack, ms (default 3)
     APP("rxaud_agc_release_ms = %u\n", (unsigned)c.rxaud_agc_release_ms); // AGC release, ms (default 150)
+    /* The AM demodulator's own filter, half-bandwidth in units of 100 Hz. Not
+     * the radio's AM filter, which is fixed at 3.2 kHz and is not in the I/Q
+     * path - see RX_AUDIO_AM_HALF_BW_HZ in audio/rx_audio.h. */
+    APP("rxaud_am_half_bw_h100 = %u\n", (unsigned)c.rxaud_am_half_bw_h100);
     APP("rxaud_agc_off        = %s\n", yn(c.rxaud_agc_off));            // AGC bypass: fixed gain at the ceiling
     APP("hp_mute            = %s\n", yn(c.hp_mute_en));            // mute speaker when headphones are in
     APP("psk_rx_en          = %d\n", c.psk_rx_en ? 1 : 0);       // propagation feedback (who hears me)
@@ -447,6 +452,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "qmx_vol_db"))        settings_set_qmx_vol_db((uint8_t)atoi(val));
             else if (!strcasecmp(key, "cw_tx_offset_hz"))   settings_set_cw_tx_offset_hz((int16_t)atoi(val));
             else if (!strcasecmp(key, "swr_limit_x10"))     settings_set_swr_limit_x10((uint8_t)atoi(val));
+            else if (!strcasecmp(key, "js8_submode"))       settings_set_js8_submode((uint8_t)atoi(val));
             else if (!strcasecmp(key, "pa_ceiling_x10"))    settings_set_pa_ceiling_x10((uint16_t)atoi(val));
             else if (!strcasecmp(key, "rxaud_gain_d10"))    settings_set_rxaud_gain_d10((uint8_t)atoi(val));
             else if (!strcasecmp(key, "rxaud_pan_width"))   settings_set_rxaud_pan_width_x10((uint8_t)atoi(val));
@@ -454,6 +460,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "rxaud_pan_overlap")) settings_set_rxaud_pan_ovlp_x100((uint8_t)atoi(val));
             else if (!strcasecmp(key, "rxaud_agc_attack_ms"))  settings_set_rxaud_agc_attack_ms((uint8_t)atoi(val));
             else if (!strcasecmp(key, "rxaud_agc_release_ms")) settings_set_rxaud_agc_release_ms((uint16_t)atoi(val));
+            else if (!strcasecmp(key, "rxaud_am_half_bw_h100")) settings_set_rxaud_am_half_bw_h100((uint8_t)atoi(val));
             else if (!strcasecmp(key, "rxaud_agc_off"))        settings_set_rxaud_agc_off(to_bool(val));
             else if (!strcasecmp(key, "hp_mute"))             settings_set_hp_mute_en(to_bool(val));
             else if (!strcasecmp(key, "psk_rx_en"))         settings_set_psk_rx_en(atoi(val) != 0);
