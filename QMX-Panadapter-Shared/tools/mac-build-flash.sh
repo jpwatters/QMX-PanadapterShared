@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build this firmware on a Mac and flash it onto a Tab5 over USB.
 #
-#   bash ~/src/qmx-panadapter-v1.16/tools/mac-build-flash.sh          build + flash
-#   bash ~/src/qmx-panadapter-v1.16/tools/mac-build-flash.sh --build  build only
+#   bash ~/src/QMX-Panadapter-NAS/tools/mac-build-flash.sh          build + flash
+#   bash ~/src/QMX-Panadapter-NAS/tools/mac-build-flash.sh --build  build only
 #
 # Uses the ESP-IDF in $IDF_PATH or ~/esp/esp-idf, and an installed PowerShell
 # (pwsh, or set PWSH=/path/to/pwsh), because the project's standing patches are

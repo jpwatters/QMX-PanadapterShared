@@ -29,8 +29,8 @@
 # The patches in ./patches are the NAS commits ported to upstream v1.19.0 on
 # 2026-10-14, exported with
 # `git format-patch --binary v1.19.0..<branch> -- . ':(exclude)tools/nas-kit'`.
-# Earlier series are kept for reference in the master copy of the kit
-# (~/src/qmx-panadapter-v1.16/tools/nas-kit); the script does not use them.
+# Earlier series and the original work tree are archived in
+# ~/src/.qmx-panadapter-archive/; the script does not use them.
 # On a newer upstream release the patches are applied with git's 3-way merge; if upstream
 # changed the same lines, the run stops, says which patch did not apply, and
 # leaves NAS and Shared untouched.

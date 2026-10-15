@@ -1,6 +1,6 @@
 #!/bin/bash
 # Record the Tab5's USB serial output (boot messages, crash reasons) for a while.
-#   bash ~/src/qmx-panadapter-v1.16/tools/mac-capture-serial.sh [seconds]   (default 90)
+#   bash ~/src/QMX-Panadapter-NAS/tools/mac-capture-serial.sh [seconds]   (default 90)
 # Output: build/serial-capture.log in this project. Uses ESP-IDF's Python (pyserial).
 # Note: on macOS opening the port restarts the Tab5 (USB-serial-JTAG reset), so
 # the capture always starts from a fresh boot. Setting DTR/RTS first does not help.

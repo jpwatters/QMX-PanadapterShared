@@ -3,7 +3,7 @@
 # to https://github.com/jpwatters/QMX-PanadapterShared, side by side, with the
 # NAS folder's README.md as the repository's front page.
 #
-#   bash ~/src/qmx-panadapter-v1.16/tools/nas-kit/push-to-github.sh
+#   bash ~/src/QMX-Panadapter-NAS/tools/nas-kit/push-to-github.sh
 #
 # What it does:
 #   1. Clones the GitHub repository into ~/src/QMX-PanadapterShared (or updates
