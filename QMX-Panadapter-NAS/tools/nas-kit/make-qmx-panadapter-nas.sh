@@ -184,7 +184,7 @@ build() {
     # Sanity: the files the NAS build depends on are there.
     local f
     for f in main/net/radio_relay.c tools/nas-relay/qmx_nas_relay.py tools/mac-build-flash.sh \
-             tools/patches/apply_esp_hosted_sdio_split_psram.ps1 QMX-Panadapter-Shared.pdf \
+             tools/patches/apply_esp_hosted_sdio_split_psram.ps1 M5StackTab5QMX+SharedOverNetwork.pdf \
              tools/mac-serial-bridge/qmx_serial_bridge.py tools/pi-relay/install-pi.sh \
              tools/nas-kit/make-qmx-panadapter-nas.sh tools/nas-kit/push-to-github.sh; do
         [ -f "$tmp/$f" ] || die "applied, but $f is missing - not replacing $NAS"

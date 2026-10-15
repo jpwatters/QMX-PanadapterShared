@@ -69,8 +69,7 @@ If you’ve customised the drawer’s Basic/Advanced menus: check where Radio so
 ________________________________________________________________________________________________________________________________________________
 
 **Documentation**
-* The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
-* QMX-Panadapter-Shared.pdf: the same v1.19.0-NAS project under the Shared title. QMX-Panadapter-SharedViaNAS.pdf: the Synology NAS part only (relay, Tab5 firmware, timing), for readers who don't need the Raspberry Pi or Mac tools.
+* The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
 
 The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.

@@ -12,7 +12,7 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
 The older series (`patches-v1.18.0`, `-v1.16.12`, `-v1.16.11`) stay only in the
 master copy, `~/src/qmx-panadapter-v1.16/tools/nas-kit`.
 
-* `patches/` - ported to upstream **v1.19.0** on 2026-10-14 (24 patches). The v1.18.0
+* `patches/` - ported to upstream **v1.19.0** on 2026-10-14 (25 patches). The v1.18.0
   series applied with three conflicts, resolved by hand:
   * the relay's settings bit is DIRTY_RELAY **142** (upstream took 140 for
     DIRTY_JS8_SUBMODE and 141 for DIRTY_RXA_AMBW; check_dirty_bits is clean);
@@ -22,7 +22,8 @@ master copy, `~/src/qmx-panadapter-v1.16/tools/nas-kit`.
     version block.
   * **patch 0022** (new) points the version fallback and examples at v1.19.0.
   * **patch 0023**: the front-page README names v1.19.0-NAS, lists the features and the
-    build steps. **patch 0024**: the three project PDFs rebuilt for v1.19.0-NAS.
+    build steps. **patch 0024**: the project PDFs rebuilt for v1.19.0-NAS. **patch 0025**:
+    one project PDF, M5StackTab5QMX+SharedOverNetwork.pdf; the other three are removed.
   Checked in the cloud: the series applies to a clean v1.19.0 with git am --3way,
   the changed firmware files compile with ESP-IDF 5.4.4 (same warnings as
   v1.18.0), and check_dirty_bits, check_web, check_webui, check_docs and
