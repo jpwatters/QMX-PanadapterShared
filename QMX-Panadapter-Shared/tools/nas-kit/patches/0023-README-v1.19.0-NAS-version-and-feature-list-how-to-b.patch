@@ -1,0 +1,123 @@
+From 0e73bd10168c722e68a7d18407a581ac48ab7f5b Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Thu, 15 Oct 2026 00:23:22 -0500
+Subject: [PATCH] README: v1.19.0-NAS version and feature list; how to build
+ the current version
+
+The front page names the version (upstream v1.19.0 + NAS patches), lists
+every NAS feature with its test status (relay-timed transmit, 10-burst
+test, relay logs and flag files, tx-test, the update kit now in
+tools/nas-kit), and gives the steps to publish the latest build and build
+the current version.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 76 ++++++++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 53 insertions(+), 23 deletions(-)
+
+diff --git a/README.md b/README.md
+index a41508a3..11224444 100644
+--- a/README.md
++++ b/README.md
+@@ -4,44 +4,74 @@
+ 
+ A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
+ 
+-Here’s what the QMX+ PanadapterShared  adds on top of upstream QMX-Panadapter, with how far each has been tested:
+-1.Sharing the radio over the network
+-2.Client to present the Networked QMX/QMX+ as a USB port
+-3.Network Shared QMX/QMX+ Discovery on the network with a UDP broadcast (QMXR? / QMXR!)
+-4.M5Stack Tab5 discovery with the Web Browser http://qmx.local
++**Version: v1.19.0-NAS** — upstream QMX-Panadapter **v1.19.0** plus the NAS patch series 0001-0024 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+ 
+-Sharing the radio over the network
++Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
++1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
++2. FT8/FT4 transmit timed by the relay
++3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
++4. A client that presents the networked QMX/QMX+ as a serial port on a Mac
++5. M5Stack Tab5 discovery with the web browser at http://qmx.local
++6. An update kit that rebuilds all of this on each new upstream release
++
++**Sharing the radio over the network**
+ * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
+-* Raspberry Pi 4/5 relay (tools/pi-relay): the same relay as a background service on a Pi. Written, not yet tested on a Pi.
++* Raspberry Pi 4/5 relay (tools/pi-relay): the same relay as a systemd service on a Pi, with a control command, a log and limited automatic restarts. Written, not yet tested on a Pi.
+ * PC serial port on the relay: the QMX’s third serial port is offered on TCP 7356, so PC software can control the radio alongside the Tab5. Tested on the NAS.
+ * Find NAS discovery: the Tab5 or the Mac broadcasts QMXR? on UDP 7355, and the relay replies QMXR! <ip> <port>. Tested on the NAS and the Tab5.
+-On the Tab5
++
++**On the Tab5**
+ * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
+ * Radio source on the web page: the same setting, also available to other programs at /api/relay. Tested.
+-* Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus, and upstream’s new GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
++* Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus and GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
+ * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
+-* Live spectrum on the web page (fixed). Tested.
++* Live spectrum on the web page. Tested.
+ * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
++* 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
+ 
+-Reliability fixes needed for the network stream
+-* WiFi receive: the Tab5 now keeps every packet of a bundled WiFi read instead of dropping some, and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
+-* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
++**On the relay**
++* I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder (catlog.off, allow-ps0, iq-during-tx, tab5-timed-tx), without a restart. Tested on the NAS.
+ * Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
+-* I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder, without a restart. Tested on the NAS.
+-Mac tools
++* Transmit timing test (tools/tx-test): tx_compare.py compares the relay’s transmit log with the Tab5’s own log, one clock per number.
++
++**Reliability fixes needed for the network stream**
++* WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
++* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
++
++**Mac tools**
+ * Mac serial bridge (tools/mac-serial-bridge): presents the NAS-shared QMX as a serial port for WSJT-X, qFT8 and similar programs, finding the NAS automatically. Doesn’t connect yet; deferred.
+-* Build and flash from a Mac (mac-build-flash.sh), and record the Tab5’s serial log (mac-capture-serial.sh).
+-Keeping up with upstream
+-* Update kit (make-qmx-panadapter-nas.sh): rebuilds QMX-Panadapter-NAS from each new upstream release plus the 19 NAS patches. --mark-tested promotes a build to QMX-Panadapter-Shared, and replaced folders go to an archive rather than being deleted.
+-* GitHub publishing (push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared. The first upload still needs to go through.
++* Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
++
++**Keeping up with upstream**
++* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version.
++* GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
+ * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+-Documentation
+-* The relay README: setup, troubleshooting, and the power-off cure for a stuck touch chip.
+-* The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
+-* QMX-Panadapter-Shared.pdf: the same v1.18.0-NAS project in the earlier document layout. QMX-Panadapter-SharedViaNAS.pdf: the Synology NAS part only (relay, Tab5 firmware, timing), for readers who don't need the Raspberry Pi or Mac tools.
+ 
++Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
++________________________________________________________________________________________________________________________________________________
+ 
++Steps:
+ 
++```
++cd ~/src/qmx-panadapter-nas/tools/nas-kit
++
++# 1. publish the latest build first (patch 0021, the updated PDFs)
++bash make-qmx-panadapter-nas.sh --mark-tested
++bash push-to-github.sh
++
++# 2. build current version into QMX-Panadapter-NAS (the previous version folder is archived)
++bash make-qmx-panadapter-nas.sh
++cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
++```
++
++Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.19.0-NAS works, run --mark-tested and the push again.
++If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
++________________________________________________________________________________________________________________________________________________
++
++**Documentation**
++* The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
++* QMX-Panadapter-Shared.pdf: the same v1.19.0-NAS project under the Shared title. QMX-Panadapter-SharedViaNAS.pdf: the Synology NAS part only (relay, Tab5 firmware, timing), for readers who don't need the Raspberry Pi or Mac tools.
++* The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+ 
+ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,58 @@
+From 8d9f5719c37168c138c4b5ba88fbaf87318145e9 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Thu, 8 Oct 2026 23:43:24 +0000
+Subject: [PATCH 12/22] patches: apply_fatfs_dma_aligned_alloc.ps1 matches on
+ macOS/Linux too
+
+Upstream v1.16.12's new FatFs patch script normalises ffsystem.c to LF
+before matching, but not its own here-strings - and git checks the script
+out with CRLF (.gitattributes eol=crlf) on every platform, so the search
+text never matched outside Windows: "Could not find the expected
+ff_memalloc body - ffsystem.c has changed", and mac-build-flash.sh stopped.
+The here-strings ($oldInc, $oldBody, $newBody) are now normalised to LF the
+same way.
+
+Tested: on a copy of ESP-IDF v5.4.4's ffsystem.c it patches once (file
+stays LF) and a second run is a no-op; the Mac build then completed and
+the Tab5 runs v1.16.12-NAS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
+---
+ tools/patches/apply_fatfs_dma_aligned_alloc.ps1 | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tools/patches/apply_fatfs_dma_aligned_alloc.ps1 b/tools/patches/apply_fatfs_dma_aligned_alloc.ps1
+index 5f7bf0f2..c4cf1212 100644
+--- a/tools/patches/apply_fatfs_dma_aligned_alloc.ps1
++++ b/tools/patches/apply_fatfs_dma_aligned_alloc.ps1
+@@ -109,6 +109,10 @@ $oldInc = @"
+ #endif
+ "@
+ $newInc = '#include "esp_heap_caps.h"'
++# The here-strings carry this script's own line endings, which are CRLF when
++# git checks it out with eol=crlf (always, on macOS/Linux too) - normalise
++# them like $content, or nothing ever matches outside Windows. (2026-10-08)
++$oldInc = $oldInc.Replace("`r`n", "`n")
+ 
+ if ($content -notmatch [regex]::Escape($oldInc)) {
+     if ($content -notmatch [regex]::Escape($newInc)) {
+@@ -130,6 +134,7 @@ $oldBody = @"
+ #endif
+ "@
+ 
++$oldBody = $oldBody.Replace("`r`n", "`n")
+ if ($content -notmatch [regex]::Escape($oldBody)) {
+     Write-Host "Could not find the expected ff_memalloc body - ffsystem.c has changed." -ForegroundColor Red
+     Write-Host "Patch by hand and update this script."
+@@ -165,6 +170,7 @@ $newBody = @"
+ #endif
+ "@
+ 
++$newBody = $newBody.Replace("`r`n", "`n")
+ $content = $content.Replace($oldBody, $newBody)
+ 
+ if ($crlf) { $content = $content.Replace("`n", "`r`n") }
+-- 
+2.43.0
+

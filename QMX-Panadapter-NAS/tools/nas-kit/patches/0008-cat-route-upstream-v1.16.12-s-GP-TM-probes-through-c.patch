@@ -1,0 +1,61 @@
+From f6847a336cf06082897175f2ef35d702b769e49e Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Thu, 8 Oct 2026 15:12:24 +0000
+Subject: [PATCH 08/22] cat: route upstream v1.16.12's GP/TM probes through
+ cat_tx, so they work on a network radio
+
+cat_gps_gp_sync() and the GP/TM probe (new in v1.16.12) wrote straight to the
+USB CDC handle and refused to run without one, so over the NAS they always
+returned ESP_ERR_INVALID_STATE. They now check CAT_LINK_UP() and send with
+cat_tx(), like every other CAT command since the network-radio port.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
+---
+ main/cat/cat.c | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/main/cat/cat.c b/main/cat/cat.c
+index 8bc24ea2..6793b9ac 100644
+--- a/main/cat/cat.c
++++ b/main/cat/cat.c
+@@ -3576,7 +3576,7 @@ bool cat_qmx_gps_position(double *lat, double *lon)
+ esp_err_t cat_gps_gp_sync(int *out_y, int *out_mo, int *out_d,
+                           int *out_h, int *out_mi, int *out_s, int64_t *out_flip_us)
+ {
+-    if (!s_cdc_dev || !s_cat_ready) return ESP_ERR_INVALID_STATE;
++    if (!CAT_LINK_UP() || !s_cat_ready) return ESP_ERR_INVALID_STATE;   /* USB or network radio */
+     /* GP arrived in 1.04_004. Older radios answer with an error, and asking
+      * them repeatedly in a 1.3 s loop is not free. */
+     if (!cat_qmx_fw_at_least(1, 4, 4)) return ESP_ERR_NOT_SUPPORTED;
+@@ -3596,7 +3596,7 @@ esp_err_t cat_gps_gp_sync(int *out_y, int *out_mo, int *out_d,
+ 
+     while (esp_timer_get_time() - start < 1300000) {
+         s_gp_resp_len = 0;
+-        if (cdc_acm_host_data_tx_blocking(s_cdc_dev, (const uint8_t *)"GP;", 3, 100) != ESP_OK)
++        if (cat_tx((const uint8_t *)"GP;", 3, 100) != ESP_OK)   /* USB or network radio */
+             break;
+         polls++;
+         for (int i = 0; i < 25 && s_gp_resp_len == 0; i++) vTaskDelay(pdMS_TO_TICKS(2));
+@@ -3693,7 +3693,7 @@ esp_err_t cat_gps_gp_probe(int secs, int gap_ms, bool use_tm, cat_gp_probe_t *ou
+ {
+     if (!out) return ESP_ERR_INVALID_ARG;
+     out->n = 0; out->polls = 0; out->nflip = 0;
+-    if (!s_cdc_dev || !s_cat_ready) return ESP_ERR_INVALID_STATE;
++    if (!CAT_LINK_UP() || !s_cat_ready) return ESP_ERR_INVALID_STATE;   /* USB or network radio */
+     if (!use_tm && !cat_qmx_fw_at_least(1, 4, 4)) return ESP_ERR_NOT_SUPPORTED;
+     if (cat_poll_held_by_other(CAT_HOLD_TIME_SYNC)) return ESP_ERR_INVALID_STATE;
+     if (secs < 1) secs = 1;
+@@ -3710,8 +3710,7 @@ esp_err_t cat_gps_gp_probe(int secs, int gap_ms, bool use_tm, cat_gp_probe_t *ou
+     while (esp_timer_get_time() - start < (int64_t)secs * 1000000LL) {
+         if (gap_ms > 0) vTaskDelay(pdMS_TO_TICKS(gap_ms));
+         if (use_tm) s_tm_resp_len = 0; else s_gp_resp_len = 0;
+-        if (cdc_acm_host_data_tx_blocking(s_cdc_dev,
+-                (const uint8_t *)(use_tm ? "TM;" : "GP;"), 3, 100) != ESP_OK)
++        if (cat_tx((const uint8_t *)(use_tm ? "TM;" : "GP;"), 3, 100) != ESP_OK)   /* USB or network */
+             break;
+         out->polls++;
+         for (int i = 0; i < 25 && (use_tm ? s_tm_resp_len : s_gp_resp_len) == 0; i++)
+-- 
+2.43.0
+

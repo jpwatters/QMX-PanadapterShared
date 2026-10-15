@@ -1,0 +1,380 @@
+From 6e254651f5e766e67dbeb78b49a6705179ba640e Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Thu, 8 Oct 2026 15:41:53 +0000
+Subject: [PATCH 09/22] network radio: Find NAS - the Tab5 asks the network for
+ the relay's address
+
+Relay: answers a UDP "QMXR?" on port 7355 (same number as the TCP service)
+with "QMXR! <its IP> <TCP port>", picking the address of the interface that
+reaches the asker. Nothing is sent unless asked. --discovery-port N / 0.
+nettest.py checks it by unicast (required) and broadcast (informational).
+
+Tab5: radio_relay_discover() broadcasts QMXR? three times over 1.5 s and
+collects distinct answers. The Radio source panel has a Find NAS button;
+the search runs on a short-lived task (never the LVGL task) and fills in
+the first address found, listing any others.
+
+Tested: relay with --fake (nettest PASSED incl. discovery; junk ignored);
+radio_relay_discover() compiled on Linux against the real relay - broadcast
+found it, no listener gives 0 after 1.5 s, duplicate answers merged, WiFi
+down gives -1. ui.c and radio_relay.c compile with the Tab5 build flags.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
+---
+ main/net/radio_relay.c           | 61 +++++++++++++++++++++++++
+ main/net/radio_relay.h           | 13 ++++++
+ main/ui/ui.c                     | 77 +++++++++++++++++++++++++++++++-
+ tools/nas-relay/README.md        | 11 ++++-
+ tools/nas-relay/nettest.py       | 32 +++++++++++++
+ tools/nas-relay/qmx_nas_relay.py | 55 +++++++++++++++++++++++
+ 6 files changed, 247 insertions(+), 2 deletions(-)
+
+diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
+index 1e8a3e18..0873584e 100644
+--- a/main/net/radio_relay.c
++++ b/main/net/radio_relay.c
+@@ -438,3 +438,64 @@ void radio_relay_term_close(void)
+     s_term_gone_cb = NULL;
+     if (was_open && s_connected) send_frame(PROTO_TERM_CLOSE, NULL, 0, 300);
+ }
++
++// ---- Discovery ---------------------------------------------------------------
++// See radio_relay.h. One UDP socket, three broadcasts ~a third of the timeout
++// apart (a single datagram on WiFi can be lost), replies collected until the
++// timeout. The reply carries the relay's own idea of its address; the packet's
++// source address is used if that does not parse.
++
++int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
++{
++    if (!out || max <= 0) return 0;
++    if (!wifi_is_connected()) return -1;
++
++    int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (s < 0) return -1;
++    int one = 1;
++    setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
++    struct timeval tv = { .tv_sec = 0, .tv_usec = 100 * 1000 };
++    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++
++    struct sockaddr_in bc = { 0 };
++    bc.sin_family      = AF_INET;
++    bc.sin_port        = htons(RADIO_RELAY_DEFAULT_PORT);
++    bc.sin_addr.s_addr = htonl(INADDR_BROADCAST);
++
++    int n = 0, sent = 0;
++    const int64_t start = esp_timer_get_time();
++    const int64_t total = (int64_t)timeout_ms * 1000;
++    while (esp_timer_get_time() - start < total) {
++        if (sent < 3 && esp_timer_get_time() - start >= sent * total / 3) {
++            if (sendto(s, "QMXR?", 5, 0, (struct sockaddr *)&bc, sizeof(bc)) < 0)
++                ESP_LOGW(TAG, "discovery: broadcast failed (errno %d)", errno);
++            sent++;
++        }
++        char buf[64];
++        struct sockaddr_in from;
++        socklen_t fl = sizeof(from);
++        int r = recvfrom(s, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&from, &fl);
++        if (r <= 0) continue;
++        buf[r] = '\0';
++        if (strncmp(buf, "QMXR! ", 6) != 0) continue;
++
++        char ip[16] = "";
++        unsigned port = RADIO_RELAY_DEFAULT_PORT;
++        struct in_addr chk;
++        if (sscanf(buf + 6, "%15s %u", ip, &port) < 1 || inet_aton(ip, &chk) == 0)
++            inet_ntoa_r(from.sin_addr, ip, sizeof(ip));
++        if (port == 0 || port > 65535) port = RADIO_RELAY_DEFAULT_PORT;
++
++        bool dup = false;
++        for (int i = 0; i < n; i++)
++            if (strcmp(out[i].ip, ip) == 0 && out[i].port == port) dup = true;
++        if (!dup && n < max) {
++            snprintf(out[n].ip, sizeof(out[n].ip), "%s", ip);
++            out[n].port = (uint16_t)port;
++            n++;
++        }
++    }
++    close(s);
++    ESP_LOGI(TAG, "discovery: %d relay(s) answered", n);
++    return n;
++}
+diff --git a/main/net/radio_relay.h b/main/net/radio_relay.h
+index 2dfd794e..66a7a9bc 100644
+--- a/main/net/radio_relay.h
++++ b/main/net/radio_relay.h
+@@ -73,6 +73,19 @@ esp_err_t radio_relay_term_send(const uint8_t *data, size_t len, uint32_t timeou
+ void radio_relay_term_close(void);
+ const char *radio_relay_term_error(void);
+ 
++/* ---- Discovery -------------------------------------------------------------
++ * Broadcast "QMXR?" on UDP RADIO_RELAY_DEFAULT_PORT; every relay on this
++ * network answers "QMXR! <ip> <tcp port>". Asks 3 times over timeout_ms and
++ * collects distinct answers. BLOCKS for timeout_ms - never call it on the
++ * LVGL task. Returns how many relays answered (0..max), or -1 if WiFi is down
++ * or no socket could be opened. Broadcasts do not cross routers: the relay
++ * must be on the Tab5's own network. */
++typedef struct {
++    char     ip[16];
++    uint16_t port;
++} radio_relay_found_t;
++int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms);
++
+ /* Diagnostics for /api/relay. */
+ uint32_t radio_relay_iq_pairs_total(void);
+ const char *radio_relay_last_error(void);
+diff --git a/main/ui/ui.c b/main/ui/ui.c
+index f9ea910f..235ab7af 100644
+--- a/main/ui/ui.c
++++ b/main/ui/ui.c
+@@ -16397,6 +16397,67 @@ static lv_obj_t *s_radiosrc_state;
+ static lv_obj_t *s_radiosrc_kb;
+ static uint16_t  s_radiosrc_port = RADIO_RELAY_DEFAULT_PORT;
+ 
++static lv_obj_t *s_radiosrc_find_btn;
++static lv_obj_t *s_radiosrc_find_lbl;
++
++/* ---- "Find NAS": ask the network which relays are there ------------------
++ * radio_relay_discover() blocks for ~1.5 s, so it runs on a short-lived task
++ * of its own and hands the answer back under the display lock. One search at
++ * a time; the task deletes itself (internal-RAM stack, freed on delete). */
++#define RADIOSRC_FIND_MAX 4
++static radio_relay_found_t s_radiosrc_found[RADIOSRC_FIND_MAX];
++static volatile bool       s_radiosrc_finding;
++
++static void radiosrc_show_found(int n)
++{
++    if (!s_radiosrc_state || !s_radiosrc_ta) return;
++    if (s_radiosrc_find_lbl) lv_label_set_text(s_radiosrc_find_lbl, LV_SYMBOL_REFRESH "  Find NAS");
++    char st[160];
++    uint32_t col = 0xE0A040;
++    if (n < 0) {
++        snprintf(st, sizeof(st), "WiFi is not connected - cannot search. Connect WiFi, or type the address.");
++    } else if (n == 0) {
++        snprintf(st, sizeof(st), "No NAS answered. Is the relay running, and on the same network as the Tab5?");
++    } else {
++        lv_textarea_set_text(s_radiosrc_ta, s_radiosrc_found[0].ip);
++        s_radiosrc_port = s_radiosrc_found[0].port;
++        int len = snprintf(st, sizeof(st), "Found %s", s_radiosrc_found[0].ip);
++        for (int i = 1; i < n && len < (int)sizeof(st) - 20; i++)
++            len += snprintf(st + len, sizeof(st) - len, "%s%s", i == 1 ? "   (also: " : ", ",
++                            s_radiosrc_found[i].ip);
++        if (n > 1 && len < (int)sizeof(st) - 2) snprintf(st + len, sizeof(st) - len, ")");
++        col = 0x40C060;
++    }
++    lv_label_set_text(s_radiosrc_state, st);
++    lv_obj_set_style_text_color(s_radiosrc_state, lv_color_hex(col), 0);
++}
++
++static void radiosrc_find_task(void *arg)
++{
++    (void)arg;
++    int n = radio_relay_discover(s_radiosrc_found, RADIOSRC_FIND_MAX, 1500);
++    if (display_lock(2000)) {
++        radiosrc_show_found(n);
++        display_unlock();
++    }
++    s_radiosrc_finding = false;
++    vTaskDelete(NULL);
++}
++
++static void radiosrc_find_cb(lv_event_t *e)
++{
++    (void)e;
++    if (s_radiosrc_finding) return;
++    s_radiosrc_finding = true;
++    lv_label_set_text(s_radiosrc_find_lbl, "Searching...");
++    lv_label_set_text(s_radiosrc_state, "Asking the network for a NAS running the QMX relay...");
++    lv_obj_set_style_text_color(s_radiosrc_state, lv_color_hex(0xC8D0D8), 0);
++    if (xTaskCreate(radiosrc_find_task, "nas_find", 4096, NULL, 4, NULL) != pdPASS) {
++        s_radiosrc_finding = false;
++        radiosrc_show_found(-1);
++    }
++}
++
+ static void radiosrc_label_timer_cb(lv_timer_t *t)
+ {
+     (void)t;
+@@ -16557,11 +16618,25 @@ static void radiosrc_modal_build(void)
+     lv_textarea_set_one_line(s_radiosrc_ta, true);
+     lv_textarea_set_max_length(s_radiosrc_ta, RADIO_RELAY_HOST_LEN - 1);
+     lv_textarea_set_placeholder_text(s_radiosrc_ta, "e.g. 192.168.1.20");
+-    lv_obj_set_size(s_radiosrc_ta, 600, 60);
++    lv_obj_set_size(s_radiosrc_ta, 440, 60);
+     lv_obj_align(s_radiosrc_ta, LV_ALIGN_TOP_LEFT, 200, 144);
+     lv_obj_set_style_text_font(s_radiosrc_ta, &lv_font_montserrat_28, 0);
+     ui_theme_style_textarea(s_radiosrc_ta);
+ 
++    s_radiosrc_find_btn = lv_btn_create(p);
++    lv_obj_set_size(s_radiosrc_find_btn, 200, 60);
++    lv_obj_align(s_radiosrc_find_btn, LV_ALIGN_TOP_LEFT, 656, 144);
++    lv_obj_set_style_bg_color(s_radiosrc_find_btn, lv_color_hex(0x2a3138), 0);
++    lv_obj_set_style_border_color(s_radiosrc_find_btn, lv_color_hex(UI_COLOR_PRIMARY), 0);
++    lv_obj_set_style_border_width(s_radiosrc_find_btn, 2, 0);
++    lv_obj_set_style_radius(s_radiosrc_find_btn, 8, 0);
++    lv_obj_add_event_cb(s_radiosrc_find_btn, radiosrc_find_cb, LV_EVENT_CLICKED, NULL);
++    s_radiosrc_find_lbl = lv_label_create(s_radiosrc_find_btn);
++    lv_label_set_text(s_radiosrc_find_lbl, LV_SYMBOL_REFRESH "  Find NAS");
++    lv_obj_set_style_text_font(s_radiosrc_find_lbl, &lv_font_montserrat_24, 0);
++    lv_obj_set_style_text_color(s_radiosrc_find_lbl, lv_color_hex(0xffffff), 0);
++    lv_obj_center(s_radiosrc_find_lbl);
++
+     lv_obj_t *nas = radiosrc_btn(p, LV_SYMBOL_WIFI "  Use NAS", UI_COLOR_PRIMARY, -280, radiosrc_use_nas_cb);
+     radiosrc_btn(p, LV_SYMBOL_USB "  Use USB", 0x3a4149, 0, radiosrc_use_usb_cb);
+     lv_obj_t *cancel = radiosrc_btn(p, "Cancel", 0x3a4149, 280, radiosrc_cancel_cb);
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index 5c06951e..2c356947 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -99,7 +99,9 @@ sudo docker logs -f qmx-relay
+ On the Tab5 itself: open the settings drawer and tap **Radio source** (top of
+ the Radio group). The button shows where the radio is and whether it is
+ connected, e.g. `NAS 10.0.0.137 ✓`, `NAS 10.0.0.137 (offline)` or
+-`Radio: USB`. Type the NAS's IP address and tap **Use NAS**, or tap
++`Radio: USB`. Tap **Find NAS** to have the Tab5 look for the relay on the
++network and fill in its address (or type the NAS's IP address), then tap
++**Use NAS**, or tap
+ **Use USB** to go back to a QMX plugged into the Tab5. The last NAS address is
+ remembered, so switching back is one tap.
+ 
+@@ -204,6 +206,13 @@ Notes:
+   buffer is kept small (8 KB), so CAT replies are never stuck behind seconds
+   of spectrum data. Drops are counted in the log.
+ * Bandwidth is about 200 kB/s (48 kHz × 2 × 16-bit).
++* **Discovery.** The relay also listens on **UDP** 7355. The Tab5's
++  **Find NAS** broadcasts `QMXR?` three times over 1.5 s; every relay answers
++  the Tab5 directly with `QMXR! <its IP address> <TCP port>`. Nothing is sent
++  unless asked. Broadcasts stay on the local network, so the NAS and the Tab5
++  must be on the same one; if DSM's firewall is on, allow UDP 7355 as well as
++  TCP 7355/7356. `--discovery-port N` moves it, `--discovery-port 0` turns it
++  off. `nettest.py` checks it (`discovery to 127.0.0.1`).
+ * Tested: switching NAS → USB → NAS from the drawer, and powering the QMX off
+   and on (power lead pulled) while the Tab5 stays connected - the stream
+   resumes by itself.
+diff --git a/tools/nas-relay/nettest.py b/tools/nas-relay/nettest.py
+index 31db00e2..82ca53b8 100644
+--- a/tools/nas-relay/nettest.py
++++ b/tools/nas-relay/nettest.py
+@@ -46,7 +46,39 @@ def read_frames(s, secs, want=None):
+     return out
+ 
+ 
++def discovery(dest, label, required):
++    """Ask like a Tab5 does: 'QMXR?' on UDP 7355, expect 'QMXR! <ip> <port>'."""
++    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++    u.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
++    u.settimeout(1.0)
++    got = None
++    try:
++        for _ in range(3):
++            try:
++                u.sendto(b"QMXR?", (dest, 7355))
++                data, peer = u.recvfrom(256)
++            except socket.timeout:
++                continue
++            except OSError as e:            # e.g. no route for a broadcast
++                got = None
++                print("NETTEST INFO: discovery %s: %s" % (label, e), flush=True)
++                break
++            parts = data.decode(errors="replace").split()
++            if len(parts) == 3 and parts[0] == "QMXR!" and parts[2].isdigit():
++                got = "%s port %s (from %s)" % (parts[1], parts[2], peer[0])
++                break
++    finally:
++        u.close()
++    if required or got:
++        say(got is not None, "discovery %s: %s" % (label, got or "no answer"))
++    else:
++        print("NETTEST INFO: discovery %s: no answer (a host may not hear its own "
++              "broadcast; the Tab5 is a different host)" % label, flush=True)
++
++
+ try:
++    discovery(HOST, "to %s" % HOST, True)
++    discovery("255.255.255.255", "by broadcast", False)
+     tab5 = socket.create_connection((HOST, 7355), 5)
+     tab5.sendall(frame(1, b"QMXR/1 nettest"))
+     tab5.settimeout(8)
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 4a051cc8..23d8200c 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -1583,6 +1583,55 @@ def serve(listen, port, make, label):
+ 
+ 
+ # ---------------------------------------------------------------------------
++# Discovery: a Tab5 broadcasts "QMXR?" on UDP (same port number as the TCP
++# service, 7355) and every relay on the network answers it directly with
++# "QMXR! <its IP address> <TCP port>". Nothing is sent unless asked.
++# ---------------------------------------------------------------------------
++
++DISCOVERY_QUERY = b"QMXR?"
++DISCOVERY_REPLY = b"QMXR!"
++
++
++def local_ip_for(peer_ip: str) -> str:
++    """The address of THIS host on the interface that reaches peer_ip (a NAS can
++    have several). A connected UDP socket sends nothing; it only picks a route."""
++    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++    try:
++        u.connect((peer_ip, 9))
++        return u.getsockname()[0]
++    except OSError:
++        return "0.0.0.0"
++    finally:
++        u.close()
++
++
++def discovery_responder(listen: str, udp_port: int, tcp_port: int):
++    try:
++        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++        s.bind((listen, udp_port))
++    except OSError as e:
++        log.warning("discovery disabled - cannot listen on UDP %d: %s", udp_port, e)
++        return
++    log.info("discovery: answering QMXR? on UDP %s:%d", listen, udp_port)
++    last_logged: dict = {}
++    while True:
++        try:
++            data, peer = s.recvfrom(256)
++            if not data.startswith(DISCOVERY_QUERY):
++                continue
++            ip = local_ip_for(peer[0])
++            if ip == "0.0.0.0":
++                continue
++            s.sendto(b"%s %s %d" % (DISCOVERY_REPLY, ip.encode(), tcp_port), peer)
++            now = time.monotonic()
++            if now - last_logged.get(peer[0], -1e9) > 60:      # a search sends 3 queries
++                last_logged[peer[0]] = now
++                log.info("discovery: %s asked, answered %s:%d", peer[0], ip, tcp_port)
++        except Exception as e:                                  # never take the relay down
++            log.warning("discovery: %s", e)
++            time.sleep(1)
++
+ 
+ # ---------------------------------------------------------------------------
+ # Self-test against the real radio (read-only: never keys the transmitter)
+@@ -1767,6 +1816,8 @@ def main():
+     ap.add_argument("--selftest", action="store_true",
+                     help="at startup, test the QMX (I/Q, read-only CAT, ports 2/3), log the result, then serve")
+     ap.add_argument("--selftest-only", action="store_true", help="run the self-test and exit (0 = passed)")
++    ap.add_argument("--discovery-port", type=int, default=None,
++                    help="UDP port answering Tab5 'QMXR?' searches (default: same as --port; 0 = off)")
+     ap.add_argument("-v", "--verbose", action="store_true")
+     args = ap.parse_args()
+     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+@@ -1785,6 +1836,10 @@ def main():
+         threading.Thread(target=serve, daemon=True, args=(
+             args.listen, args.serial_port, lambda s, p: SerialClient(s, p, mgr),
+             "QMX port 3, raw serial for PC software")).start()
++    disc = args.port if args.discovery_port is None else args.discovery_port
++    if disc:
++        threading.Thread(target=discovery_responder, daemon=True, name="discovery",
++                         args=(args.listen, disc, args.port)).start()
+     serve(args.listen, args.port, lambda s, p: Session(s, p, args, mgr), "QMXR/1 for the Tab5")
+ 
+ 
+-- 
+2.43.0
+

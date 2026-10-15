@@ -1,0 +1,973 @@
+From 81178f1dd8f87961773f8cee80f046a5fd304a64 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 4 Oct 2026 18:31:15 +0000
+Subject: [PATCH 04/22] network-radio: full-rate NAS stream on the Tab5 - WiFi
+ RX fixes, build on macOS
+
+Bring-up on the real hardware (Tab5 + QMX+ on a Synology DS416j) found the
+Tab5's WiFi receive path, not the relay, limiting the stream to 10-20k of
+48k I/Q pairs/s and starving touch input. Now 47.7k pairs/s with touch working.
+
+esp_hosted SDIO RX (two new standing patches, both in check_patches.py):
+- apply_esp_hosted_sdio_split_bundles.ps1 (QMX_SDIO_RX_SPLIT): the C6 streams
+  several frames per SDIO read; only the first survived a normal read and a
+  burst was drained and discarded whole. Every frame is now split out into
+  its own mempool buffer and delivered.
+- apply_esp_hosted_sdio_rx_copy_psram.ps1 (QMX_SDIO_RX_COPY_PSRAM): every
+  received frame was copied into internal RAM (malloc under
+  SPIRAM_MALLOC_ALWAYSINTERNAL) and held until TCP delivered it, exhausting
+  internal/DMA RAM under a sustained stream (touch and web server stopped).
+  The copy now goes to PSRAM; allocation failure drops the frame, no assert.
+- sdkconfig: LWIP TCP receive window 2880 -> 11520, recvmbox 6 -> 12
+  (send buffer stays 2880).
+
+Firmware:
+- radio_relay: no lwIP call before WiFi is up (boot loop: getaddrinfo on a
+  tcpip stack that did not exist yet asserted in cat_link at 4 s).
+- PROJECT_VER = latest tag + "-NAS" (e.g. v1.16.11-NAS).
+- idf_component.yml: pin cdc_acm 2.4.0, usb_host_hid 1.2.0, esp_codec_dev
+  1.5.11, mdns 1.11.3 - the versions in the official v1.16.11 image; a fresh
+  fetch of newer ones built without working touch.
+- apply_cdc_acm_close_tolerant.ps1 also accepts cdc_acm 2.4.1;
+  apply_httpd_ws_dead_socket_close.ps1 matches LF as well as CRLF trees.
+
+NAS relay: CAT/terminal frames are sent before queued I/Q, the I/Q queue is
+3 frames and the kernel send buffer 8 KB, so a slow link drops I/Q instead of
+delaying CAT (IQ-mode setup timed out before). check.sh restarts the relay on
+request (restart.request file), finding it via /proc.
+
+macOS tools: tools/mac-build-flash.sh (PowerShell patches, ESP-IDF env with
+PlatformIO's python kept out, build, flash) and tools/mac-capture-serial.sh.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ CMakeLists.txt                                |  12 +
+ main/idf_component.yml                        |  13 +-
+ main/net/radio_relay.c                        |  12 +
+ sdkconfig                                     |   8 +-
+ tools/check_patches.py                        |  16 +
+ tools/mac-build-flash.sh                      | 110 +++++++
+ tools/mac-capture-serial.sh                   |  30 ++
+ tools/nas-relay/check.sh                      |  15 +-
+ tools/nas-relay/qmx_nas_relay.py              |  65 +++--
+ .../patches/apply_cdc_acm_close_tolerant.ps1  |  19 +-
+ .../apply_esp_hosted_sdio_rx_copy_psram.ps1   |  98 +++++++
+ .../apply_esp_hosted_sdio_split_bundles.ps1   | 274 ++++++++++++++++++
+ .../apply_httpd_ws_dead_socket_close.ps1      |   6 +
+ 13 files changed, 650 insertions(+), 28 deletions(-)
+ create mode 100644 tools/mac-build-flash.sh
+ create mode 100755 tools/mac-capture-serial.sh
+ create mode 100644 tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
+ create mode 100644 tools/patches/apply_esp_hosted_sdio_split_bundles.ps1
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 967f5420..987dc1b8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -42,4 +42,16 @@ foreach(_gitdep ".git/HEAD" ".git/index" ".git/refs/tags" ".git/packed-refs")
+     endif()
+ endforeach()
+ 
++# Network-radio build: report the release it is based on plus "-NAS"
++# (e.g. v1.16.11-NAS) instead of git describe's v1.16.11-3-g<hash>-dirty, which
++# is too long for the UI. The update check compares only the numbers before the
++# first '-', so v1.16.11-NAS counts as v1.16.11.
++execute_process(COMMAND git describe --tags --abbrev=0
++                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
++                OUTPUT_VARIABLE QMX_BASE_TAG OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
++if(NOT QMX_BASE_TAG)
++    set(QMX_BASE_TAG "v1.16.11")
++endif()
++set(PROJECT_VER "${QMX_BASE_TAG}-NAS")
++
+ project(qmx_panadapter)
+diff --git a/main/idf_component.yml b/main/idf_component.yml
+index f781d4b9..6c90f7f0 100644
+--- a/main/idf_component.yml
++++ b/main/idf_component.yml
+@@ -1,3 +1,8 @@
++# network-radio (2026-10-04): four components are pinned to the versions the
++# official v1.16.11 release was built with (identified from its firmware image).
++# A fresh fetch resolved newer ones (cdc_acm 2.4.1, usb_host_hid 1.2.1,
++# esp_codec_dev 1.6.2, mdns 1.14.0) and that build had NO working touch input on
++# the Tab5, while the official binary of the same source had it.
+ dependencies:
+   idf:
+     version: ">=5.4.0"
+@@ -5,19 +10,19 @@ dependencies:
+   espressif/esp_lcd_ili9881c: "^1.1.0"
+   espressif/esp_lcd_touch_gt911: "^1.1.1~2"
+   espressif/esp_lcd_touch_st7123: "^1.0.0"
+-  espressif/esp_codec_dev: "^1.3.0"
++  espressif/esp_codec_dev: "1.5.11"     # network-radio: pinned, see note above
+   espressif/esp_lvgl_port: "~2.5.0"
+ 
+-  espressif/usb_host_cdc_acm: "^2.0.0"
++  espressif/usb_host_cdc_acm: "2.4.0"   # network-radio: pinned
+   espressif/usb_host_uac: "^1.4.0"
+-  espressif/usb_host_hid: "^1.0.0"
++  espressif/usb_host_hid: "1.2.0"       # network-radio: pinned
+ 
+   espressif/esp-dsp: "^1.6.0"
+ 
+   # mDNS: reach the Tab5 as qmx.local instead of hunting an IP that changes with
+   # the network. Added after an evening lost to exactly that (roamed onto a hotel
+   # WiFi, new lease, no way to find it).
+-  espressif/mdns: "^1.2.0"
++  espressif/mdns: "1.11.3"               # network-radio: pinned
+ 
+   lvgl/lvgl: "~9.2.0"
+   espressif/esp_wifi_remote:
+diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
+index 1a065e20..1c6e15ce 100644
+--- a/main/net/radio_relay.c
++++ b/main/net/radio_relay.c
+@@ -14,6 +14,7 @@
+ #include "lwip/netdb.h"
+ 
+ #include "audio.h"
++#include "wifi.h"           // wifi_is_connected(): no socket calls before the stack is up
+ 
+ static const char *TAG = "relay";
+ 
+@@ -247,6 +248,17 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
+     radio_relay_get_target(host, sizeof(host), &port);
+     if (!host[0]) return ESP_ERR_INVALID_STATE;
+ 
++    /* ⛔ No lwIP call until WiFi is up. link_task starts inside cat_init(),
++     * seconds before wifi_init() has created the tcpip thread, and getaddrinfo()
++     * on a stack that does not exist yet asserts in tcpip_send_msg_wait_sem
++     * ("Invalid mbox") - a boot loop as soon as a NAS address is saved
++     * (hardware-observed 2026-10-04, cat_link at 4.0 s uptime). Not connected
++     * yet is an ordinary "try again": link_task retries every ~2 s. */
++    if (!wifi_is_connected()) {
++        note_fail("waiting for WiFi", 0);
++        return ESP_ERR_INVALID_STATE;
++    }
++
+     char port_str[8];
+     snprintf(port_str, sizeof(port_str), "%u", port);
+     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+diff --git a/sdkconfig b/sdkconfig
+index 95d5a4e4..1a1fac07 100644
+--- a/sdkconfig
++++ b/sdkconfig
+@@ -1999,8 +1999,8 @@ CONFIG_LWIP_TCP_TMR_INTERVAL=250
+ CONFIG_LWIP_TCP_MSL=10000
+ CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT=20000
+ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+-CONFIG_LWIP_TCP_WND_DEFAULT=2880
+-CONFIG_LWIP_TCP_RECVMBOX_SIZE=6
++CONFIG_LWIP_TCP_WND_DEFAULT=11520
++CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
+ CONFIG_LWIP_TCP_ACCEPTMBOX_SIZE=6
+ CONFIG_LWIP_TCP_QUEUE_OOSEQ=y
+ CONFIG_LWIP_TCP_OOSEQ_TIMEOUT=6
+@@ -3406,8 +3406,8 @@ CONFIG_TCP_SYNMAXRTX=12
+ CONFIG_TCP_MSS=1440
+ CONFIG_TCP_MSL=10000
+ CONFIG_TCP_SND_BUF_DEFAULT=2880
+-CONFIG_TCP_WND_DEFAULT=2880
+-CONFIG_TCP_RECVMBOX_SIZE=6
++CONFIG_TCP_WND_DEFAULT=11520
++CONFIG_TCP_RECVMBOX_SIZE=12
+ CONFIG_TCP_QUEUE_OOSEQ=y
+ CONFIG_TCP_OVERSIZE_MSS=y
+ # CONFIG_TCP_OVERSIZE_QUARTER_MSS is not set
+diff --git a/tools/check_patches.py b/tools/check_patches.py
+index d3c90364..62005eae 100644
+--- a/tools/check_patches.py
++++ b/tools/check_patches.py
+@@ -77,6 +77,22 @@ PATCHES = [
+     # Same FILE as the row above, different marker. sdio_drv.c now carries
+     # several of our fixes and one apply script restores all of them, so a row
+     # per marker is the only way a partially-restored copy shows up as missing.
++    ("apply_esp_hosted_sdio_rx_copy_psram.ps1", "repo",
++     "managed_components/espressif__esp_hosted/host/drivers/transport/sdio/sdio_drv.c",
++     "QMX_SDIO_RX_COPY_PSRAM",
++     "every received WiFi frame is copied into INTERNAL RAM (malloc under "
++     "SPIRAM_MALLOC_ALWAYSINTERNAL) and held until TCP delivers it, so a "
++     "sustained inbound stream exhausts internal/DMA RAM - touch (I2C) and the "
++     "web server stop until reboot - and an allocation failure asserts"),
++
++    ("apply_esp_hosted_sdio_split_bundles.ps1", "repo",
++     "managed_components/espressif__esp_hosted/host/drivers/transport/sdio/sdio_drv.c",
++     "QMX_SDIO_RX_SPLIT",
++     "the C6 streams several frames per SDIO read; without the split only the "
++     "first survives a normal read and a burst is drained and discarded whole - "
++     "a sustained inbound stream (the NAS radio relay) collapses to a fraction "
++     "of its rate under TCP retransmits and starves the UI"),
++
+     ("apply_esp_hosted_sdio_recovery.ps1", "repo",
+      "managed_components/espressif__esp_hosted/host/drivers/transport/sdio/sdio_drv.c",
+      "QMX_SDIO_INIT_FAIL_TOLERANT",
+diff --git a/tools/mac-build-flash.sh b/tools/mac-build-flash.sh
+new file mode 100644
+index 00000000..7a9a990e
+--- /dev/null
++++ b/tools/mac-build-flash.sh
+@@ -0,0 +1,110 @@
++#!/bin/bash
++# Build this firmware on a Mac and flash it onto a Tab5 over USB.
++#
++#   bash ~/src/qmx-panadapter-v1.16/tools/mac-build-flash.sh          build + flash
++#   bash ~/src/qmx-panadapter-v1.16/tools/mac-build-flash.sh --build  build only
++#
++# Uses the ESP-IDF in $IDF_PATH or ~/esp/esp-idf, and an installed PowerShell
++# (pwsh, or set PWSH=/path/to/pwsh), because the project's standing patches are
++# PowerShell scripts (tools/patches/apply_*.ps1); tools/check_patches.py refuses
++# the build if any patch is missing. Flashing is a NORMAL flash: settings,
++# WiFi, memories and the QSO log are kept. Everything is logged to
++# build/mac-build-flash.log.
++
++REPO="$(cd "$(dirname "$0")/.." && pwd)"
++mkdir -p "$REPO/build"
++LOG="$REPO/build/mac-build-flash.log"
++exec > >(tee "$LOG") 2>&1
++step() { echo; echo "=== $*"; }
++fail() { echo; echo "FAILED: $*"; echo "(log: $LOG)"; exit 1; }
++fwver() { sed -n 's/.*"project_version": *"\([^"]*\)".*/\1/p' "$REPO/build/project_description.json" | head -1; }
++BUILD_ONLY=0; [ "$1" = "--build" ] && BUILD_ONLY=1
++
++step "Mac and project"
++date; sw_vers 2>/dev/null | tr '\n' ' '; echo; uname -m
++cd "$REPO" || fail "no project folder"
++echo "project: $REPO"
++echo "branch:  $(git rev-parse --abbrev-ref HEAD)   version: $(git describe --tags --dirty)"
++
++step "PowerShell (for the standing patches)"
++# Use the PowerShell that's already installed. Look on PATH, in the usual install
++# places, and in your login shell's PATH (Terminal's zsh may set it up there).
++PWSH="${PWSH:-}"
++for c in pwsh pwsh-preview /usr/local/bin/pwsh /opt/homebrew/bin/pwsh /usr/local/bin/pwsh-preview \
++         /opt/homebrew/bin/pwsh-preview /usr/local/microsoft/powershell/7/pwsh \
++         /usr/local/microsoft/powershell/7-preview/pwsh "$HOME/.dotnet/tools/pwsh" \
++         /Applications/PowerShell.app/Contents/MacOS/pwsh; do
++  [ -n "$PWSH" ] && break
++  command -v "$c" >/dev/null 2>&1 && PWSH="$(command -v "$c")"
++done
++[ -n "$PWSH" ] || PWSH="$(zsh -lic 'command -v pwsh || command -v pwsh-preview' 2>/dev/null | tail -1)"
++[ -n "$PWSH" ] && [ -x "$PWSH" ] || fail "can't find PowerShell (pwsh). In a PowerShell window run  (Get-Process -Id \$PID).Path  and re-run this as:  PWSH=<that path> bash $0"
++echo "PowerShell: $PWSH"
++"$PWSH" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' || fail "pwsh does not run"
++
++step "ESP-IDF"
++export IDF_PATH="${IDF_PATH:-$HOME/esp/esp-idf}"
++[ -f "$IDF_PATH/export.sh" ] || fail "ESP-IDF not found at $IDF_PATH"
++echo "IDF tree: $(git -C "$IDF_PATH" describe --tags --dirty 2>/dev/null)"
++# PlatformIO puts its own python3 first on PATH; ESP-IDF must not pick that one.
++PATH="$(echo "$PATH" | tr ':' '\n' | grep -v '/.platformio/penv' | paste -sd: -)"
++# Use the ESP-IDF Python environment that already exists for this IDF (made by
++# install.sh with whichever Python was current then), and that Python itself.
++if [ -z "$IDF_PYTHON_ENV_PATH" ]; then
++  IDF_PYTHON_ENV_PATH="$(ls -d "$HOME/.espressif/python_env/idf5.4_py"*_env 2>/dev/null | sort -V | tail -1)"
++fi
++[ -x "$IDF_PYTHON_ENV_PATH/bin/python" ] || fail "no ESP-IDF Python environment in ~/.espressif/python_env - run $IDF_PATH/install.sh esp32p4"
++export IDF_PYTHON_ENV_PATH
++ENVPY="$(cd "$IDF_PYTHON_ENV_PATH/bin" && pwd -P)/python"
++BASEPY="$(readlink -f "$IDF_PYTHON_ENV_PATH/bin/python" 2>/dev/null)"
++[ -x "$BASEPY" ] && "$BASEPY" -V >/dev/null 2>&1 || fail "the Python behind $IDF_PYTHON_ENV_PATH is gone ($BASEPY) - run $IDF_PATH/install.sh esp32p4 once to rebuild it"
++mkdir -p build/pyshim && ln -sf "$BASEPY" build/pyshim/python3 && PATH="$REPO/build/pyshim:$PATH"
++echo "ESP-IDF Python env: $IDF_PYTHON_ENV_PATH"
++echo "python3 for export: $(command -v python3) ($(python3 --version 2>&1))"
++. "$IDF_PATH/export.sh" > build/idf-export.log 2>&1
++RC=$?
++if [ $RC -ne 0 ] || ! command -v idf.py >/dev/null 2>&1; then
++  echo "--- ESP-IDF export.sh output (exit code $RC):"; cat build/idf-export.log
++  fail "ESP-IDF export.sh did not set up idf.py"
++fi
++tail -3 build/idf-export.log
++idf.py --version
++case "$(idf.py --version)" in *v5.4*) ;; *) echo "WARNING: the project and its patches are written for ESP-IDF v5.4.4";; esac
++
++step "Fetch components (idf.py reconfigure)"
++idf.py reconfigure > build/reconfigure.log 2>&1 || { tail -40 build/reconfigure.log; fail "idf.py reconfigure"; }
++tail -3 build/reconfigure.log
++ls managed_components
++
++step "Apply the standing patches"
++for s in tools/patches/apply_*.ps1; do
++  echo "--- $(basename "$s")"
++  "$PWSH" -NoProfile -ExecutionPolicy Bypass -File "$s" || fail "$(basename "$s")"
++done
++step "Check the standing patches"
++python tools/check_patches.py || fail "check_patches.py"
++
++step "Build"
++idf.py build > build/build.log 2>&1 || { grep -E "error|Error|FAILED" build/build.log | head -40; tail -30 build/build.log; fail "idf.py build"; }
++tail -8 build/build.log
++echo "Firmware version: $(fwver)"
++ls -l build/*.bin
++[ "$BUILD_ONLY" = 1 ] && { step "Done (build only)"; exit 0; }
++
++step "Flash the Tab5"
++PORTS=( $(ls /dev/cu.usbmodem* 2>/dev/null) )
++echo "USB serial ports: ${PORTS[*]:-none}"
++[ ${#PORTS[@]} -gt 0 ] || fail "no Tab5 found - plug it in with a USB-C DATA cable and run this again"
++PORT="${PORTS[0]}"
++if [ ${#PORTS[@]} -gt 1 ]; then
++  echo "More than one USB serial device is plugged in:"
++  select PORT in "${PORTS[@]}"; do [ -n "$PORT" ] && break; done
++fi
++echo
++echo "About to flash the Tab5 on $PORT (normal flash - settings are kept)."
++echo "Nothing should be plugged into the Tab5's own USB port: a flash wedges an attached QMX."
++read -r -p "Press Enter to flash, or Ctrl+C to cancel... "
++idf.py -p "$PORT" -b 460800 flash || fail "flash (try another USB-C cable, or reboot the Tab5 and run again)"
++
++step "SUCCESS"
++echo "Flashed $(fwver). The Tab5 is restarting."
+diff --git a/tools/mac-capture-serial.sh b/tools/mac-capture-serial.sh
+new file mode 100755
+index 00000000..f75f930a
+--- /dev/null
++++ b/tools/mac-capture-serial.sh
+@@ -0,0 +1,30 @@
++#!/bin/bash
++# Record the Tab5's USB serial output (boot messages, crash reasons) for a while.
++#   bash ~/src/qmx-panadapter-v1.16/tools/mac-capture-serial.sh [seconds]   (default 90)
++# Output: build/serial-capture.log in this project. Uses ESP-IDF's Python (pyserial).
++REPO="$(cd "$(dirname "$0")/.." && pwd)"; mkdir -p "$REPO/build"
++OUT="$REPO/build/serial-capture.log"; SECS="${1:-90}"
++PY="$(ls -d "$HOME/.espressif/python_env/idf5.4_py"*_env 2>/dev/null | sort -V | tail -1)/bin/python"
++[ -x "$PY" ] || { echo "ESP-IDF Python not found"; exit 1; }
++PORT="$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)"
++[ -n "$PORT" ] || { echo "No Tab5 USB serial port found - is it plugged in with a data cable?"; exit 1; }
++echo "Recording $PORT for $SECS s into $OUT ..."
++"$PY" - "$PORT" "$SECS" "$OUT" <<'PYEOF'
++import sys, time, serial
++port, secs, out = sys.argv[1], float(sys.argv[2]), sys.argv[3]
++end = time.time() + secs
++with open(out, "wb") as f:
++    f.write(("# capture of %s started %s\n" % (port, time.ctime())).encode())
++    while time.time() < end:
++        try:
++            s = serial.Serial(port, 115200, timeout=0.5)
++            s.dtr = False; s.rts = False          # never reset the board ourselves
++            while time.time() < end:
++                d = s.read(4096)
++                if d: f.write(d); f.flush(); sys.stdout.buffer.write(d); sys.stdout.flush()
++        except (serial.SerialException, OSError) as e:
++            # the port disappears while the board reboots - wait and reopen
++            f.write(("\n# [port gone: %s] %s\n" % (e.__class__.__name__, time.ctime())).encode()); f.flush()
++            time.sleep(0.3)
++print("\nSaved:", out)
++PYEOF
+diff --git a/tools/nas-relay/check.sh b/tools/nas-relay/check.sh
+index 977b2256..0354f2a0 100644
+--- a/tools/nas-relay/check.sh
++++ b/tools/nas-relay/check.sh
+@@ -5,6 +5,19 @@
+ # script, user root, then "Run". Result: check.log in this folder.
+ . "$(cd "$(dirname "$0")" && pwd)/env.sh"
+ OUT="$DIR/check.log"
++# Restart on request: put a file named "restart.request" in this folder and run
++# this task. The relay process is stopped; start-relay.sh's supervisor starts the
++# (updated) relay again 5 s later. Avoids re-creating root tasks after an update.
++if [ -f "$DIR/restart.request" ]; then
++  rm -f "$DIR/restart.request"
++  # /proc rather than ps: DSM's "ps w" only lists processes on the current
++  # terminal, and a Task Scheduler job has none.
++  for d in /proc/[0-9]*; do
++    if tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q 'qmx_nas_relay\.py'; then kill "${d#/proc/}" 2>/dev/null; fi
++  done
++  echo "$(date) restart requested via check.sh" >> "$DIR/qmx-relay.log"
++  sleep 12
++fi
+ {
+   echo "=== QMX relay check $(date)"
+   echo "--- system";  uname -a; cat /etc.defaults/VERSION 2>/dev/null | grep -E 'productversion|buildnumber'
+@@ -12,7 +25,7 @@ OUT="$DIR/check.log"
+   echo "--- libusb";  ls -l /lib/libusb* /usr/lib/libusb* /lib64/libusb* /usr/lib64/libusb* /usr/local/lib/libusb* 2>/dev/null; echo "QMX_LIBUSB=$QMX_LIBUSB"
+   echo "--- usb devices"; for d in /sys/bus/usb/devices/*; do [ -f "$d/idVendor" ] && echo "$(basename $d) $(cat $d/idVendor):$(cat $d/idProduct) $(cat $d/product 2>/dev/null)"; done
+   echo "--- kernel drivers bound to the QMX"; for i in /sys/bus/usb/devices/*:*; do [ -L "$i/driver" ] && case "$(cat $i/../idVendor 2>/dev/null)" in 0483) echo "$(basename $i) -> $(basename $(readlink $i/driver))";; esac; done
+-  echo "--- relay already running?"; ps w 2>/dev/null | grep qmx_nas_relay | grep -v grep || echo "no"
++  echo "--- relay already running?"; for d in /proc/[0-9]*; do tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q 'qmx_nas_relay\.py' && echo "yes, pid ${d#/proc/}"; done
+   if [ -n "$PY" ]; then
+     echo "--- libusb1 (python)"; "$PY" "$DIR/get_libusb1.py" 2>&1
+     echo "--- probe";    "$PY" -u "$DIR/qmx_nas_relay.py" --probe 2>&1
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 645b27e0..4a051cc8 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -54,6 +54,7 @@ systems libusb-1.0 + `pip install libusb1` (the Dockerfile installs both).
+ from __future__ import annotations
+ 
+ import argparse
++import collections
+ import ctypes
+ import errno
+ import logging
+@@ -77,7 +78,9 @@ DEFAULT_SERIAL_PORT = 7356     # QMX port 3 as raw TCP serial for PCs
+ QMX_VID, QMX_PID = 0x0483, 0xA34C
+ SAMPLE_RATE = 48000
+ FRAME_PAIRS = 480            # 10 ms of I/Q per IQ frame (1920 bytes)
+-SEND_QUEUE_MAX = 100         # ~1 s of I/Q; beyond that drop I/Q (never CAT)
++IQ_QUEUE_MAX = 3             # I/Q frames (30 ms) waiting to be sent; beyond that drop I/Q, never CAT
++TAB5_SNDBUF = 8192           # kernel send buffer per Tab5 (Linux doubles it): keeps the
++                             # backlog - and so the CAT reply delay - under ~0.2 s
+ ISO_TRANSFERS = 8            # in flight
+ ISO_PACKETS = 8              # 1 ms each -> 8 ms per transfer
+ CAT_BAUD = 38400
+@@ -1339,12 +1342,22 @@ class RadioManager:
+ class Session:
+     def __init__(self, sock: socket.socket, peer, args, mgr: RadioManager):
+         self.sock, self.peer, self.args, self.mgr = sock, peer, args, mgr
+-        self.q: queue.Queue[bytes] = queue.Queue()
++        # Two queues: control frames (CAT, terminal, status, ping) always go
++        # out before queued I/Q, so a slow WiFi link delays the spectrum, not
++        # the radio's replies. The I/Q queue is short and drops when full.
++        self.ctl: collections.deque[bytes] = collections.deque()
++        self.iq: collections.deque[bytes] = collections.deque()
++        self.wake = threading.Condition()
+         self.iq_acc = bytearray()
+         self.alive = True
+         self.dropped = 0
+         self.iq_bytes = 0
+ 
++    def _put_ctl(self, data: bytes):
++        with self.wake:
++            self.ctl.append(data)
++            self.wake.notify()
++
+     # radio callbacks (libusb thread)
+     def _on_iq(self, s16: bytes):
+         self.iq_acc += s16
+@@ -1352,18 +1365,20 @@ class Session:
+         while len(self.iq_acc) >= fb:
+             chunk = bytes(self.iq_acc[:fb])
+             del self.iq_acc[:fb]
+-            if self.q.qsize() >= SEND_QUEUE_MAX:
+-                self.dropped += 1          # Tab5/WiFi can't keep up: drop I/Q, keep latency low
+-                continue
+-            self.iq_bytes += len(chunk)
+-            self.q.put(frame(PROTO_IQ, chunk))
++            with self.wake:
++                if len(self.iq) >= IQ_QUEUE_MAX:
++                    self.dropped += 1      # Tab5/WiFi can't keep up: drop I/Q, keep latency low
++                    continue
++                self.iq_bytes += len(chunk)
++                self.iq.append(frame(PROTO_IQ, chunk))
++                self.wake.notify()
+ 
+     def _on_cat(self, data: bytes):
+         log.debug("QMX -> Tab5 CAT %r", data)
+-        self.q.put(frame(PROTO_CAT, data))
++        self._put_ctl(frame(PROTO_CAT, data))
+ 
+     def _on_term(self, data: bytes):
+-        self.q.put(frame(PROTO_TERM_DATA, data))
++        self._put_ctl(frame(PROTO_TERM_DATA, data))
+ 
+     def radio_gone(self):
+         self.stop("QMX disconnected")
+@@ -1371,6 +1386,8 @@ class Session:
+     def stop(self, why: str):
+         if self.alive:
+             self.alive = False
++            with self.wake:
++                self.wake.notify()
+             log.info("Tab5 session %s:%d ending: %s", self.peer[0], self.peer[1], why)
+             try:
+                 self.sock.shutdown(socket.SHUT_RDWR)
+@@ -1381,6 +1398,13 @@ class Session:
+         sock = self.sock
+         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
++        # Small kernel send buffer: otherwise Linux autotunes it to megabytes,
++        # seconds of I/Q pile up there instead of being dropped above, and every
++        # CAT reply waits behind them (the Tab5 then times out IQ-mode setup).
++        try:
++            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, TAB5_SNDBUF)
++        except OSError:
++            pass
+         radio = None
+         try:
+             sock.settimeout(5)
+@@ -1409,7 +1433,7 @@ class Session:
+                     ok, why = radio.term_open(self._on_term)
+                     if not ok:
+                         log.warning("terminal: %s", why)
+-                    self.q.put(frame(PROTO_TERM_STATUS, (b"\x01" if ok else b"\x00" + why.encode())[:200]))
++                    self._put_ctl(frame(PROTO_TERM_STATUS, (b"\x01" if ok else b"\x00" + why.encode())[:200]))
+                 elif t == PROTO_TERM_CLOSE:
+                     radio.term_close()
+         except RadioGone as e:
+@@ -1435,16 +1459,21 @@ class Session:
+     def _send_loop(self):
+         last_ping = time.monotonic()
+         while self.alive:
++            with self.wake:
++                if not self.ctl and not self.iq:
++                    self.wake.wait(0.25)
++                # all pending control frames first, then at most one I/Q frame,
++                # so a CAT reply never waits behind more than one I/Q frame here
++                out = list(self.ctl)
++                self.ctl.clear()
++                if self.iq:
++                    out.append(self.iq.popleft())
++            if time.monotonic() - last_ping >= 1.0:
++                out.insert(0, frame(PROTO_PING))
++                last_ping = time.monotonic()
+             try:
+-                data = self.q.get(timeout=0.25)
+-            except queue.Empty:
+-                data = None
+-            try:
+-                if data:
++                for data in out:
+                     self.sock.sendall(data)
+-                if time.monotonic() - last_ping >= 1.0:
+-                    self.sock.sendall(frame(PROTO_PING))
+-                    last_ping = time.monotonic()
+             except OSError as e:
+                 self.stop("send failed: %s" % e)
+                 return
+diff --git a/tools/patches/apply_cdc_acm_close_tolerant.ps1 b/tools/patches/apply_cdc_acm_close_tolerant.ps1
+index 089f5d5d..da326914 100644
+--- a/tools/patches/apply_cdc_acm_close_tolerant.ps1
++++ b/tools/patches/apply_cdc_acm_close_tolerant.ps1
+@@ -149,13 +149,30 @@ $patched = @'
+ $originalLf = $original -replace "`r`n", "`n"
+ $contentLf  = $content  -replace "`r`n", "`n"
+ 
++$patchedLf = $patched -replace "`r`n", "`n"
++
++# usb_host_cdc_acm 2.4.1 (2026-08-25, "Fixed submitting transfer poll race
++# condition") brought the two polling flags back, so its close() still clears
++# them before the endpoint resets. Accept that layout too and keep the two
++# lines, so the upstream race fix stays intact; the patch is otherwise identical.
++$pollLines = "    cdc_dev->data.in_polling = false;`n    cdc_dev->notif.xfer_polling = false;`n"
++$firstIf   = "    if (cdc_dev->data.in_xfer) {`n"
++$originalPollLf = $originalLf.Replace("    // Cancel polling of BULK IN and INTERRUPT IN`n",
++                                      "    // Cancel polling of BULK IN and INTERRUPT IN`n" + $pollLines)
++if (-not $contentLf.Contains($originalLf) -and $contentLf.Contains($originalPollLf)) {
++    Write-Host "usb_host_cdc_acm with polling flags (2.4.1+) - keeping them." -ForegroundColor Yellow
++    $originalLf = $originalPollLf
++    $i = $patchedLf.IndexOf($firstIf)
++    $patchedLf = $patchedLf.Substring(0, $i) + $pollLines + $patchedLf.Substring($i)
++    $patchedLf = $patchedLf.Replace("    // unchanged.`n", "    // unchanged. 2026-10-04: usb_host_cdc_acm 2.4.1 restored both flags (its`n    // poll race fix), so with 2.4.1+ they are cleared here again.`n")
++}
++
+ if (-not $contentLf.Contains($originalLf)) {
+     Write-Host "Could not find the stock cdc_acm_host_close() block - the component may have changed." -ForegroundColor Red
+     Write-Host "Patch by hand and update this script."
+     exit 1
+ }
+ 
+-$patchedLf = $patched -replace "`r`n", "`n"
+ $result = $contentLf.Replace($originalLf, $patchedLf)
+ [System.IO.File]::WriteAllText($target, $result, (New-Object System.Text.UTF8Encoding $false))
+ 
+diff --git a/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1 b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
+new file mode 100644
+index 00000000..0f4f60f5
+--- /dev/null
++++ b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
+@@ -0,0 +1,98 @@
++<#
++.SYNOPSIS
++    esp_hosted SDIO RX: copy each received WiFi frame into PSRAM instead of
++    internal RAM, and drop a frame instead of asserting when no memory is
++    left. Marker: QMX_SDIO_RX_COPY_PSRAM.
++
++.DESCRIPTION
++    sdio_process_rx_task() copies every received frame into a fresh buffer
++    that lwIP then holds (zero-copy, L2_TO_L3_COPY off) until TCP has handed
++    the data to the application. Stock code used _h_malloc -> malloc, and with
++    CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 every frame-sized malloc lands in
++    INTERNAL RAM, so internal RAM in use grows with the data in flight.
++
++    Measured 2026-10-04 with the NAS radio relay's sustained 1.5 Mbit/s stream:
++    TCP window 11520 -> internal low-water 3 KB and DMA-capable free 4 KB;
++    touch input (I2C) stopped and the web server stopped answering until a
++    reboot. Window 5760 -> the same. Window 2880 -> usable, but only 66% of
++    the stream arrives.
++
++    The copy now goes to PSRAM (it is released with free(), which handles
++    either heap), falling back to the stock allocation only if PSRAM is
++    exhausted. Stock also assert()ed when the allocation failed; the frame is
++    now dropped (TCP retransmits) instead of rebooting the device.
++
++    Edits managed_components/ - wiped by fullclean or a dependency refresh;
++    re-run like the other apply_*.ps1 patches. Idempotent.
++
++.HOW TO USE
++    powershell -ExecutionPolicy Bypass -File tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
++#>
++
++$ErrorActionPreference = "Stop"
++
++$repo   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++$target = Join-Path $repo "managed_components/espressif__esp_hosted/host/drivers/transport/sdio/sdio_drv.c"
++
++if (-not (Test-Path $target)) {
++    Write-Host "sdio_drv.c not found at:" -ForegroundColor Red
++    Write-Host "  $target"
++    Write-Host "Build once so the component is fetched, then re-run."
++    exit 1
++}
++
++$content = (Get-Content -Raw -Path $target) -replace "`r`n", "`n"
++
++if ($content.Contains("QMX_SDIO_RX_COPY_PSRAM")) {
++    Write-Host "Already patched (SDIO RX copy in PSRAM) - nothing to do." -ForegroundColor Green
++    exit 0
++}
++
++$old = @'
++				/* TODO : Need to abstract heap_caps_malloc */
++				uint8_t * copy_payload = (uint8_t *)g_h.funcs->_h_malloc(buf_handle->payload_len);
++				assert(copy_payload);
++				assert(buf_handle->payload_len);
++				assert(buf_handle->payload);
++				memcpy(copy_payload, buf_handle->payload, buf_handle->payload_len);
++'@
++$new = @'
++				/* QMX_SDIO_RX_COPY_PSRAM (qmx-panadapter network-radio, 2026-10-04).
++				 *
++				 * Every received WiFi frame is copied into a fresh buffer that
++				 * lwIP holds (zero-copy, L2_TO_L3_COPY off) until TCP has
++				 * delivered it to the application. Stock code used _h_malloc ->
++				 * malloc, and with CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 every
++				 * frame-sized malloc lands in INTERNAL RAM - so internal RAM in
++				 * use grows with the data in flight. Measured with the NAS radio
++				 * relay's 1.5 Mbit/s stream: TCP window 11520 -> internal low-water
++				 * 3 KB, DMA free 4 KB, touch input (I2C) dead and the web server
++				 * unresponsive until reboot; window 2880 -> usable but only 66% of
++				 * the stream. The copy goes to PSRAM instead (freed with free(),
++				 * which handles either heap); internal RAM only if PSRAM is full.
++				 * Stock also assert()ed on allocation failure - now the frame is
++				 * dropped (TCP retransmits) instead of rebooting the device. */
++				uint8_t * copy_payload = (uint8_t *)heap_caps_malloc(buf_handle->payload_len,
++						MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++				if (!copy_payload)
++					copy_payload = (uint8_t *)g_h.funcs->_h_malloc(buf_handle->payload_len);
++				if (!copy_payload || !buf_handle->payload_len || !buf_handle->payload) {
++					if (copy_payload)
++						HOSTED_FREE(copy_payload);
++					H_FREE_PTR_WITH_FUNC(buf_handle->free_buf_handle, buf_handle->priv_buffer_handle);
++					continue;
++				}
++				memcpy(copy_payload, buf_handle->payload, buf_handle->payload_len);
++'@
++$old = $old -replace "`r`n", "`n"
++$new = $new -replace "`r`n", "`n"
++$n = ([regex]::Matches($content, [regex]::Escape($old))).Count
++if ($n -ne 1) {
++    Write-Host "Anchor found $n times (expected 1) - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red
++    exit 1
++}
++$content = $content.Replace($old, $new)
++
++[System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
++Write-Host "Patched sdio_drv.c: received WiFi frames are copied into PSRAM, not internal RAM." -ForegroundColor Green
++Write-Host "  $target"
+diff --git a/tools/patches/apply_esp_hosted_sdio_split_bundles.ps1 b/tools/patches/apply_esp_hosted_sdio_split_bundles.ps1
+new file mode 100644
+index 00000000..2325f157
+--- /dev/null
++++ b/tools/patches/apply_esp_hosted_sdio_split_bundles.ps1
+@@ -0,0 +1,274 @@
++<#
++.SYNOPSIS
++    esp_hosted SDIO RX: deliver every frame of a multi-frame read instead of
++    keeping only the first (normal reads) or discarding all of them (oversize
++    bursts). Marker: QMX_SDIO_RX_SPLIT.
++
++.DESCRIPTION
++    The Tab5's ESP32-C6 runs its SDIO send path in STREAMING mode: when several
++    frames are waiting it exposes them back to back, each with its own
++    esp_payload_header, and the pending-length register covers all of them.
++    This host is built for PACKET mode (RX_NONE + 1536-byte mempool buffers,
++    v0.18.2), so the stock read path only ever looked at the first frame:
++
++      - a normal read holding two small frames lost the second one;
++      - a burst larger than 1536 bytes was drained and DISCARDED by the
++        oversize recovery (apply_esp_hosted_sdio_recovery.ps1) - every frame
++        in it lost.
++
++    Invisible under light traffic, fatal for a sustained inbound stream:
++    measured 2026-10-04 with the NAS radio relay (1.5 Mbit/s of I/Q) the
++    oversize drain fired several times a second, TCP retransmitted the lost
++    frames, the stream collapsed to 10-20k of 48k pairs/s and the Tab5 was
++    too busy to take touch input until rebooted.
++
++    The patch walks such a read, copies each frame into its own mempool buffer
++    (no DMA allocation - the v0.18.2 rule stands) and queues it exactly like a
++    single-frame read. The oversize drain keeps its chunked reads and its
++    exact byte accounting unchanged; the drained bytes are also copied into a
++    96 KB PSRAM buffer and split after the bus is released. A header that
++    does not parse, or an empty mempool, ends the walk: frames already
++    delivered stay delivered, the rest is dropped, nothing aborts. The
++    "SDIO RX oversize" warning (the recovery patch's check_patches marker) is
++    kept, rate-limited to one line per 5 s with the split counters.
++
++    Requires apply_esp_hosted_sdio_recovery.ps1 first (its drain code is an
++    anchor here) - this file name sorts after it.
++
++    Edits managed_components/ - wiped by fullclean or a dependency refresh;
++    re-run like the other apply_*.ps1 patches. Idempotent.
++
++.HOW TO USE
++    powershell -ExecutionPolicy Bypass -File tools/patches/apply_esp_hosted_sdio_split_bundles.ps1
++#>
++
++$ErrorActionPreference = "Stop"
++
++$repo   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
++$target = Join-Path $repo "managed_components/espressif__esp_hosted/host/drivers/transport/sdio/sdio_drv.c"
++
++if (-not (Test-Path $target)) {
++    Write-Host "sdio_drv.c not found at:" -ForegroundColor Red
++    Write-Host "  $target"
++    Write-Host "Build once so the component is fetched, then re-run."
++    exit 1
++}
++
++$content = (Get-Content -Raw -Path $target) -replace "`r`n", "`n"
++
++if ($content.Contains("QMX_SDIO_RX_SPLIT")) {
++    Write-Host "Already patched (SDIO RX split of multi-frame reads) - nothing to do." -ForegroundColor Green
++    exit 0
++}
++if (-not $content.Contains("SDIO RX oversize")) {
++    Write-Host "apply_esp_hosted_sdio_recovery.ps1 has not been applied yet - run it first." -ForegroundColor Red
++    exit 1
++}
++
++$pairs = @(
++    @{ Old = @'
++	g_h.funcs->_h_queue_item(from_slave_queue[pkt_prio], &buf_handle, HOSTED_BLOCK_MAX);
++	g_h.funcs->_h_post_semaphore(sem_from_slave_queue);
++
++	return ESP_OK;
++}
++
++'@; New = @'
++	g_h.funcs->_h_queue_item(from_slave_queue[pkt_prio], &buf_handle, HOSTED_BLOCK_MAX);
++	g_h.funcs->_h_post_semaphore(sem_from_slave_queue);
++
++	return ESP_OK;
++}
++
++/* QMX_SDIO_RX_SPLIT (qmx-panadapter network-radio, 2026-10-04).
++ *
++ * The C6 slave runs its SDIO send path in STREAMING mode: when several frames
++ * are waiting it exposes them back to back, each starting with its own
++ * esp_payload_header, and the pending-length register covers all of them.
++ * This host is built for PACKET mode (RX_NONE, fixed 1536-byte mempool
++ * buffers - chosen in v0.18.2 because streaming mode re-allocates DMA memory
++ * per burst), so stock code only ever looked at the FIRST frame of a read:
++ *
++ *   - a read <= 1536 bytes holding two small frames (two TCP ACKs, an ACK
++ *     plus a CAT reply) silently lost the second one;
++ *   - a read > 1536 bytes (a burst of full-size frames) was drained and
++ *     DISCARDED by the oversize recovery - every frame in it lost.
++ *
++ * Harmless for light traffic, fatal for a sustained inbound stream: measured
++ * 2026-10-04 with the NAS radio relay (1.5 Mbit/s of I/Q) - "SDIO RX oversize
++ * ... draining" several times a second, TCP retransmitting the lost frames and
++ * the stream collapsing to 10-20 k of the 48 k pairs/s.
++ *
++ * This walks such a byte stream, copies each frame into its own mempool
++ * buffer (no DMA allocation, the v0.18.2 rule stands) and queues it exactly
++ * as a single-frame read would be. A header that does not parse, or an empty
++ * mempool, ends the walk: what was already delivered stays delivered, the
++ * rest is dropped, and nothing aborts. */
++static uint32_t qmx_split_bundles, qmx_split_frames, qmx_split_drops;
++
++static void qmx_sdio_push_stream(const uint8_t *s, uint32_t s_len)
++{
++	while (s_len >= sizeof(struct esp_payload_header)) {
++		const struct esp_payload_header *h = (const struct esp_payload_header *)s;
++		uint16_t len = le16toh(h->len);
++		uint16_t offset = le16toh(h->offset);
++		uint32_t psize = (uint32_t)len + offset;
++		uint16_t vlen = 0, voff = 0;
++		uint8_t *p;
++
++		if (!len && !offset)
++			return;                       /* block padding after the last frame */
++		if (!len || len > MAX_PAYLOAD_SIZE ||
++		    offset != sizeof(struct esp_payload_header) ||
++		    psize > s_len || psize > MAX_SDIO_BUFFER_SIZE) {
++			qmx_split_drops++;
++			return;
++		}
++		p = sdio_buffer_alloc(MEMSET_REQUIRED);
++		if (!p) {
++			qmx_split_drops++;
++			return;
++		}
++		memcpy(p, s, psize);
++		if (!is_valid_sdio_rx_packet(p, &vlen, &voff)) {
++			sdio_buffer_free(p);
++			qmx_split_drops++;
++			return;
++		}
++		sdio_push_pkt_to_queue(p, vlen, voff);
++		qmx_split_frames++;
++		s += psize;
++		s_len -= psize;
++	}
++}
++
++'@ }
++    ,@{ Old = @'
++	uint16_t len = 0;
++	uint16_t offset = 0;
++
++	/* Drop packet if no processing needed */
++	if (!is_valid_sdio_rx_packet(buf, &len, &offset)) {
++'@; New = @'
++	uint16_t len = 0;
++	uint16_t offset = 0;
++
++	/* QMX_SDIO_RX_SPLIT: a read can hold more than one frame (see
++	 * qmx_sdio_push_stream). Peek at the first header WITHOUT validating it
++	 * (validation may rewrite it): if another frame follows, copy every frame
++	 * out in order and release this buffer. */
++	{
++		const struct esp_payload_header *h0 = (const struct esp_payload_header *)buf;
++		uint32_t first = (uint32_t)le16toh(h0->len) + le16toh(h0->offset);
++		if (le16toh(h0->offset) == sizeof(struct esp_payload_header) &&
++		    le16toh(h0->len) && first <= buf_len &&
++		    buf_len - first >= sizeof(struct esp_payload_header)) {
++			const struct esp_payload_header *h1 =
++				(const struct esp_payload_header *)(buf + first);
++			if (le16toh(h1->len) && le16toh(h1->offset) == sizeof(struct esp_payload_header)) {
++				qmx_split_bundles++;
++				qmx_sdio_push_stream(buf, buf_len);
++				sdio_buffer_free(buf);
++				return ESP_OK;
++			}
++		}
++	}
++
++	/* Drop packet if no processing needed */
++	if (!is_valid_sdio_rx_packet(buf, &len, &offset)) {
++'@ }
++    ,@{ Old = @'
++				if (sdio_oversize_drain_buf) {
++					uint32_t d_left = len_from_slave;
++'@; New = @'
++				/* QMX_SDIO_RX_SPLIT: keep what is drained, in PSRAM (never DMA). */
++				if (!qmx_split_stream)
++					qmx_split_stream = (uint8_t *)heap_caps_malloc(
++						64u * (uint32_t)ESP_RX_BUFFER_SIZE,
++						MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
++				if (sdio_oversize_drain_buf) {
++					uint32_t d_left = len_from_slave;
++'@ }
++    ,@{ Old = @'
++						d_left -= chunk;
++						drained += chunk;
++'@; New = @'
++						if (qmx_split_stream)
++							memcpy(qmx_split_stream + drained, sdio_oversize_drain_buf, chunk);
++						d_left -= chunk;
++						drained += chunk;
++'@ }
++    ,@{ Old = @'
++			sdio_rx_byte_count = (sdio_rx_byte_count + drained) % ESP_RX_BYTE_MAX;
++			SDIO_DRV_UNLOCK();
++			if (!drained)
++				g_h.funcs->_h_msleep(1);
++			continue;
++'@; New = @'
++			sdio_rx_byte_count = (sdio_rx_byte_count + drained) % ESP_RX_BYTE_MAX;
++			SDIO_DRV_UNLOCK();
++			/* QMX_SDIO_RX_SPLIT: a complete drain is a burst of whole frames -
++			 * deliver them instead of throwing them away. A partial drain (a
++			 * read failed part-way) is still discarded: its tail is unknown. */
++			if (qmx_split_stream && drained && drained == len_from_slave) {
++				qmx_split_bundles++;
++				qmx_sdio_push_stream(qmx_split_stream, drained);
++			} else if (drained) {
++				qmx_split_drops++;
++			}
++			if (!drained)
++				g_h.funcs->_h_msleep(1);
++			continue;
++'@ }
++    ,@{ Old = @'
++			ESP_LOGW(TAG, "SDIO RX oversize: len=%lu host_cnt=%lu slave_reg=%lu - draining to recover",
++					(unsigned long)len_from_slave, (unsigned long)sdio_rx_byte_count,
++					(unsigned long)slave_reg);
++'@; New = @'
++			/* QMX_SDIO_RX_SPLIT: with the burst now delivered this is routine
++			 * under a sustained stream, so report it at most every 5 s with
++			 * running totals rather than per event (it was flooding the log
++			 * several times a second). */
++			{
++				static int64_t qmx_last_oversize_log_us;
++				static uint32_t qmx_oversize_since_log;
++				int64_t now_us = esp_timer_get_time();
++				qmx_oversize_since_log++;
++				if (now_us - qmx_last_oversize_log_us >= 5000000LL) {
++					ESP_LOGW(TAG, "SDIO RX oversize: len=%lu host_cnt=%lu slave_reg=%lu - "
++							"draining (x%lu in 5 s); split: %lu bundles, %lu frames delivered, %lu dropped",
++							(unsigned long)len_from_slave, (unsigned long)sdio_rx_byte_count,
++							(unsigned long)slave_reg, (unsigned long)qmx_oversize_since_log,
++							(unsigned long)qmx_split_bundles, (unsigned long)qmx_split_frames,
++							(unsigned long)qmx_split_drops);
++					qmx_last_oversize_log_us = now_us;
++					qmx_oversize_since_log = 0;
++				}
++			}
++'@ }
++    ,@{ Old = @'
++static uint8_t *sdio_oversize_drain_buf = NULL;
++
++'@; New = @'
++static uint8_t *sdio_oversize_drain_buf = NULL;
++/* QMX_SDIO_RX_SPLIT: PSRAM copy of a drained burst, split into frames afterwards. */
++static uint8_t *qmx_split_stream = NULL;
++
++'@ }
++)
++
++foreach ($p in $pairs) {
++    $old = $p.Old -replace "`r`n", "`n"
++    $new = $p.New -replace "`r`n", "`n"
++    $n = ([regex]::Matches($content, [regex]::Escape($old))).Count
++    if ($n -ne 1) {
++        Write-Host "Anchor found $n times (expected 1) - esp_hosted or the recovery patch changed; patch by hand and update this script:" -ForegroundColor Red
++        Write-Host ($old.Substring(0, [Math]::Min(160, $old.Length)))
++        exit 1
++    }
++    $content = $content.Replace($old, $new)
++}
++
++[System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
++Write-Host "Patched sdio_drv.c: multi-frame SDIO reads are split and delivered, not dropped." -ForegroundColor Green
++Write-Host "  $target"
+diff --git a/tools/patches/apply_httpd_ws_dead_socket_close.ps1 b/tools/patches/apply_httpd_ws_dead_socket_close.ps1
+index fd0acefc..8237bb89 100644
+--- a/tools/patches/apply_httpd_ws_dead_socket_close.ps1
++++ b/tools/patches/apply_httpd_ws_dead_socket_close.ps1
+@@ -67,6 +67,11 @@ $old = @"
+         return ESP_OK;
+ "@
+ 
++# Match the file's own line endings: this script is CRLF (so $old is too), an
++# IDF tree checked out on Windows is CRLF, but on macOS/Linux it is LF.
++$eol = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
++$old = ($old -replace "`r`n", "`n") -replace "`n", $eol
++
+ if ($text -notmatch [regex]::Escape($old)) {
+     Write-Error "httpd_ws.c does not contain the expected block - IDF version drift? Patch NOT applied."
+ }
+@@ -87,6 +92,7 @@ $new = @"
+         return ESP_FAIL;
+ "@
+ 
++$new  = ($new -replace "`r`n", "`n") -replace "`n", $eol
+ $text = $text.Replace($old, $new)
+ Set-Content -LiteralPath $file -Value $text -NoNewline -Encoding UTF8
+ Write-Output "Patched httpd_ws.c: a dead WS socket now closes instead of spinning."
+-- 
+2.43.0
+
