@@ -112,6 +112,19 @@ void ft8_screen_view_nudge_confirm(int delta);
  * that changes the sub-mode can keep the screen honest. */
 void ft8_screen_view_js8_tabs_refresh(void);
 
+/* Repaint the big MODE label. It names the JS8 SUBMODE when that is not
+ * Normal ("JS8 TURBO"), because a non-Normal submode decodes nothing from the
+ * Normal stations everyone runs and is persisted across reboots - Ryan KK6DZB
+ * lost JS8 entirely to it and the screen still said "MODE: JS8". Call it from
+ * anywhere that changes the submode: the drawer picker and /api/cmd. */
+void ft8_screen_view_refresh_mode_label(void);
+
+/* Flush the JS8 conversation from the browser - the Tab5 tab bar's Flush has
+ * always done this and the web page had no equivalent (Ryan KK6DZB,
+ * 2026-10-14). Records the request only; the LVGL tick clears and repaints,
+ * so both surfaces run the one code path. */
+void ft8_screen_view_request_js8_flush(void);
+
 /* Which JS8 pane is showing. Reported in /api/status so the capture and the
  * API can say what is on the screen without asking the operator. */
 bool ft8_screen_view_js8_tab_is_conversation(void);

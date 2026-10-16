@@ -26,6 +26,7 @@
 #include "ui/gps_status_view.h" // the dev "gps_view" action
 #include "ft8_screen_view.h"  // ft8_screen_view_is_active
 #include "js8_chat.h"      // the JS8 conversation store, reported in /api/status
+#include "js8_submode.h"   // the submode table and the one refusal rule
 #include "ui/js8_page.h"   // the conversation grid, composed for /api/js8
 #include "ft8_tx.h"
 #include "js8_ftx.h"
@@ -253,6 +254,12 @@ static void add_ft8_tx_status(cJSON *root)
         cJSON_AddBoolToObject(f,   "ftx_active", run);
         cJSON_AddNumberToObject(f, "ftx_sent",   run ? sent + 1 : 0);
         cJSON_AddNumberToObject(f, "ftx_total",  total);
+        /* ⭐ THE WORDS GOING OUT, not just "3 of 7" - Ryan KK6DZB after a
+         * real QSO. Empty when nothing is being sent, so the page can leave
+         * its line alone rather than printing a blank one. */
+        char ftxt[80];
+        js8_ftx_frame_text(ftxt, sizeof(ftxt));
+        cJSON_AddStringToObject(f, "ftx_frame_text", ftxt);
         char res[64];
         ft8_screen_view_freetext_result(res, sizeof(res));
         cJSON_AddStringToObject(f, "ftx_result", res);
@@ -672,6 +679,14 @@ static esp_err_t status_handler(httpd_req_t *req)
                  * copies of "where does the next character go" drift. */
                 cJSON_AddNumberToObject(c, "col", cw_decode_line_col());
                 cJSON_AddNumberToObject(c, "wpm", cw_decode_wpm());
+                /* ⭐ THE GRID SHAPE, SENT. The browser had COLS = 72 and two
+                 * hardcoded row elements, so CW_LINE_ROWS 2 -> 4 would have
+                 * left it drawing half the line with no error anywhere - the
+                 * same silent truncation the comment above records from the
+                 * evening the two-line pane shipped, in the other direction.
+                 * One definition, and the page draws what it is told. */
+                cJSON_AddNumberToObject(c, "rows", CW_LINE_ROWS);
+                cJSON_AddNumberToObject(c, "cols", CW_LINE_COLS);
                 cJSON_AddItemToObject(root, "cw", c);
             }
         }
@@ -766,6 +781,20 @@ static esp_err_t status_handler(httpd_req_t *req)
             else if (strstr(m, "AM"))   bw = 6000;
             else if (strstr(m, "FM"))   bw = 10000;
             else                        bw = 2700;  // USB/LSB/DiGi
+        }
+        /* ⛔ IN AM THE RADIO'S FIGURE IS NOT OUR FILTER. The QMX has no
+         * selectable AM bandwidth - FW; is GET-only and answers 3200 for
+         * everything but CW - and Q9 hands us RAW I/Q, so the width that
+         * actually shapes the audio is the Tab5's own AM demod filter.
+         * The page read "BW 3200 Hz" in AM and could not change it: the
+         * same complaint Bryan N0LUF made about the glass before ui.c's
+         * AM branch landed - correct for the radio, useless to him.
+         *
+         * RF width, so twice the half-bandwidth the demodulator works
+         * in - the convention ui.c's am_bw[] list uses, and the one
+         * every amateur AM figure is quoted in. */
+        if (strstr(ui_get_mode_str(), "AM")) {
+            bw = (uint32_t)(rx_audio_get_am_half_bw_hz() * 2);
         }
         cJSON_AddNumberToObject(root, "passband_hz", (double)bw);
 
@@ -1633,7 +1662,24 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         cJSON *item = cJSON_GetObjectItem(root, "hz");
         if (cJSON_IsNumber(item)) {
             uint32_t bw = (uint32_t)item->valuedouble;
-            if (bw >= 1000) {
+            /* ⛔ AM IS OUR FILTER, NOT THE RADIO'S - nothing is written
+             * to the QMX here. Its AM bandwidth is fixed and is not in
+             * the I/Q path at all. Decided on the DEVICE rather than by
+             * the caller, so the browser, the glass and the drawer
+             * cannot disagree about what "set the bandwidth" means in
+             * AM; the browser used to be told "CW / SSB only" and had
+             * no way to set it at all.
+             *
+             * The list is RF widths, so halve it for the half-bandwidth
+             * the demodulator works in. The same two writes as ui.c's
+             * bw_preset_cb, which is what already works on the glass. */
+            if (strstr(ui_get_mode_str(), "AM")) {
+                int half = (int)bw / 2;
+                rx_audio_set_am_half_bw_hz(half);
+                settings_set_rxaud_am_half_bw_h100((uint8_t)(half / 100));
+                ESP_LOGI(TAG, "web: AM filter -> %u Hz RF (half %d)",
+                         (unsigned)bw, half);
+            } else if (bw >= 1000) {
                 cat_request_ssb_bandwidth(bw);  // SSB: three-write recipe via poll task
             } else {
                 cat_request_cw_passband(bw);    // CW: MMCW menu item (Kenwood FW is rejected)
@@ -1866,6 +1912,15 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         ft8_screen_view_request_js8_macro(0);
     } else if (action && strcmp(action, "js8_grid") == 0) {
         ft8_screen_view_request_js8_macro(1);
+    } else if (action && strcmp(action, "js8_flush") == 0) {
+        /* The browser's Flush. Ryan KK6DZB, 2026-10-14: "No flush button in
+         * the webUI?" - the Tab5's JS8 tab bar has had one all along. It
+         * empties the conversation the JS8 page draws; it does NOT touch the
+         * ADIF log, the decode list or anything on the air. Deferred to the
+         * LVGL tick so it is the same code path as the button. */
+        ft8_screen_view_request_js8_flush();
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
     } else if (action && strcmp(action, "js8_submode") == 0) {
         /* {"action":"js8_submode","submode":0|1|2|4} - JS8Call's own NSUBMODE:
          * 0 Normal, 1 Fast, 2 Turbo, 4 Slow.
@@ -1885,18 +1940,22 @@ static esp_err_t cmd_handler(httpd_req_t *req)
          * config file are writers this handler never sees. */
         cJSON *sm = cJSON_GetObjectItem(root, "submode");
         int want = cJSON_IsNumber(sm) ? sm->valueint : 0;
-        /* Armed counts as busy too, not just keyed: an armed request
-         * carries tones already built for the OLD submode. */
-        bool busy = ft8_qso_is_busy(NULL, 0) ||
-                    ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE;
         cJSON_Delete(root);
         httpd_resp_set_type(req, "application/json");
-        if (busy) {
-            httpd_resp_sendstr(req,
-                "{\"ok\":false,\"err\":\"busy - a QSO or burst is in progress\"}");
+
+        /* ⛔ ONE RULE, THREE CONTROLS. The busy test and the value list used
+         * to be written out here as well as in the drawer; js8_submode_set()
+         * owns both now, and it is also what repaints the Tab5's MODE label -
+         * Ryan KK6DZB set a submode from this page and then had no way to
+         * see, on the device, why JS8 had stopped decoding. */
+        const char *why = NULL;
+        if (!js8_submode_set((uint8_t)want, &why)) {
+            char err[160];
+            snprintf(err, sizeof(err), "{\"ok\":false,\"err\":\"%s\"}",
+                     why ? why : "refused");
+            httpd_resp_sendstr(req, err);
             return ESP_OK;
         }
-        settings_set_js8_submode((uint8_t)want);
         {
             char out[128];
             snprintf(out, sizeof(out),
@@ -2572,6 +2631,33 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                  "{\"ok\":%s,\"recording\":%s,\"samples\":%lu,\"capacity\":%lu,\"rate\":%d}",
                  ok ? "true" : "false", run ? "true" : "false",
                  (unsigned long)n, (unsigned long)cap, DSP_SAMPLE_RATE_HZ);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    } else if (action && strcmp(action, "web_audio") == 0) {
+        /* Start/stop demodulated audio on the WebSocket (Sam W7STF).
+         *   {"action":"web_audio","on":true}
+         *
+         * ⛔ HTTP AND NOT A WS TEXT MESSAGE, which is what
+         * docs/web-audio-feasibility.md specifies. The /ws handler registers
+         * handle_ws_control_frames = false and never calls
+         * httpd_ws_recv_frame() - it captures the fd on the handshake and
+         * returns so the single httpd worker is free. Nothing the browser
+         * sends on that socket is ever read, so {"audio":1} over the socket
+         * would have been silently ignored.
+         *
+         * Not persisted, and the WS session's end clears it: a closed tab must
+         * not leave the chain running. */
+        cJSON *jon = cJSON_GetObjectItem(root, "on");
+        if (jon && cJSON_IsBool(jon)) rx_audio_web_set_enabled(cJSON_IsTrue(jon));
+        char body[160];
+        snprintf(body, sizeof(body),
+                 "{\"ok\":true,\"on\":%s,\"rate\":%d,\"dropped\":%lu,"
+                 "\"speaker\":%s}",
+                 rx_audio_web_is_enabled() ? "true" : "false",
+                 RX_AUDIO_WEB_RATE_HZ,
+                 (unsigned long)rx_audio_web_dropped(),
+                 rx_audio_is_enabled() ? "true" : "false");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, body);
         return ESP_OK;
@@ -5217,6 +5303,22 @@ static esp_err_t js8_get_handler(httpd_req_t *req)
 
         cJSON_AddNumberToObject(root, "used", used);
         cJSON_AddNumberToObject(root, "count", have);
+
+        /* ⭐ MY OWN CALLSIGN, UPPER CASED, so the page can mark the lines
+         * that name me. Ryan KK6DZB, 2026-10-14: "Hight light your call sign
+         * if someone responds to you. (cant tell who is responding to CQ with
+         * out reading through a large list of HB)". Served rather than read
+         * from the settings form, because the JS8 pane polls /api/js8 and
+         * nothing else, and a callsign fetched on a different schedule is a
+         * second source of truth. Empty when none is set. */
+        {
+            qmx_settings_t qs;
+            settings_load_all(&qs);
+            char me[FT8_CALL_MAX_LEN] = {0};
+            for (size_t i = 0; i < sizeof(me) - 1 && qs.my_callsign[i]; i++)
+                me[i] = (char)toupper((unsigned char)qs.my_callsign[i]);
+            cJSON_AddStringToObject(root, "me", me);
+        }
 
         cJSON *lines = cJSON_AddArrayToObject(root, "lines");
         for (int r = 0; lines && r < JS8_PAGE_ROWS; r++) {

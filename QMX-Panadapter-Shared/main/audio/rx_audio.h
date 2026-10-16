@@ -62,6 +62,30 @@ bool rx_audio_is_enabled(void);
  * which is the part that was wrong. Ask this after enabling and say so. */
 bool rx_audio_restart_pending(void);
 
+// ---- Web audio (Sam W7STF, 2026-07-15) -------------------------------------
+// The browser listens to the SAME demodulated audio the speaker gets, taken
+// after the mode filter, the AGC, the squelch and the limiter and decimated to
+// mono 12 kHz. Not persisted: a listener who closes the page must not leave the
+// chain running for ever, so the WS session's end clears it.
+//
+// ⭐ IT DOES NOT NEED THE CODEC. rx_audio_set_enabled() is the SPEAKER; this is
+// independent of it and of rx_audio_restart_pending(), because the use case is
+// a Tab5 sitting silent in another room. The chain runs for either consumer.
+// True when EITHER the speaker or a browser is listening. This, not
+// rx_audio_is_enabled(), is what the background spot feeds gate on: their
+// transfers pause the WebSocket that carries the browser's audio.
+// ⛔ Enabling web audio MUTES the speaker - the operator's call, 2026-10-15:
+// "we do not need audio both places at once".
+bool     rx_audio_any_listener(void);
+void     rx_audio_web_set_enabled(bool en);
+bool     rx_audio_web_is_enabled(void);
+// Drain up to `max` samples at RX_AUDIO_WEB_RATE_HZ into dst; returns how many.
+int      rx_audio_web_read(int16_t *dst, int max);
+// Samples the producer overwrote because the reader fell behind - the one
+// number that says whether a break-up was the link or the device.
+uint32_t rx_audio_web_dropped(void);
+#define RX_AUDIO_WEB_RATE_HZ 12000
+
 // Output volume, 0..100 (persisted to NVS).
 void rx_audio_set_volume(uint8_t vol_0_100);
 uint8_t rx_audio_get_volume(void);
@@ -227,10 +251,82 @@ void rx_audio_take_diag(rx_audio_diag_t *out);
  * reported filter as a width) and +/-2400 (the chain's limit while AM shared
  * CW's decimation). */
 #define RX_AUDIO_AM_HALF_BW_HZ  3000
+
+/* ⛔ THE DECIMATION FACTORS LIVE HERE, NOT ONLY IN rx_audio.c, because
+ * test/am_demod_harness.c is the instrument that decides what they may be
+ * and it used to keep its OWN copies, with a comment claiming they matched.
+ * On 2026-10-15 AM moved from 4 to 2 and the harness went on measuring 4 -
+ * still passing, still printing the old ceiling. A test that cannot see the
+ * constant it is testing is not a test. One definition, both readers.
+ *
+ * NARROW is CW, CW-R, USB and LSB; AM runs at its own factor. Why they
+ * differ, and why CW must keep 8, is in rx_audio.c beside decim_for_mode(). */
+#define RX_AUDIO_DECIM_D_NARROW 8
+#define RX_AUDIO_DECIM_D_AM     4
+/* ⛔ D=2 IS PAID FOR BY WIDTH, NOT BY MODE. Measured on the bench,
+ * 2026-10-15, AM on 7.0393 MHz with the panadapter and waterfall up, the
+ * same screen and frequency on both builds:
+ *
+ *                 idle0      idle1
+ *     D=4         ~18.4%     ~24.6%
+ *     D=2         ~17.3%     0.0-0.5%   <- core 1 pinned
+ *
+ * The audio stayed clean at D=2 (LATE 2/455, clips=0), so it WORKS - and
+ * core 1 had nothing left for anything else to want. Running every AM
+ * listener at D=2 to give two of the eight widths their bandwidth was the
+ * wrong trade, and the first build of this change did exactly that.
+ *
+ * So: D=4 up to the width D=4 can actually carry, D=2 above it. The
+ * threshold is not a round number, it is the old measured ceiling -
+ * the D=4 skirt is -1.33 dB at 4800 Hz and -2.40 dB at 5000. */
+#define RX_AUDIO_DECIM_D_AM_WIDE    2
+#define RX_AUDIO_AM_D4_MAX_HALF_BW_HZ 4800
+
 /* What the chain can carry if a selectable width is ever added - measured, not
- * assumed (test/am_demod_harness.c). Nothing uses it yet; it is here so the
- * ceiling and the default are not the same number by accident again. */
-#define RX_AUDIO_AM_HALF_BW_MAX_HZ  4800
+ * assumed (test/am_demod_harness.c). Here so the ceiling and the default are
+ * not the same number by accident again.
+ *
+ * ⛔ 4800 IS A MEASUREMENT, NOT A BAND-PLAN NUMBER. On 2026-10-15 I raised
+ * it to 5000 so the list could reach 10.0 kHz, the legal maximum for amateur
+ * AM below 29 MHz, and wrote in this comment that 4800 had only ever been
+ * about broadcast channel spacing. The harness said otherwise. The D=4
+ * stage-1 decimator skirt:
+ *
+ *     4500 Hz  -0.42 dB
+ *     4800 Hz  -1.33 dB   <- here
+ *     5000 Hz  -2.40 dB
+ *     5200 Hz  -3.94 dB
+ *     5400 Hz  -6.05 dB
+ *
+ * Nyquist at D=4 is 6000 Hz and the arithmetic says ±5000 "fits" with 1 kHz
+ * to spare. The FILTER does not: at 5000 the top of the passband is the
+ * decimator's own skirt, 2.4 dB down, which is the exact failure this
+ * harness's header warns about - it does not fail, it quietly rolls off and
+ * nobody knows where. That paragraph stands: at D=4 the ceiling WAS 4800.
+ *
+ * ✅ 2026-10-15, LATER THE SAME DAY: AM MOVED TO D=2 AND THIS IS NOW
+ * 10000. Measured first, in the same harness, before any constant was
+ * touched - the stage-1 skirt at D=2:
+ *
+ *      5000 Hz  +0.01 dB      <- 10.0 kHz RF, the HF legal maximum
+ *     10000 Hz  -0.62 dB      <- 20.0 kHz RF, here
+ *     10500 Hz  -3.07 dB      <- and this is why it stops at 10000
+ *     12000 Hz  (Nyquist)
+ *
+ * ⛔ THE REASON IS SHORTWAVE BROADCAST, NOT A WIDER HAM ALLOWANCE.
+ * The 29.7 MHz argument the previous paragraph made is still correct and
+ * still irrelevant: a broadcaster runs ±5 kHz of audio on a 9 or 10 kHz
+ * channel, which is a 20 kHz RF signal in the middle of the HF bands this
+ * radio already receives. Operator, 2026-10-15: "AM BW on tab5/Web: where
+ * is 20 kHz for BC?". Dropping it on HF-only grounds was my error - SWL
+ * is an HF use.
+ *
+ * ⚠ D=2 HALVES THE DECIMATION, so stage 2 runs on twice the samples.
+ * The buffers are safe (they are all DSP_FFT_SIZE, the FULL rate, so a
+ * smaller D only uses MORE of an allocation that was always big enough -
+ * checked, not assumed), but the CPU cost is real and is paid only while
+ * AM is the mode. CW and SSB stay at D=8. */
+#define RX_AUDIO_AM_HALF_BW_MAX_HZ  10000
 
 /* The AM half-bandwidth actually in force. Settable, because the figure above
  * is a default and the right choice depends on the band: on a crowded evening

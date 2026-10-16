@@ -75,6 +75,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "ui_clock.h"
 #include "time_sync.h"
 #include "ft8_screen.h"
+#include "js8_submode.h"   /* the submode table and the one refusal rule */
 #include "ft8_screen_view.h"
 #include "wspr_screen_view.h"
 #include "wspr_rx.h"
@@ -1240,27 +1241,59 @@ static void bw_popup_open(void)
         lbl_list = ssb_lbl;
         n_bw = 4;
     } else if (strcmp(cur_mode, "AM") == 0) {
-        /* ⛔ IN AM THIS CONTROL IS NOT THE RADIO'S FILTER. The QMX's AM
-         * bandwidth is FIXED at 3.2 kHz and sits in the radio's own audio, not
-         * in the I/Q we demodulate from - so there is nothing on the radio to
-         * set, and until 2026-10-15 this function simply returned here and the
-         * operator got no popup at all: "the top bar BW is not reacting and
-         * stays at 3.2 kHz". Correct for the radio, useless to him.
+        /* ⛔ IN AM THIS CONTROL IS NOT THE RADIO'S FILTER. The QMX has one
+         * fixed audio filter, 150-3200 Hz, and it sits in the radio's own
+         * audio, not in the I/Q we demodulate from - so there is nothing on
+         * the radio to set, and this function used to simply return here and
+         * the operator got no popup at all: "the top bar BW is not reacting
+         * and stays at 3.2 kHz". Correct for the radio, useless to him.
          *
-         * These widths are the TAB5's AM filter. The labels are the RF width
-         * the operator sees on the waterfall (twice the half-bandwidth), which
-         * is the same convention the SSB figures above use.
+         * ⛔ THESE ARE WHOLE-SIGNAL WIDTHS. THE SSB LIST ABOVE IS NOT.
+         * SSB's 2.5k-3.2k are the RADIO's filter widths, which for a single
+         * sideband is the audio width. AM's are the occupied bandwidth of the
+         * signal, twice the half-bandwidth, which is what the waterfall shows
+         * and the convention every amateur AM figure is quoted in - "6.0 kHz"
+         * means 3.0 kHz per sideband. The two lists therefore look alike and
+         * are NOT the same quantity; an earlier version of this comment
+         * claimed they were, and a reply to a user repeated it.
          *
-         * ⚠ 9.6k IS OFFERED BUT IS NOT THE DEFAULT, and the reason is the
-         * band rather than the DSP: shortwave broadcast channels are spaced
-         * 5 kHz, so at 9.6k the filter edge sits about 45 Hz from the
-         * NEIGHBOUR's carrier (measured, test/am_demod_harness.c). It is there
-         * for a clear channel, where it buys a broadcaster's full 4.5 kHz. */
-        static const uint32_t am_bw[]  = {4000, 6000, 8000, 9600};
-        static const char    *am_lbl[] = {"4.0k","6.0k","8.0k","9.6k"};
+         * ⭐ THE LIST SPANS WHAT AMATEUR AM ACTUALLY USES, 2.0 to 10.0 kHz:
+         *   2.0-3.0k  brick-walled transmit audio, 1.0-1.5 kHz, to stay
+         *             copyable in heavy QRM. Sounds like a telephone line.
+         *   4.0k      narrow but intelligible.
+         *   6.0k      the standard, and what most commercial HF rigs hard-code
+         *             as their AM transmit maximum - 3.0 kHz per sideband.
+         *   8.0k      "hi-fi" HF, and the crowded-channel choice for shortwave
+         *             broadcast: 5 kHz channel spacing leaves a full 1 kHz
+         *             before the neighbour's carrier.
+         *   9.6k      the widest the D=4 chain carries flat, and a
+         *             broadcaster's full 4.5 kHz on a clear channel.
+         *
+         * ⛔ 10.0k IS MISSING AND IT IS NOT AN OVERSIGHT. That is the hard
+         * legal maximum for amateur AM below 29 MHz, so it belongs here, and
+         * on 2026-10-15 I added it: Nyquist at D=4 is 6000 Hz and ±5000
+         * "fits" with 1 kHz to spare. test/am_demod_harness.c falsified it
+         * the same hour - the stage-1 skirt is -1.33 dB at 4800 and -2.40 dB
+         * at 5000, so the top of a 10 kHz passband is the decimator rolling
+         * off, not the station. The limit is the FILTER, never Nyquist.
+         *
+         * ✅ 10.0k AND 20.0k ARE NOW IN, because AM decimates by 2 as of
+         * 2026-10-15 - a 24 kHz internal rate, Nyquist 12 kHz. 9.6k was the
+         * D=4 ceiling and stays as a STEP, not as a limit.
+         *
+         * ⛔ THE PARAGRAPH ABOVE ARGUED 20 kHz AWAY ON THE WRONG GROUND.
+         * It is true that the wide AM allowance above 29.7 MHz reaches only
+         * 6 m, and it is beside the point: a shortwave BROADCASTER runs
+         * ±5 kHz of audio on a 9 or 10 kHz channel, which is a 20 kHz RF
+         * signal sitting in the HF bands this radio already receives.
+         * Operator, 2026-10-15: "where is 20 kHz for BC?". SWL is an HF use
+         * and I dropped it on an HF-only argument. 10.0 kHz remains the
+         * legal maximum for amateur AM below 29 MHz. */
+        static const uint32_t am_bw[]  = {2000, 3000, 4000, 6000, 8000, 9600, 10000, 20000};
+        static const char    *am_lbl[] = {"2.0k","3.0k","4.0k","6.0k","8.0k","9.6k","10.0k","20.0k"};
         bw_list = am_bw;
         lbl_list = am_lbl;
-        n_bw = 4;
+        n_bw = 8;
     } else {
         return;
     }
@@ -3759,42 +3792,36 @@ static void drawer_dropdown_sleep_open_cb(lv_event_t *e);
  * dense (0,1,2,4 - 3 does not exist, 8 is Ultra, which this firmware does not
  * implement), so the index and the value are deliberately kept apart. */
 static lv_obj_t *s_js8sub_dd = NULL;
-static const uint8_t s_js8_submode_vals[] = { 0, 1, 2, 4 };
-#define N_JS8_SUBMODES ((int)(sizeof(s_js8_submode_vals)/sizeof(s_js8_submode_vals[0])))
 
 static void drawer_refresh_js8_submode(void)
 {
     if (!s_js8sub_dd) return;
-    uint8_t cur = settings_get_js8_submode();
-    uint32_t sel = 0;
-    for (int i = 0; i < N_JS8_SUBMODES; i++)
-        if (s_js8_submode_vals[i] == cur) { sel = (uint32_t)i; break; }
-    lv_dropdown_set_selected(s_js8sub_dd, sel);
+    lv_dropdown_set_selected(
+        s_js8sub_dd,
+        (uint32_t)js8_submode_index_of(settings_get_js8_submode()));
 }
 
 static void drawer_js8_submode_cb(lv_event_t *e)
 {
     lv_obj_t *dd = lv_event_get_target(e);
     uint32_t  i  = lv_dropdown_get_selected(dd);
-    if (i >= (uint32_t)N_JS8_SUBMODES) return;
 
-    /* ⛔ REFUSED MID-EXCHANGE, AND IT SAYS SO. Changing submode changes the
-     * physical layer, so it abandons whoever is being worked - and an armed
-     * request already carries tones built for the OLD submode. The API handler
-     * refuses on exactly the same test; a control that silently did nothing
-     * instead would read as a broken dropdown. */
-    if (ft8_qso_is_busy(NULL, 0) ||
-        ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE) {
-        ui_toast("Busy - finish or cancel the QSO first");
-        drawer_refresh_js8_submode();     /* snap back to what is really set */
+    /* ⛔ THE RULE IS js8_submode_set()'S, NOT THIS CONTROL'S. The refusal
+     * while a QSO or a burst is live was written out here, again in
+     * webserver.c, and a third copy was about to go into the JS8 screen's own
+     * picker. Three copies of a rule is how two surfaces end up disagreeing
+     * about whether a change was allowed.
+     *
+     * The reason IS shown: a control that silently did nothing would read as
+     * a broken dropdown. The list then snaps back to what is really set. */
+    const char *why = NULL;
+    if (!js8_submode_set(js8_submode_value((int)i), &why)) {
+        ui_toast(why ? why : "JS8 submode not changed");
+        drawer_refresh_js8_submode();
         return;
     }
-
-    settings_set_js8_submode(s_js8_submode_vals[i]);
-    /* The slot loop picks this up through ft8_op_mode_protocol() and rebuilds
-     * the monitor pool at the top of the next slot - nothing to do here. */
-    ESP_LOGI("ui", "JS8 submode -> %s",
-             ftx_protocol_label(ft8_op_mode_protocol()));
+    /* The MODE label, the monitor-pool rebuild and the log line are all
+     * js8_submode_set()'s job now. */
 }
 static void drawer_dropdown_bpregion_cb(lv_event_t *e);
 static void drawer_dropdown_port_a_mode_cb(lv_event_t *e);
@@ -4432,13 +4459,22 @@ static void wspr_tick_cb(lv_timer_t *t) { (void)t; wspr_screen_view_tick(); }
  *
  * The full scrollback belongs on the CW page; this is the glance-at-it line.
  * ------------------------------------------------------------------------ */
-static lv_obj_t *s_cw_strip;
-/* The same grid, same place, holding the OTHER pass - see cw_strip_paint(). */
-static lv_obj_t *s_cw_strip_prev;
-/* Row 2 of the grid - same pair again. Row 1 sits one line higher than the
- * single line used to, so the bottom edge is unchanged. */
-static lv_obj_t *s_cw_strip2;
-static lv_obj_t *s_cw_strip2_prev;
+/* ONE PAIR PER ROW, as arrays rather than named objects.
+ *
+ * ⛔ THE NAMED FORM DID NOT SURVIVE A ROW-COUNT CHANGE. It was
+ * s_cw_strip / _prev / s_cw_strip2 / s_cw_strip2_prev, and every place that
+ * touched them had to name all four - which is exactly the failure
+ * cw_strip_hide_all() was written for after Gyula HA3HZ was left with two
+ * lines of green text over the FT8 screen. Its own comment says "so a sixth
+ * object cannot be forgotten again"; an array is what makes that structural
+ * instead of a thing to remember. Sam W7STF asked for four rows, and four
+ * named pairs would have been eight statics and five more places to miss one.
+ *
+ * [0] is the TOP row, the one the prefix sits beside. The LAST row keeps the
+ * old single line's y, so the strip grows UPWARD and the bottom edge - just
+ * above the band plan - does not move whatever CW_LINE_ROWS becomes. */
+static lv_obj_t *s_cw_now[CW_LINE_ROWS];    /* this pass, cyan  */
+static lv_obj_t *s_cw_prev[CW_LINE_ROWS];   /* previous pass, green */
 static unsigned  s_cw_seen;          /* change detector - repaint only on new text */
 
 /* The line is a fixed grid of columns that WRAPS and overwrites itself, the way
@@ -4494,17 +4530,17 @@ static lv_obj_t *s_cw_prefix;
  * line goes through here so a sixth object cannot be forgotten again. */
 static void cw_strip_hide_all(void)
 {
-    if (s_cw_prefix)      lv_obj_add_flag(s_cw_prefix,      LV_OBJ_FLAG_HIDDEN);
-    if (s_cw_strip)       lv_obj_add_flag(s_cw_strip,       LV_OBJ_FLAG_HIDDEN);
-    if (s_cw_strip_prev)  lv_obj_add_flag(s_cw_strip_prev,  LV_OBJ_FLAG_HIDDEN);
-    if (s_cw_strip2)      lv_obj_add_flag(s_cw_strip2,      LV_OBJ_FLAG_HIDDEN);
-    if (s_cw_strip2_prev) lv_obj_add_flag(s_cw_strip2_prev, LV_OBJ_FLAG_HIDDEN);
+    if (s_cw_prefix) lv_obj_add_flag(s_cw_prefix, LV_OBJ_FLAG_HIDDEN);
+    for (int r = 0; r < CW_LINE_ROWS; r++) {
+        if (s_cw_now[r])  lv_obj_add_flag(s_cw_now[r],  LV_OBJ_FLAG_HIDDEN);
+        if (s_cw_prev[r]) lv_obj_add_flag(s_cw_prev[r], LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void cw_strip_tick_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_cw_strip) return;
+    if (!s_cw_now[0]) return;
 
     /* CW/CW-R only, and only on the panadapter - the FT8 and WSPR pages own
      * their own screen real estate and there is no CW to show there. */
@@ -4537,11 +4573,10 @@ static void cw_strip_tick_cb(lv_timer_t *t)
                 !s_drawer_open && !reader_view_is_active() &&
                 !help_triage_is_open() && !any_modal_open();
     if (!want) {
-        /* Unconditional, not gated on s_cw_strip's own flag: the row-2 pair can
-         * be visible while s_cw_strip is hidden, so testing one of the five
-         * says nothing about the other four. Five add_flag calls on an already
-         * hidden object cost nothing - LVGL does not invalidate when the flag
-         * is unchanged. */
+        /* Unconditional, not gated on any one object's own flag: a lower row's
+         * pair can be visible while the top row is hidden, so testing one of
+         * them says nothing about the rest. add_flag on an already hidden
+         * object costs nothing - LVGL does not invalidate an unchanged flag. */
         cw_strip_hide_all();
         return;
     }
@@ -4551,7 +4586,7 @@ static void cw_strip_tick_cb(lv_timer_t *t)
      * drift. This just asks for it. */
     unsigned total = cw_decode_total();
     bool fresh = (total != s_cw_seen);
-    if (!fresh && !lv_obj_has_flag(s_cw_strip, LV_OBJ_FLAG_HIDDEN)) return;
+    if (!fresh && !lv_obj_has_flag(s_cw_now[0], LV_OBJ_FLAG_HIDDEN)) return;
     s_cw_seen = total;
 
     /* Enough characters to fill the width at this font; the ring keeps the
@@ -4581,14 +4616,17 @@ static void cw_strip_tick_cb(lv_timer_t *t)
     lv_label_set_text_fmt(s_cw_prefix, CW_PREFIX_FMT, wtxt);
 
     if (tail[0] == '\0') {
-        lv_label_set_text(s_cw_strip, "listening...");
-        lv_obj_clear_flag(s_cw_strip, LV_OBJ_FLAG_HIDDEN);
+        /* The top row carries the word; every other object stands down, so
+         * nothing from a previous session is left behind it. */
+        lv_label_set_text(s_cw_now[0], "listening...");
+        for (int r = 0; r < CW_LINE_ROWS; r++) {
+            if (r && s_cw_now[r]) lv_obj_add_flag(s_cw_now[r], LV_OBJ_FLAG_HIDDEN);
+            if (s_cw_prev[r])     lv_obj_add_flag(s_cw_prev[r], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_clear_flag(s_cw_now[0], LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_cw_prefix, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_cw_prefix);
-        lv_obj_move_foreground(s_cw_strip);
-        if (s_cw_strip_prev)  lv_obj_add_flag(s_cw_strip_prev,  LV_OBJ_FLAG_HIDDEN);
-        if (s_cw_strip2)      lv_obj_add_flag(s_cw_strip2,      LV_OBJ_FLAG_HIDDEN);
-        if (s_cw_strip2_prev) lv_obj_add_flag(s_cw_strip2_prev, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_cw_now[0]);
         return;
     }
 
@@ -4632,26 +4670,28 @@ static void cw_strip_tick_cb(lv_timer_t *t)
         now_s[r][CW_LINE_COLS] = prev_s[r][CW_LINE_COLS] = '\0';
     }
 
-    lv_label_set_text(s_cw_strip, now_s[0]);
-    if (s_cw_strip_prev)  lv_label_set_text(s_cw_strip_prev,  prev_s[0]);
-    if (s_cw_strip2)      lv_label_set_text(s_cw_strip2,      now_s[1]);
-    if (s_cw_strip2_prev) lv_label_set_text(s_cw_strip2_prev, prev_s[1]);
-
-    lv_obj_t *const shown[] = { s_cw_strip_prev, s_cw_strip2, s_cw_strip2_prev };
-    for (size_t i = 0; i < sizeof(shown) / sizeof(shown[0]); i++) {
-        if (!shown[i]) continue;
-        lv_obj_clear_flag(shown[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(shown[i]);
+    for (int r = 0; r < CW_LINE_ROWS; r++) {
+        if (s_cw_now[r])  lv_label_set_text(s_cw_now[r],  now_s[r]);
+        if (s_cw_prev[r]) lv_label_set_text(s_cw_prev[r], prev_s[r]);
     }
-    lv_obj_clear_flag(s_cw_strip, LV_OBJ_FLAG_HIDDEN);
+
+    /* Raise the pairs before the prefix and the top row, so the ordering
+     * below is the one that ends up on screen. */
+    for (int r = 0; r < CW_LINE_ROWS; r++) {
+        lv_obj_t *const pair[] = { s_cw_now[r], s_cw_prev[r] };
+        for (size_t i = 0; i < sizeof(pair) / sizeof(pair[0]); i++) {
+            if (!pair[i]) continue;
+            lv_obj_clear_flag(pair[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(pair[i]);
+        }
+    }
     lv_obj_clear_flag(s_cw_prefix, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_cw_prefix);
-    lv_obj_move_foreground(s_cw_strip);
 }
 
 static void cw_strip_init(void)
 {
-    if (s_cw_strip) return;
+    if (s_cw_now[0]) return;
     /* TWO labels, not one with colour markup: the prefix and the text are
      * different colours and the text half is a fixed-width grid, so giving each
      * its own object keeps the column arithmetic honest and needs nothing from
@@ -4668,12 +4708,15 @@ static void cw_strip_init(void)
      * line's y, and row 1 lifts above it - so the strip grows UPWARD and the
      * bottom edge, which sits just above the band-plan, does not move. */
     const int row_px = (int)lv_font_get_line_height(&qmx_mono_25) + 8;
-    const int y_row1 = y_off - row_px;
+    /* The prefix sits beside the TOP row, which is CW_LINE_ROWS-1 rows above
+     * the old single line. Derived, not the literal one-row offset it used to
+     * be, or the prefix would stay on row 2 of 4. */
+    const int y_top = y_off - (CW_LINE_ROWS - 1) * row_px;
 
     s_cw_prefix = lv_label_create(lv_scr_act());
     lv_label_set_long_mode(s_cw_prefix, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_cw_prefix, CW_PREFIX_COLS * CW_COL_PX);
-    lv_obj_align(s_cw_prefix, LV_ALIGN_BOTTOM_LEFT, 0, y_row1);
+    lv_obj_align(s_cw_prefix, LV_ALIGN_BOTTOM_LEFT, 0, y_top);
     lv_obj_set_style_text_font(s_cw_prefix, &qmx_mono_25, 0);
     lv_obj_set_style_text_color(s_cw_prefix, lv_color_hex(0x30E060), 0);   /* green */
     lv_obj_set_style_bg_color(s_cw_prefix, lv_color_hex(0x000000), 0);
@@ -4686,78 +4729,57 @@ static void cw_strip_init(void)
     lv_obj_clear_flag(s_cw_prefix, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_cw_prefix, UI_FLAG_NOT_HOT);
 
-    s_cw_strip = lv_label_create(lv_scr_act());
-    lv_label_set_long_mode(s_cw_strip, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(s_cw_strip, CW_LINE_COLS * CW_COL_PX);
-    /* Starts exactly where the prefix ends - both are the same monospace font,
-     * so this is arithmetic rather than a guess. */
-    lv_obj_align(s_cw_strip, LV_ALIGN_BOTTOM_LEFT,
-                 4 + CW_PREFIX_COLS * CW_COL_PX, y_row1);
-    lv_obj_set_style_text_font(s_cw_strip, &qmx_mono_25, 0);
-    lv_obj_set_style_text_color(s_cw_strip, lv_color_hex(0x30E0E0), 0);   /* cyan */
-    lv_obj_set_style_bg_color(s_cw_strip, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(s_cw_strip, LV_OPA_70, 0);
-    lv_obj_set_style_pad_top(s_cw_strip, 4, 0);
-    lv_obj_set_style_pad_bottom(s_cw_strip, 4, 0);
-    lv_obj_set_style_pad_left(s_cw_strip, 0, 0);
-    lv_obj_set_style_pad_right(s_cw_strip, 4, 0);
-    lv_obj_add_flag(s_cw_strip, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_cw_strip, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(s_cw_strip, UI_FLAG_NOT_HOT);
-
-    /* The previous pass, in the prefix's green, on exactly the same grid. No
-     * background of its own - the cyan label underneath already draws one, and
-     * a second translucent black over it would darken half the line. */
-    s_cw_strip_prev = lv_label_create(lv_scr_act());
-    lv_label_set_long_mode(s_cw_strip_prev, LV_LABEL_LONG_CLIP);
-    lv_obj_set_width(s_cw_strip_prev, CW_LINE_COLS * CW_COL_PX);
-    lv_obj_align(s_cw_strip_prev, LV_ALIGN_BOTTOM_LEFT,
-                 4 + CW_PREFIX_COLS * CW_COL_PX, y_row1);
-    lv_obj_set_style_text_font(s_cw_strip_prev, &qmx_mono_25, 0);
-    lv_obj_set_style_text_color(s_cw_strip_prev, lv_color_hex(0x30E060), 0);   /* green */
-    lv_obj_set_style_bg_opa(s_cw_strip_prev, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_top(s_cw_strip_prev, 4, 0);
-    lv_obj_set_style_pad_bottom(s_cw_strip_prev, 4, 0);
-    lv_obj_set_style_pad_left(s_cw_strip_prev, 0, 0);
-    lv_obj_set_style_pad_right(s_cw_strip_prev, 4, 0);
-    lv_obj_add_flag(s_cw_strip_prev, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_cw_strip_prev, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(s_cw_strip_prev, UI_FLAG_NOT_HOT);
-
-    /* ROW 2, the pair again, at the old single-line y.
+    /* ONE LOOP FOR EVERY ROW. Each row is a this-pass/previous-pass pair on
+     * the same grid at the same y; only the TOP row has a prefix beside it.
      *
-     * ⛔ INDENTED TO THE SAME x AS ROW 1's TEXT - 4 + CW_PREFIX_COLS columns -
-     * even though there is no prefix label beside it. That indent is the whole
-     * point: the text wraps from the end of row 1 to the start of row 2, and if
-     * the two grids did not line up vertically the wrap would read as a jump
-     * rather than a continuation. */
-    struct { lv_obj_t **obj; uint32_t colour; } row2[] = {
-        { &s_cw_strip2,      0x30E0E0 },   /* this pass, cyan, as row 1 */
-        { &s_cw_strip2_prev, 0x30E060 },   /* the previous pass, green */
-    };
-    for (size_t i = 0; i < sizeof(row2) / sizeof(row2[0]); i++) {
-        lv_obj_t *l = lv_label_create(lv_scr_act());
-        *row2[i].obj = l;
-        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(l, CW_LINE_COLS * CW_COL_PX);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 4 + CW_PREFIX_COLS * CW_COL_PX, y_off);
-        lv_obj_set_style_text_font(l, &qmx_mono_25, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(row2[i].colour), 0);
-        /* Only the first of the pair paints a background, for the reason the
-         * row-1 pair already documents: two translucent blacks would darken it. */
-        if (i == 0) {
-            lv_obj_set_style_bg_color(l, lv_color_hex(0x000000), 0);
-            lv_obj_set_style_bg_opa(l, LV_OPA_70, 0);
-        } else {
-            lv_obj_set_style_bg_opa(l, LV_OPA_TRANSP, 0);
+     * ⛔ EVERY ROW IS INDENTED TO THE SAME x - 4 + CW_PREFIX_COLS columns -
+     * even though only the top one has a prefix label there. That indent is the
+     * whole point: the text wraps from the end of one row to the start of the
+     * next, and if the grids did not line up vertically the wrap would read as
+     * a jump rather than a continuation. */
+    for (int r = 0; r < CW_LINE_ROWS; r++) {
+        /* The LAST row keeps the old single line's y and earlier rows stack
+         * upward, so the bottom edge never moves when CW_LINE_ROWS changes. */
+        const int y_r = y_off - (CW_LINE_ROWS - 1 - r) * row_px;
+        struct { lv_obj_t **obj; uint32_t colour; } pair[] = {
+            { &s_cw_now[r],  0x30E0E0 },   /* this pass, cyan */
+            { &s_cw_prev[r], 0x30E060 },   /* the previous pass, green */
+        };
+        for (size_t i = 0; i < sizeof(pair) / sizeof(pair[0]); i++) {
+            lv_obj_t *l = lv_label_create(lv_scr_act());
+            *pair[i].obj = l;
+            lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
+            lv_obj_set_width(l, CW_LINE_COLS * CW_COL_PX);
+            /* Starts exactly where the prefix ends - both are the same
+             * monospace font, so this is arithmetic rather than a guess. */
+            lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT,
+                         4 + CW_PREFIX_COLS * CW_COL_PX, y_r);
+            lv_obj_set_style_text_font(l, &qmx_mono_25, 0);
+            lv_obj_set_style_text_color(l, lv_color_hex(pair[i].colour), 0);
+            /* Only the first of the pair paints a background: the two are
+             * DISJOINT overlays on one grid (each blanks the other's columns),
+             * and a second translucent black over the first would darken half
+             * the line. Drawing them as separate labels rather than one
+             * recoloured label is deliberate - LVGL 9.2 has no label recolour,
+             * and two glyphs at the same position in different colours leave an
+             * anti-aliased fringe of the one underneath. */
+            if (i == 0) {
+                lv_obj_set_style_bg_color(l, lv_color_hex(0x000000), 0);
+                lv_obj_set_style_bg_opa(l, LV_OPA_70, 0);
+            } else {
+                lv_obj_set_style_bg_opa(l, LV_OPA_TRANSP, 0);
+            }
+            lv_obj_set_style_pad_top(l, 4, 0);
+            lv_obj_set_style_pad_bottom(l, 4, 0);
+            lv_obj_set_style_pad_left(l, 0, 0);
+            lv_obj_set_style_pad_right(l, 4, 0);
+            lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+            /* ⛔ Not clickable. These sit over the waterfall, and the
+             * waterfall is tap-to-tune - a label that ate those taps would be a
+             * bug, not a feature. */
+            lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_flag(l, UI_FLAG_NOT_HOT);
         }
-        lv_obj_set_style_pad_top(l, 4, 0);
-        lv_obj_set_style_pad_bottom(l, 4, 0);
-        lv_obj_set_style_pad_left(l, 0, 0);
-        lv_obj_set_style_pad_right(l, 4, 0);
-        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(l, UI_FLAG_NOT_HOT);
     }
 
     /* 4 Hz: fast enough that text does not arrive in visible clumps, slow
@@ -14713,12 +14735,9 @@ static void drawer_build(void)
         lv_obj_align(js_hdr, LV_ALIGN_TOP_LEFT, 0, 0);
 
         s_js8sub_dd = lv_dropdown_create(sec);
-        /* Order matches s_js8_submode_vals[]. */
-        lv_dropdown_set_options(s_js8sub_dd,
-                                "Normal - 15 s\n"
-                                "Fast - 10 s\n"
-                                "Turbo - 6 s\n"
-                                "Slow - 30 s");
+        /* The list comes from js8_submode.c, which the JS8 screen's own
+         * picker and the API read too - one table, three controls. */
+        lv_dropdown_set_options(s_js8sub_dd, js8_submode_options_lvgl());
         lv_obj_set_size(s_js8sub_dd, DRAWER_W - 32, 50);
         lv_obj_align(s_js8sub_dd, LV_ALIGN_TOP_LEFT, 0, 40);
         lv_obj_set_style_text_font(s_js8sub_dd, &lv_font_montserrat_28, 0);

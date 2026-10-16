@@ -1,4 +1,4 @@
-# NAS kit - rebuild QMX-Panadapter-NAS on each new upstream release
+# Rebuild QMX-Panadapter-NAS on each new upstream release
 
 `make-qmx-panadapter-nas.sh` clones https://github.com/SteffenLav/qmx-panadapter,
 checks out its newest release tag and applies the NAS ("network radio")
