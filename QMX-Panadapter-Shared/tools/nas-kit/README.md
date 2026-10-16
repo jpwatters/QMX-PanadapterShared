@@ -10,21 +10,20 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series for upstream **v1.19.0** (26 patches), built,
-  flashed and marked tested on the Tab5 as v1.19.0-NAS. Porting the previous
-  series to v1.19.0 needed three changes by hand:
+* `patches/` - the NAS series (27 patches). It applies to upstream **v1.20.0** as it
+  is; v1.20.0-NAS was built, flashed and marked tested on the Tab5 on 2026-10-15.
+  Each build writes the release into the README's Version line, the CMake
+  version fallback and the relay README, so they name the release they were
+  built on. The last port that needed hand work (2026-10-14) changed three things:
   * the relay's settings bit is DIRTY_RELAY **142** (upstream took 140 for
     DIRTY_JS8_SUBMODE and 141 for DIRTY_RXA_AMBW; check_dirty_bits is clean);
   * the Radio source drawer section is id **51** (upstream took 50 for the JS8
     submode), N_DRAWER_SECTIONS 52;
   * CMakeLists.txt keeps both upstream's configure-on-commit block and the -NAS
     version block.
-  Then: **0022** names v1.19.0 in the version fallback, **0023** the front-page
-  README (version, features, build steps), **0024-0025** the one project PDF,
-  M5StackTab5QMX+SharedOverNetwork.pdf, **0026** the Mac scripts' usage examples.
-  Checked in the cloud: the series applies to a clean v1.19.0 with git am --3way,
-  the changed firmware files compile with ESP-IDF 5.4.4, and check_dirty_bits,
-  check_web, check_webui, check_docs and check_unattended_tx are clean.
+  Later patches: **0022** the version fallback, **0023** the front-page README
+  (version, features, build steps), **0024-0025** the one project PDF,
+  **0026** the Mac scripts' usage examples, **0027** the project PDF for v1.20.0-NAS.
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.
@@ -44,7 +43,7 @@ cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
 bash make-qmx-panadapter-nas.sh --mark-tested  # it works: copy NAS -> Shared
 ```
 
-Other options: `--ref v1.19.0` (a specific tag, branch or commit),
+Other options: `--ref vX.Y.Z` (a specific tag, branch or commit),
 `--force` (rebuild although NAS is already on that release).
 
 * **Shared only changes on `--mark-tested`.** A new upstream release that does
@@ -63,9 +62,9 @@ Other options: `--ref v1.19.0` (a specific tag, branch or commit),
 * Each tree holds `.qmx-nas-build` (release, upstream commit, patch-series
   checksum, build time) and, once tested, `.qmx-nas-tested`. Both are excluded
   from `git status`.
-* Builds report the upstream release plus `-NAS`, e.g. `v1.19.0-NAS`.
+* Builds report the upstream release plus `-NAS`, e.g. `v1.20.0-NAS`.
 
-Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on v1.19.0
+Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on the current release
 produced a tree identical to QMX-Panadapter-NAS (same git tree hash); a rebuild
 with `--force`, `--mark-tested` and `--status` run from the copy inside
 QMX-Panadapter-NAS (and `--status` from inside Shared) behave as above. On the

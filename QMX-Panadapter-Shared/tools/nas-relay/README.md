@@ -149,7 +149,7 @@ It uses the ESP-IDF in `~/esp/esp-idf` (v5.4.4) and an installed PowerShell
 own Python out of ESP-IDF's way, applies and checks all patches, builds, and
 does a normal flash (settings kept). Logs go to `build/mac-build-flash.log`.
 The firmware reports itself as the release it is based on plus `-NAS`, e.g.
-`v1.19.0-NAS`.
+`v1.20.0-NAS`.
 
 ## 3. PC software on QMX port 3 (optional)
 

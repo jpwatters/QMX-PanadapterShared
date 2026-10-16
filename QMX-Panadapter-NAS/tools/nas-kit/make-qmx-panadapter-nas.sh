@@ -3,7 +3,7 @@
 # QMX-Panadapter from the upstream repository plus this kit's patch series.
 #
 #   bash make-qmx-panadapter-nas.sh                 newest upstream release -> ~/src/QMX-Panadapter-NAS
-#   bash make-qmx-panadapter-nas.sh --ref v1.19.0   a specific upstream tag (or branch/commit)
+#   bash make-qmx-panadapter-nas.sh --ref vX.Y.Z    a specific upstream tag (or branch/commit)
 #   bash make-qmx-panadapter-nas.sh --force         rebuild even if NAS is already on that release
 #   bash make-qmx-panadapter-nas.sh --mark-tested   after flashing and testing NAS on the hardware:
 #                                                   copy it to ~/src/QMX-Panadapter-Shared
@@ -26,9 +26,9 @@
 # Nothing is deleted. A NAS or Shared folder that is replaced is moved to
 # ~/src/.qmx-panadapter-archive/<name>-<version>-<date>.
 #
-# The patches in ./patches are the NAS commits ported to upstream v1.19.0 on
-# 2026-10-14, exported with
-# `git format-patch --binary v1.19.0..<branch> -- . ':(exclude)tools/nas-kit'`.
+# The patches in ./patches are the NAS commits on top of the upstream release,
+# exported with
+# `git format-patch --binary <release>..<branch> -- . ':(exclude)tools/nas-kit'`.
 # Earlier series and the original work tree are archived in
 # ~/src/.qmx-panadapter-archive/; the script does not use them.
 # On a newer upstream release the patches are applied with git's 3-way merge; if upstream
@@ -93,6 +93,40 @@ hide_markers() {   # keep the marker files out of `git status`
     for f in "$STAMP" "$TESTED"; do
         grep -qx "/$f" "$ex" 2>/dev/null || printf '/%s\n' "$f" >> "$ex"
     done
+}
+
+stamp_version() {   # stamp_version <tree> <release> - name the release this folder was built on
+    local t="$1" ref="$2" n
+    n="$(ls "$PATCHES"/*.patch | wc -l | tr -d ' ')"
+    # README: only the NAS section at the top (before upstream's own text). Its
+    # "Version:" line is rewritten and every vX.Y.Z-NAS in it becomes <release>-NAS.
+    if [ -f "$t/README.md" ]; then
+        awk -v ref="$ref" -v last="$(printf '%04d' "$n")" '
+            /^The QMX exposes I\/Q audio/ { done = 1 }
+            !done && /^\*\*Version: / {
+                print "**Version: " ref "-NAS** \342\200\224 upstream QMX-Panadapter **" ref "** plus the NAS patch series 0001-" last " (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`."
+                next
+            }
+            !done { gsub(/v[0-9]+\.[0-9]+\.[0-9]+-NAS/, ref "-NAS") }
+            { print }' "$t/README.md" > "$t/README.md.new" && mv "$t/README.md.new" "$t/README.md" \
+            || die "cannot update README.md"
+    fi
+    # CMakeLists.txt: the NAS version block's examples and its fallback tag.
+    if [ -f "$t/CMakeLists.txt" ]; then
+        awk -v ref="$ref" '
+            /^# Network-radio build: report the release/ { blk = 1 }
+            blk { gsub(/v[0-9]+\.[0-9]+\.[0-9]+/, ref) }
+            blk && /^set\(PROJECT_VER / { blk = 0 }
+            { print }' "$t/CMakeLists.txt" > "$t/CMakeLists.txt.new" && mv "$t/CMakeLists.txt.new" "$t/CMakeLists.txt" \
+            || die "cannot update CMakeLists.txt"
+    fi
+    # The relay README's example of the version the Tab5 reports.
+    if [ -f "$t/tools/nas-relay/README.md" ]; then
+        awk -v ref="$ref" '{ gsub(/v[0-9]+\.[0-9]+\.[0-9]+-NAS/, ref "-NAS"); print }' \
+            "$t/tools/nas-relay/README.md" > "$t/tools/nas-relay/README.md.new" \
+            && mv "$t/tools/nas-relay/README.md.new" "$t/tools/nas-relay/README.md" \
+            || die "cannot update tools/nas-relay/README.md"
+    fi
 }
 
 latest_release() {   # newest vX.Y.Z tag upstream, compared numerically
@@ -171,6 +205,12 @@ build() {
         archive_move "$tmp" "failed"
         exit 2
     fi
+
+    # Name the release this folder was built on (README, CMake fallback, relay README).
+    stamp_version "$tmp" "$ref"
+    ( cd "$tmp" && git add README.md CMakeLists.txt tools/nas-relay/README.md && { git diff --cached --quiet || \
+          git -c user.name="$name" -c user.email="$email" commit --quiet -m "Version: $ref-NAS (README, CMake fallback, relay README)"; } ) \
+        || die "cannot commit the version"
 
     # The kit travels with the build (see the top of this file): scripts, README
     # and the current patch series, so the new folder can build the next version.

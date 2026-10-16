@@ -16,12 +16,12 @@
 #   4. Commits (only if something changed) and pushes.
 # Run it again after each new tested version; it updates the same repository.
 #
-# Sign-in: GitHub must accept a push from this Mac - e.g. run `gh auth login`
-# once, or use an SSH key and REPO_URL=git@github.com:jpwatters/QMX-PanadapterShared.git
+# Sign-in: an SSH key GitHub knows (`ssh -T git@github.com` greets you by name).
+# For HTTPS instead: REPO_URL=https://github.com/jpwatters/QMX-PanadapterShared.git and `gh auth login`.
 set -euo pipefail
 
 SRC="${QMX_SRC_DIR:-$HOME/src}"
-REPO_URL="${REPO_URL:-https://github.com/jpwatters/QMX-PanadapterShared.git}"
+REPO_URL="${REPO_URL:-git@github.com:jpwatters/QMX-PanadapterShared.git}"   # SSH key sign-in
 WORK="${WORK:-$SRC/QMX-PanadapterShared}"
 BRANCH="${BRANCH:-main}"
 FOLDERS="QMX-Panadapter-NAS QMX-Panadapter-Shared"
@@ -89,13 +89,25 @@ else
     git commit -q -m "Update QMX-Panadapter-NAS and QMX-Panadapter-Shared$(printf '\n%s' "$msg_lines")"
     say "Committed: $(git log -1 --format='%h')"
 fi
-say "Pushing to $REPO_URL ($BRANCH) ..."
-if ! git push -u origin "$BRANCH"; then
+# Push, retrying: a push over SSH that dies part way (a dropped connection or an
+# idle timeout during the upload) usually goes through on the next try, so the
+# script retries by itself instead of needing to be run again. SSH keepalives
+# stop a slow upload from being cut off as idle. Every attempt is logged.
+LOG="$SRC/.qmx-push.log"
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o ConnectTimeout=30}"
+ok=0
+for attempt in 1 2 3 4; do
+    say "Pushing to $(git remote get-url origin) ($BRANCH), attempt $attempt ..."
+    printf '\n=== %s push attempt %d\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$attempt" >> "$LOG"
+    if git push -u origin "$BRANCH" 2>&1 | tee -a "$LOG"; then ok=1; break; fi   # pipefail: git's status
+    [ "$attempt" -lt 4 ] && { say "  push failed - trying again in $((attempt * 10)) s"; sleep $((attempt * 10)); }
+done
+if [ "$ok" != 1 ]; then
     say ""
-    say "The push failed. Two usual causes:"
-    say "  - not signed in to GitHub: run 'gh auth login' (or use an SSH key), then run this again;"
-    say "  - the upload timed out (HTTP 408 / 'Operation timed out' / 'remote end hung up'):"
-    say "    a large first upload on a slow or unstable link. Push it in smaller pieces -"
+    say "The push failed 4 times (details in $LOG). Usual causes:"
+    say "  - GitHub does not accept this Mac's key: 'ssh -T git@github.com' should greet you by name;"
+    say "  - no network to github.com;"
+    say "  - a very large upload on a slow link: push it in smaller pieces -"
     say "    see 'Publishing to GitHub' in $(dirname "$0")/README.md - then use this script again."
     die "git push failed"
 fi
