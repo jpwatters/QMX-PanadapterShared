@@ -46,6 +46,7 @@ import select
 import signal
 import re
 import socket
+import struct
 import subprocess
 import sys
 import termios
@@ -421,6 +422,25 @@ def probe(args) -> int:
         ok &= good
         print("%s: %s -> %s" % ("ok  " if good else "FAIL", q.decode(), fmt(reply) or "(no reply)"))
     s.close()
+    # the listen-only I/Q copy the TCI server uses (relay port 7357)
+    try:
+        q = socket.create_connection((host, args.iq_port), CONNECT_TIMEOUT)
+        q.settimeout(3)
+        q.sendall(struct.pack("<BBH", 1, 0, 12) + b"QMXR/1 probe")
+        hdr = q.recv(4)
+        t, _, n = struct.unpack("<BBH", hdr) if len(hdr) == 4 else (0, 0, 0)
+        hello = q.recv(n) if n else b""
+        good = t == 1 and b"role=listen" in hello
+        print("%s: I/Q copy on %s:%d -> %s" % ("ok  " if good else "FAIL", host, args.iq_port,
+                                              fmt(hello) or "(no answer)"))
+        if args.tci:
+            ok &= good
+        q.close()
+    except OSError as e:
+        print("%s: I/Q copy on %s:%d: %s (the relay needs updating for TCI)" %
+              ("FAIL" if args.tci else "note", host, args.iq_port, e))
+        if args.tci:
+            ok = False
     print("PROBE %s" % ("PASSED" if ok else "FAILED"))
     return 0 if ok else 1
 
@@ -445,6 +465,14 @@ def main():
                    help="stay connected to the relay all the time")
     p.add_argument("--probe", action="store_true",
                    help="check the relay once (ID; FA; MD;) and exit")
+    p.add_argument("--tci", action="store_true",
+                   help="run as a TCI server for WS / WSJT-X / JTDX (receive and transmit audio "
+                        "included) instead of making a serial port")
+    p.add_argument("--tci-port", type=int, default=40001, help="TCI server port (default %(default)s)")
+    p.add_argument("--tci-listen", default="127.0.0.1",
+                   help="TCI server address (default %(default)s: this Mac only)")
+    p.add_argument("--iq-port", type=int, default=7357,
+                   help="relay port with the listen-only copy of the I/Q (default %(default)s)")
     p.add_argument("-v", "--verbose", action="store_true", help="log every byte")
     args = p.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -458,6 +486,27 @@ def main():
         sys.exit(0 if found else 1)
     if args.probe:
         sys.exit(probe(args))
+    if args.tci:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        try:
+            import qmx_tci
+        except ImportError as e:
+            log.error("TCI needs numpy (%s): run install-mac.sh again, or "
+                      "'/usr/bin/python3 -m pip install --user numpy'", e)
+            sys.exit(1)
+
+        def find_nas():
+            found = discover(udp_port=args.discovery_port)
+            if found:
+                log.info("found the NAS relay: QMXR! %s %d", *found[0])
+                return found[0][0]
+            if args.fallback_host:
+                log.warning("no relay answered QMXR?; using --fallback-host %s", args.fallback_host)
+                return args.fallback_host
+            log.warning("no relay answered QMXR? on UDP %d", args.discovery_port)
+            return None
+        qmx_tci.TciServer(args, find_nas).run()
+        return
     b = Bridge(args)
 
     def stop(*_):

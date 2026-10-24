@@ -1,0 +1,219 @@
+From 243f1413d6cb95d8403f56cb5f20fbf974b33e03 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Wed, 14 Oct 2026 17:12:57 -0500
+Subject: [PATCH 17/30] nas-relay: pause I/Q to the Tab5 from TX; to RX;
+
+The incoming I/Q (~190 KB/s) is what overflows the Tab5's WiFi SDIO link
+during a burst; on 2026-10-14 one such stall held the last symbols back by
+1.5 s. PINGs continue, so the Tab5's 3 s idle timeout is not tripped; a
+pause ends after 180 s even without RX;. Flag file iq-during-tx keeps
+streaming, for A/B tests. The transmit log records the mode per burst and
+tx_compare.py groups the result by it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ tools/nas-relay/README.md        |  9 +++++++
+ tools/nas-relay/qmx_nas_relay.py | 45 +++++++++++++++++++++++++++++++-
+ tools/tx-test/README.md          |  9 +++++++
+ tools/tx-test/tx_compare.py      | 15 +++++++++++
+ 4 files changed, 77 insertions(+), 1 deletion(-)
+
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index df496471..8cd0cd18 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -240,6 +240,15 @@ Notes:
+   every 2 s, so no restart is needed. CAT cannot switch a QMX *on*: while it is
+   off the radio is not on the USB bus at all, so there is nothing to talk to.
+ 
++* **I/Q paused while transmitting:** from the Tab5's `TX;` to its `RX;` the relay
++  stops sending I/Q to the Tab5 (pings continue). During a transmission the
++  spectrum is of no use, and the ~190 KB/s of incoming I/Q is what overloads
++  the Tab5's Wi-Fi link: on 2026-10-14 that held up one burst's last symbols
++  by 1.5 s. The spectrum and waterfall freeze for the length of each burst.
++  To keep streaming during transmit (for an A/B comparison), put a file named
++  `iq-during-tx` in the relay folder. Each burst in the transmit log records
++  which way it ran ("I/Q to Tab5 paused" or "streamed").
++
+ ## Troubleshooting
+ 
+ * **Touch dead, but the screen and stream keep running, even after a restart:**
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 3d798e8e..de1db7bf 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -1356,9 +1356,13 @@ class RadioManager:
+ #     catlog.off   present = no CAT log
+ #     allow-ps0    present = PS0; (power off) is passed to the radio.
+ #                  Absent (the default) = it is dropped and logged as BLOCKED.
++#     iq-during-tx present = keep streaming I/Q to the Tab5 while it transmits.
++#                  Absent (the default) = I/Q is paused from TX; to RX; - see
++#                  Session.tx_hold below.
+ # ---------------------------------------------------------------------------
+ 
+ CATLOG_MAX_BYTES = 40 * 1024 * 1024
++TX_IQ_HOLD_MAX_S = 180      # longest I/Q pause if RX; never comes (WSPR burst ~111 s)
+ RELAY_DIR = os.path.dirname(os.path.abspath(__file__))
+ 
+ 
+@@ -1370,7 +1374,7 @@ class Flags:
+         now = time.monotonic()
+         if now - self._t > 2.0:
+             self._t = now
+-            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0")}
++            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx")}
+         return self._v.get(name, False)
+ 
+ 
+@@ -1469,6 +1473,8 @@ class TxLog:
+         self.wall0 = 0.0         # NAS wall clock at key down (slot naming only)
+         self.count = 0
+         self.carry = b""
++        self.flags = None            # Flags, set by main(): records whether I/Q was paused
++        self.iq_paused = None
+         threading.Thread(target=self._writer, daemon=True, name="txlog").start()
+ 
+     # called on the Tab5 session thread, around radio.send_cat()
+@@ -1485,6 +1491,7 @@ class TxLog:
+                     self._finish(complete=False)
+                 self.burst = [(t_in, t_out, c)]
+                 self.wall0 = time.time() - (time.monotonic_ns() - t_out) / 1e9
++                self.iq_paused = (not self.flags.has("iq-during-tx")) if self.flags else None
+             elif self.burst is not None:
+                 if len(self.burst) < self.MAX_CMDS:
+                     self.burst.append((t_in, t_out, c))
+@@ -1539,6 +1546,8 @@ class TxLog:
+         if late:
+             parts.append("symbol timing vs schedule %+d..%+d ms" % (round(min(late)), round(max(late))))
+         parts.append("relay USB write max %.1f ms" % hold)
++        if self.iq_paused is not None:
++            parts.append("I/Q to Tab5 %s" % ("paused" if self.iq_paused else "streamed"))
+         out.append("; ".join(parts))
+         for ti, to, c in b:
+             out.append("  %9.1f ms  %s" % (ms(to), c))
+@@ -1575,14 +1584,44 @@ class Session:
+         self.dropped = 0
+         self.iq_bytes = 0
+         self.cat_carry = bytearray()
++        # I/Q pause during transmit. From the Tab5's TX; until its RX; the QMX
++        # is transmitting and its I/Q is of no use, yet it is ~190 KB/s of
++        # traffic INTO the Tab5 - the direction that overflows its WiFi
++        # chip's SDIO link ("SDIO RX oversize - draining"), and on 2026-10-14
++        # one of those stalled a burst's last symbols by 1.5 s. Pausing it
++        # leaves the link nearly idle while timing matters. PINGs continue, so
++        # the Tab5's 3 s idle timeout is not tripped. TX_IQ_HOLD_MAX_S caps a
++        # pause whose RX; never arrives (WSPR bursts are ~111 s).
++        self.tx_hold = False
++        self.tx_hold_t0 = 0.0
++        self.tx_held_frames = 0
+ 
+     def _put_ctl(self, data: bytes):
+         with self.wake:
+             self.ctl.append(data)
+             self.wake.notify()
+ 
++    def _tx_state(self, payload: bytes):
++        """Follow TX;/RX; in the Tab5's CAT stream to pause I/Q while keyed."""
++        for c in payload.split(b";"):
++            c = c.strip()
++            if c.startswith(b"TX"):
++                if not self.tx_hold and not self.mgr.flags.has("iq-during-tx"):
++                    self.tx_hold, self.tx_hold_t0, self.tx_held_frames = True, time.monotonic(), 0
++            elif c.startswith(b"RX") and self.tx_hold:
++                self.tx_hold = False
++                log.info("TX: I/Q to the Tab5 paused %.1f s (%d frames not sent)",
++                         time.monotonic() - self.tx_hold_t0, self.tx_held_frames)
++
+     # radio callbacks (libusb thread)
+     def _on_iq(self, s16: bytes):
++        if self.tx_hold:
++            if time.monotonic() - self.tx_hold_t0 < TX_IQ_HOLD_MAX_S:
++                self.tx_held_frames += 1
++                self.iq_acc.clear()          # restart on a clean frame when RX; comes
++                return
++            self.tx_hold = False
++            log.warning("TX: no RX; after %d s - I/Q to the Tab5 resumed anyway", TX_IQ_HOLD_MAX_S)
+         self.iq_acc += s16
+         fb = FRAME_PAIRS * 4
+         while len(self.iq_acc) >= fb:
+@@ -1655,6 +1694,7 @@ class Session:
+                     payload = guard_cat(payload, self.cat_carry, "T5", self.mgr)
+                     if not payload:
+                         continue
++                    self._tx_state(payload)
+                     radio.send_cat(payload)
+                     if self.mgr.txlog:
+                         self.mgr.txlog.cat(payload, t_in, time.monotonic_ns())
+@@ -2076,8 +2116,11 @@ def main():
+                  args.catlog_dir, RELAY_DIR)
+     log.info("PS0; (power off) is %s (flag file allow-ps0 in %s)",
+              "PASSED" if mgr.flags.has("allow-ps0") else "BLOCKED", RELAY_DIR)
++    log.info("I/Q to the Tab5 during transmit: %s (flag file iq-during-tx in %s)",
++             "STREAMED" if mgr.flags.has("iq-during-tx") else "PAUSED", RELAY_DIR)
+     if args.txlog_dir:
+         mgr.txlog = TxLog(args.txlog_dir)
++        mgr.txlog.flags = mgr.flags
+         log.info("transmit bursts are logged to %s/txlog-<date>.log", args.txlog_dir)
+     if args.selftest or args.selftest_only:
+         passed = selftest(mgr)
+diff --git a/tools/tx-test/README.md b/tools/tx-test/README.md
+index 8d9b7df7..0efd4fd1 100644
+--- a/tools/tx-test/README.md
++++ b/tools/tx-test/README.md
+@@ -86,3 +86,12 @@ Tab5's own figure looks normal.
+ 
+ Only transmissions from the Tab5 are logged. Transmissions from PC software on
+ port 7356 are not.
++
++## Does pausing I/Q during transmit help?
++
++The relay pauses I/Q to the Tab5 while it transmits (see the relay README). To
++compare, run one batch of bursts with the pause (the default) and one with a
++file named `iq-during-tx` in the relay folder. Stalls are rare, about 1 in 18
++bursts so far, so use 40–50 bursts per batch. `tx_compare.py` splits the result
++by mode and counts the stalls in each: a gap over 300 ms, or a Tab5 on-air time
++over 12,750 ms.
+diff --git a/tools/tx-test/tx_compare.py b/tools/tx-test/tx_compare.py
+index 2f07ae5e..d95cde9a 100644
+--- a/tools/tx-test/tx_compare.py
++++ b/tools/tx-test/tx_compare.py
+@@ -125,6 +125,8 @@ def parse_relay(paths):
+                         m = re.search(pat, line)
+                         if m:
+                             cur[key] = float(m.group(1))
++                    m = re.search(r"I/Q to Tab5 (paused|streamed)", line)
++                    cur["iq"] = m.group(1) if m else ""
+     for b in bursts:
+         period = 7.5 if 90 <= b.get("tones", 0) <= 110 else 15.0
+         b["period"] = period
+@@ -179,6 +181,8 @@ def main():
+         timing = "-"
+         if r and r.get("late_min") is not None:
+             timing = "%+d..%+d" % (r["late_min"], r["late_max"])
++        if r and r.get("iq"):
++            timing += "  IQ " + ("off" if r["iq"] == "paused" else "on")
+         flag = "" if r or not a.relay else ("  (no relay burst in this slot)" if not rs else "  (2+ relay bursts in this slot)")
+         if b["status"] != "complete":
+             flag += "  ABORTED"
+@@ -217,6 +221,17 @@ def main():
+         print()
+         print("%d of %d paired FT8 bursts reached the radio with every tone within 20 ms of schedule"
+               " and RF on-air within 20 ms of %d." % (len(pr) - len(bad), len(pr), FT8_ON_AIR_MS))
++        groups = {}
++        for b, r in pr:
++            groups.setdefault(r.get("iq") or "unknown", []).append((b, r))
++        if len(groups) > 1 or "paused" in groups:
++            print()
++            print("By I/Q during transmit (relay flag file iq-during-tx):")
++            for g, items in sorted(groups.items()):
++                stalls = sum(1 for b, r in items if (r.get("gap_max") or 0) > 300 or b["on_air"] > 12750)
++                print("  %-9s %3d bursts  stalls (gap > 300 ms or Tab5 on-air > 12750 ms): %d   "
++                      "median latest symbol %+.0f ms" % (g, len(items), stalls,
++                      statistics.median([r.get("late_max") or 0 for _, r in items])))
+     elif a.relay:
+         print("\nNo burst could be paired - check that both logs cover the same time and that the"
+               " Mac and the NAS clocks are set by NTP.")
+-- 
+2.43.0
+

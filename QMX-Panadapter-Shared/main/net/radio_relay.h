@@ -11,6 +11,8 @@
  *     u8 type | u8 flags | u16 len (LE) | payload
  *       1=HELLO 2=IQ 3=CAT 4=PING
  *       5=TERM_OPEN 6=TERM_STATUS 7=TERM_DATA 8=TERM_CLOSE   (relay says "term=1")
+ *       9=TX_SCHED 10=TX_ABORT 11=TX_DONE                    (relay says "txsched=1")
+ *       12=TX_LOCK                                           (relay says "txlock=1")
  *
  * IQ payloads are interleaved int16 LE I/Q pairs at 48 kHz, already scaled
  * exactly like the USB path's (s24 >> 8), and are pushed into the same audio
@@ -109,6 +111,18 @@ esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_u
 esp_err_t radio_relay_tx_abort(void);
 /* Wait for the relay's report that the burst (including key-up) is done. */
 bool      radio_relay_tx_wait_done(uint32_t timeout_ms, radio_relay_tx_result_t *out);
+
+/* ---- Transmitter lock (QMXR/1 "txlock=1") ---------------------------------
+ * The relay lets one device transmit at a time. While the Mac's TCI bridge is
+ * connected with a program that can transmit (WS / WSJT-X), the relay drops the
+ * Tab5's key-down (TX;, Tune, tones) and refuses its relay-timed bursts. It
+ * tells the Tab5 so with a TX_LOCK frame (u8 locked [+ reason]) right after its
+ * HELLO and whenever that changes, and every transmit path here refuses with
+ * RADIO_RELAY_TX_LOCKED_MSG instead of keying a radio that will not key.
+ * true while locked; why (optional) gets the relay's reason text. Always false
+ * over USB, or with an older relay that never sends TX_LOCK. */
+#define RADIO_RELAY_TX_LOCKED_MSG "TX locked: Another Device has the transmitter"
+bool radio_relay_tx_locked(char *why, size_t cap);
 
 /* Diagnostics for /api/relay. */
 uint32_t radio_relay_iq_pairs_total(void);

@@ -1,8 +1,9 @@
 # Rebuild QMX-Panadapter-NAS on each new upstream release
 
-`make-qmx-panadapter-nas.sh` clones https://github.com/SteffenLav/qmx-panadapter,
-checks out its newest release tag and applies the NAS ("network radio")
-commits in `patches/`.
+`make-qmx-panadapter-nas.sh` downloads the newest release tag of
+https://github.com/SteffenLav/qmx-panadapter (only that release, ~40 MB, not the
+whole history; a dropped connection is retried up to three times) and applies
+the NAS ("network radio") commits in `patches/`.
 
 **The kit travels with the build.** Every build copies this kit (the two scripts,
 this README and the current `patches/`) into `tools/nas-kit` of the new
@@ -10,20 +11,41 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (27 patches). It applies to upstream **v1.20.0** as it
-  is; v1.20.0-NAS was built, flashed and marked tested on the Tab5 on 2026-10-15.
-  Each build writes the release into the README's Version line, the CMake
-  version fallback and the relay README, so they name the release they were
-  built on. The last port that needed hand work (2026-10-14) changed three things:
-  * the relay's settings bit is DIRTY_RELAY **142** (upstream took 140 for
-    DIRTY_JS8_SUBMODE and 141 for DIRTY_RXA_AMBW; check_dirty_bits is clean);
-  * the Radio source drawer section is id **51** (upstream took 50 for the JS8
-    submode), N_DRAWER_SECTIONS 52;
-  * CMakeLists.txt keeps both upstream's configure-on-commit block and the -NAS
-    version block.
-  Later patches: **0022** the version fallback, **0023** the front-page README
-  (version, features, build steps), **0024-0025** the one project PDF,
-  **0026** the Mac scripts' usage examples, **0027** the project PDF for v1.20.0-NAS.
+* `patches/` - the NAS series (30 patches). It applies to upstream **v1.20.5** as it
+  is (ported 2026-10-23; not yet built or tested on the Tab5). v1.20.1-NAS was
+  marked tested on 2026-10-18 and v1.20.2-NAS built on 2026-10-21 with the
+  series before it, which is in git history and in Shared's kit. `SERIES_BASE`
+  in the script names the release the patches were made against. Each build
+  writes the release into the README's Version line, the CMake version fallback
+  and the relay README, so they name the release they were built on. The ports
+  that needed hand work:
+  * the relay's settings bit is DIRTY_RELAY **145** (upstream took 140-142 and,
+    in v1.20.3-v1.20.5, 143 for DIRTY_TXBAND_OFF and 144 for DIRTY_MY_STATE;
+    check_dirty_bits is clean, 14 free) - patch 0001;
+  * upstream now sends every CAT command through its own `cat_tx()`; the network
+    transport is a branch inside it (patch 0001), and upstream's new raw-CAT
+    door `cat_send_external_cmd()` checks for USB **or** network. The former
+    patch for the KS keyer-speed commands became empty and was dropped, so the
+    later patches moved down by one;
+  * the SNTP time is handed to a worker task (patch 0005) with its microseconds,
+    which upstream now uses, carried forward by the hand-over delay;
+  * the 10-burst test button sits next to upstream's new Skip button (patch 0015);
+  * the "TX locked" refusal sits after upstream's new band guard (T48) in the
+    FT8 pre-flight, Tune and web Tune (patch 0029);
+  * the Radio source drawer section is id **52**, N_DRAWER_SECTIONS **53** -
+    patch 0005; CMakeLists.txt keeps both upstream's configure-on-commit block
+    and the -NAS version block.
+  On v1.20.5 the host harnesses (`tools/run_harnesses.py`) give 57 passed, 2
+  failed (js8_submode, js8_wav), 1 skipped - the same as pristine upstream
+  v1.20.5; check_tx_guard, check_unattended_tx, check_dirty_bits, check_web,
+  check_webui and check_docs are clean.
+  Later patches: **0021** the version fallback, **0022** the front-page README
+  (version, features, build steps), **0023-0024** the one project PDF,
+  **0025** the Mac scripts' usage examples, **0026** the project PDF for v1.20.0-NAS,
+  **0027** the Mac TCI bridge for WS / WSJT-X / JTDX and the relay's I/Q copy on TCP 7357,
+  **0028** one transmitter at a time (the Tab5 is kept off while a TCI program is connected),
+  **0029** the Tab5 shows "TX locked: Another Device has the transmitter" and refuses to key,
+  **0030** the project PDF for v1.20.5-NAS.
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.
@@ -62,7 +84,7 @@ Other options: `--ref vX.Y.Z` (a specific tag, branch or commit),
 * Each tree holds `.qmx-nas-build` (release, upstream commit, patch-series
   checksum, build time) and, once tested, `.qmx-nas-tested`. Both are excluded
   from `git status`.
-* Builds report the upstream release plus `-NAS`, e.g. `v1.20.0-NAS`.
+* Builds report the upstream release plus `-NAS`, e.g. `v1.20.5-NAS`.
 
 Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on the current release
 produced a tree identical to QMX-Panadapter-NAS (same git tree hash); a rebuild

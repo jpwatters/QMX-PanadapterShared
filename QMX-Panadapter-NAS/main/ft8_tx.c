@@ -8,6 +8,8 @@
 #include "ft8_msg_guard.h"
 #include "ft8_status.h"
 #include "ft8_test.h"   // ft8_op_mode_get() - FT8/FT4 sub-mode
+#include "tx_band_guard.h"   // T48: refuse to key outside the region's allocation
+#include "ui/ui.h"      // ui_toast_ms - a TX refusal has to reach the screen
 
 #include <string.h>
 #include <stdio.h>
@@ -30,6 +32,7 @@
 
 #include "cat/cat.h"
 #include "net/radio_relay.h"
+#include "ui.h"          // ui_toast_ms - "TX locked" must reach the screen, like wspr_tx.c
 #include "storage/settings.h"
 
 static const char *TAG = "ft8_tx";
@@ -906,6 +909,16 @@ bool ft8_tx_arm(const ft8_tx_request_t *req, char *out_err, size_t out_err_len)
         return false;
     }
 
+    // Another device has the transmitter (the NAS relay's one-transmitter
+    // lock: the Mac's TCI program, e.g. WS, is connected). The relay would drop
+    // the key-down anyway; refusing here says why instead of "transmitting"
+    // a burst that never reaches the air.
+    if (radio_relay_tx_locked(NULL, 0)) {
+        if (out_err) snprintf(out_err, out_err_len, "%s", RADIO_RELAY_TX_LOCKED_MSG);
+        ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
+        return false;
+    }
+
     // The operator has released the radio to its own front panel. Arming here
     // would key it from under their hands mid-menu: the TX burst writes TX;/TA;
     // straight to the CDC pipe and does NOT go through the paused poll task, so
@@ -1266,7 +1279,30 @@ void ft8_tx_run(const ft8_tx_request_t *req)
     // receiving decoder. Invariant: start exactly on time, or not at all.
     // Skipped entirely in sim mode - there's no real radio mode to drift.
     const char *mode = sim ? "DiGi" : cat_get_mode_str();
-    if (strcmp(mode, "DiGi") != 0) {
+    /* ⛔ BAND GUARD (T48), in the same pre-flight and for the same stated
+     * reason: "start exactly on time, or not at all". An FT8 burst spans 8
+     * tones of 6.25 Hz (FT4: 4 of 20.83), so the top tone is base + 50 Hz at
+     * most - checked, because a dial at the top band edge puts the top tone
+     * outside while the base is inside. */
+    char band_err[160] = "";
+    char lock_why[128];
+    const uint32_t tx_dial = sim ? 0u : cat_get_frequency();
+    const bool band_ok = sim ? true
+        : tx_band_guard_allows(tx_dial + (uint32_t)req->audio_freq_hz,
+                               tx_dial + (uint32_t)req->audio_freq_hz + 50u,
+                               ftx_protocol_name(req->protocol),
+                               band_err, sizeof band_err);
+    if (!band_ok) {
+        ESP_LOGE(TAG, "TX aborted before key-up: %s", band_err);
+        ui_toast_ms(band_err, 15000);
+        ft8_status_set("%s", band_err);
+    } else if (!sim && radio_relay_tx_locked(lock_why, sizeof(lock_why))) {
+        // Locked after this burst was armed (the TCI program connected in the
+        // meantime). Not keyed at all - the relay would drop it anyway.
+        ESP_LOGW(TAG, "TX not keyed: " RADIO_RELAY_TX_LOCKED_MSG " (%s)", lock_why);
+        ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
+        ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG, 6000);
+    } else if (strcmp(mode, "DiGi") != 0) {
         ESP_LOGW(TAG, "TX aborted before key-up: mode drifted to '%s' (need DiGi)", mode);
     } else {
         ESP_LOGI(TAG, "TX burst starting (%s): '%s' base=%d Hz%s",
@@ -1551,6 +1587,13 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                 ESP_LOGI(TAG, "relay burst %s: %u/%d tones, RF on-air %lu ms, latest symbol %+ld ms (NAS clock)",
                          rr.status == 0 ? "complete" : rr.status == 1 ? "aborted" : "FAILED",
                          (unsigned)rr.tones_sent, nn, (unsigned long)rr.duration_ms, (long)rr.latest_ms);
+                if (rr.status == 2 && radio_relay_tx_locked(NULL, 0)) {
+                    // The relay refused the burst: the lock arrived between
+                    // the check above and the hand-over.
+                    ESP_LOGW(TAG, "relay refused the burst: " RADIO_RELAY_TX_LOCKED_MSG);
+                    ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
+                    ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG, 6000);
+                }
             } else {
                 ESP_LOGW(TAG, "no report from the relay for the burst - sending key-up from the Tab5");
             }
@@ -1626,6 +1669,12 @@ void ft8_tx_run(const ft8_tx_request_t *req)
         if (!sim && power_w >= 0.0f && swr > 4.0f) {
             ESP_LOGW(TAG, "SWR protection trip (SWR=%.2f) — cycling TX/RX to clear latch",
                      (double)swr);
+            /* ⚠ NOT band-guarded, and deliberately. This is reachable only
+             * from inside a burst that already passed the guard a few seconds
+             * ago, on the same dial and the same tone, and its whole job is
+             * to clear a tripped SWR latch. A refusal here would leave the
+             * radio latched - a worse outcome than the 150 ms it keys for.
+             * Listed with this reason in tools/check_tx_guard.py. */
             cat_send_raw_cmd("TX;");
             vTaskDelay(pdMS_TO_TICKS(150));
             cat_send_raw_cmd("RX;");

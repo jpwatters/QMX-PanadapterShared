@@ -242,7 +242,74 @@ Switching is live — the pins are handed straight over, and a toast confirms wh
 
 **Tip: switch the mode first, then plug the GPS in.** The reverse order works but puts the GPS's transmitter against a driven pin for the moment between the two.
 
+**Sharing PORT.A between the two — "Relay: drive only the selected pin"
+(v1.20.2).** Relay mode normally holds **both** GPIO53 and GPIO54 as driven
+outputs, whichever one is set to pulse, so that changing the pin cannot leave
+the other one resting on its active side with a relay wired to it. If you have
+a Unit GPS on one pin and a relay trigger on the other, that is the wrong
+behaviour: entering Relay mode then drives a pin the GPS is transmitting on,
+and it keeps driving it for as long as you stay in Relay mode - no pulse
+required. Tick this setting and only the pin you selected is driven; the other
+is left floating. A pulse on the floating pin is then refused rather than
+silently doing nothing.
+
+⚠ Only use it when the unused pin is unconnected or biased by its own
+circuit. A floating pin's level is decided by whatever is wired to it, not by
+the Tab5, so this is the wrong choice if you have relays on both pins.
+
+⚠ **It protects the pin you did *not* select, so do not select the one the GPS
+is on.** The setting leaves the *unselected* pin floating — if you pick GPIO54
+as the pin to pulse while the Unit GPS is wired to it, you are back to driving
+the GPS's transmitter and nothing has been gained. Put the relay trigger on
+GPIO53, select GPIO53, and tick the box.
+
+How much it matters, measured by **Randy N4OPI** with a scope on the Unit GPS's
+TX line: in v1.20.1 entering Relay mode pulled that line from **3 V p-p down to
+1.5 V p-p** — the GPS's own driver and the Tab5's output fighting over the same
+pad — and held it there for as long as Relay mode was selected. With this
+setting ticked in v1.20.2 the line is untouched in either mode.
+
 The same control is in the web UI's **Miscellaneous** menu, above the remote relay row — the relay row greys out and says why whenever Unit GPS owns PORT.A. See [Web UI](web-ui.md).
+
+## Transmitting outside the band plan
+
+The Tab5 **refuses to key the radio** if the transmission would fall outside
+your IARU region's allocation, and tells you which frequency and which region
+it judged you against. It checks the frequency actually transmitted, not the
+dial — in a digital mode the carrier is the dial plus the audio tone, so the
+dial on its own is the wrong number.
+
+**You need the IARU region set for this**, under Settings, or a grid for the
+Tab5 to work it out from (the Unit GPS sets one for you). Without either, the
+band cannot be checked and transmission is refused — the region matters as much
+as your callsign and grid, both of which the Tab5 has always required before
+transmitting.
+
+**Allow transmitting outside the band plan** turns the check off. Only tick it
+if your licence gives you access the built-in band plan does not know about —
+an experimental or special allocation, for instance. The table is coarse by
+design, and it has been wrong at a band edge before: until v1.20.3 its 60 m
+upper limit was 500 Hz low, which made the correct WSPR frequency look illegal.
+
+!!! info "60 m in the United States changed on 13 February 2026"
+    The Tab5's band plan follows the current FCC rules (order 25-60): the
+    contiguous **5351.5–5366.5 kHz** band at 9.15 W ERP, plus the four legacy
+    channels centred on **5332, 5348, 5373 and 5405 kHz** at 100 W ERP. The old
+    5358.5 kHz channel is gone — it now falls inside the new band. All 60 m
+    emissions are limited to 2.8 kHz.
+
+    The WSPR dial of **5.364700 MHz** transmits at 5366.1–5366.3 kHz, which is
+    inside the new band, so it is the right choice in Region 2 as well as
+    Region 1.
+
+    The power limits are **not** enforced by the Tab5 — it checks frequencies.
+    A QMX at 5 W is inside the 9.15 W figure anyway.
+
+!!! warning "What it does not cover"
+    CW keying and SWR Tune are not checked. They are things you start yourself,
+    where the dial is the transmitted frequency and what you see is what goes
+    out; the guard is aimed at the digital modes, which transmit on a schedule
+    and can do so with nobody watching.
 
 ## Battery Care
 
@@ -269,7 +336,15 @@ then 20, 30 and 40. Before v1.16.12 this was a 1× to 4× multiplier over a fixe
 both to put more history on one screen and to cut the waterfall's share of the
 drawing work. The spectrum and S-meter update rate is unchanged either way.
 
-The same control is in the browser, and the two lists match.
+The same control is in the browser, and the two lists match. **From v1.20.5 it
+moves the browser's waterfall as well.** Before that it only changed the Tab5's
+carpet while the web page drew one row per received frame whatever the setting
+said. Both screens now run the same arithmetic, so they scroll alike.
+
+The picture stream is a fixed ten frames a second, so **10 is the ceiling of
+genuinely new rows**. Above it — 20, 30, 40 — the extra rows repeat the newest
+frame, which scrolls faster but adds no detail, on the Tab5 and in the browser
+alike.
 
 **Spur suppression — withdrawn in v1.8.9.** The control is no longer in the
 drawer.
@@ -322,6 +397,15 @@ offset onto one caller's tone needs resolution rather than tidiness.
 decode list **and on the WSPR page** (off by default). Until v1.12.0 the WSPR
 list and its Best DX panel always printed kilometres regardless of this setting,
 and the control was not reachable from the WSPR page at all.
+
+!!! info "New in v1.20.3 — three more settings reach the browser"
+
+    **SelfSpotter (spot map)** moved into *Spots & reporting*, and **Audio
+    source** and **Line-in gain** into *Radio & display*. These were the last
+    operator switches the Tab5 had and the web page did not.
+
+    ⚠ From the browser, **Audio source** is stored and takes effect at the next
+    restart; on the Tab5 the Audio Settings window restarts for you.
 
 **Band-plan region** — Sets which region's band plan drives the coloured CW/Digi/Phone strip along the bottom of the screen. **Auto** derives it from your grid square; you can also force Region 1/2/3.
 
@@ -668,6 +752,24 @@ Two buttons in the settings drawer:
   Pulling the card without ejecting risks losing the last thing written to it.
 - **Restart the Tab5** reboots cleanly from the screen instead of the power
   button. The card is released first.
+- **Power off the Tab5** (from v1.20.1) shuts the unit down from the screen,
+  directly under Restart. It is in the **Advanced** section, not Basic, because
+  unlike Restart it does not come back. It asks twice: the first tap changes the
+  button to *Tap again to power off*.
+
+    This is a real shutdown, not a sleep, and it holds with 5 V still present on
+    the USB-C input - measured, because that is how a Tab5 powered from the
+    radio's own battery pack is wired *(Randy N4OPI, whose QMX+ is headless and
+    who had already lost a set of 18650s to undervoltage)*.
+
+    **The radio is put back into receive first.** The robot is stood down,
+    transmit is disarmed, `TA0;` then `RX;` go to the radio, and settings are
+    flushed - so a transmission in progress cannot be left keyed by shutting the
+    Tab5 down. The same control is in the browser, under Miscellaneous.
+
+    ⚠ The **power button** on the case cuts power in hardware. No firmware runs,
+    so none of the above happens. Use the screen button if the radio might be
+    transmitting.
 
 The card is now also released automatically before a firmware update. Before
 v1.16.11 a reset caught the card mid-transaction, and because the Tab5 cannot

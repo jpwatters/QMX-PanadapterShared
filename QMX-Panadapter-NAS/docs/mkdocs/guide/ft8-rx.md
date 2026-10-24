@@ -25,6 +25,24 @@ You'll see:
 
 The list shows every decoded FT8 message:
 
+```qmxdiagram
+type: timeline
+title: One FT8 slot - 15 s, and what DT and DTR measure
+span: 15
+seg: 0-12.64 steel a transmission - 12.64 s, 79 symbols
+seg: 12.64-15 dim dead air - 2.36 s
+mark: 0-0.014 red our TX starts at +14 ms
+tick: 0, 5, 10, 15
+note: steel | DTR is the RAW offset of a received signal from the slot boundary. It carries about 0.5 s of receive latency - the QMX SDR plus USB buffering - so it is not comparable with WSJT-X
+note: trace | DT is that same offset corrected against the band consensus, so the shared latency cancels and an on-time station reads about 0.0. This is the WSJT-X-style number
+note: dim | the decode runs after the capture, in the dead air and into the next slot. That is why a reply must be decided before the next boundary, not after it. FT4 is the same shape at 7.5 s - a 5.04 s burst and 2.46 s of dead air
+```
+
+**DT and DTR are two different quantities**, which the table below spells out and the
+picture above shows: DTR is the raw offset from the slot boundary and carries about
+half a second of receive latency, while DT is that offset corrected against the band
+consensus, so the shared latency cancels and an on-time station reads about zero.
+
 | Column | Meaning |
 |---|---|
 | **SL** | Slot parity: **E** (blue) or **O** (amber) |
@@ -33,7 +51,8 @@ The list shows every decoded FT8 message:
 | **COUNTRY** | Country, spelled out where it fits and shortened where it does not - never a 3-letter code (v1.15.0) |
 | **SNR** | Signal-to-noise estimate, colour-banded by strength |
 | **TONE** | The station's audio tone within the FT8 passband (v1.3.1) |
-| **DT** | Slot-timing offset in seconds, relative to the band — an on-time station reads ~0.0 (v1.3.1) |
+| **DT** | Slot-timing offset in seconds, corrected against the band consensus — an on-time station reads ~0.0. This is the WSJT-X-style number. It reads `--` until at least **two separate stations** have been heard, because with one station the correction is that station's own offset minus itself, which is zero by construction and not a measurement (v1.3.1, corrected in v1.17.0) |
+| **DTR** | *Browser only.* The **raw** slot-boundary-relative offset, uncorrected. It includes about 0.5 s of one-way receive audio latency (the QMX SDR plus USB buffering), so it is **not** comparable with WSJT-X's DT — but it is the number that moves when a transmitter's timing moves, which is what you want when you are checking your own TX. Both columns sort on the raw value (v1.17.0) |
 | **KM / MI** | Great-circle distance from your grid. A `~` means the station never sent a grid, so the distance is worked out from its country and is approximate (v1.14.4) |
 | **HRD** | Times decoded since last appearance |
 
@@ -67,7 +86,21 @@ Tap the **Options** button to open the Options modal:
 - **Include callsigns containing** — show any call with these substrings (e.g., `/P` for portable)
 - **Exclude callsigns** — hide these calls
 - **Exclude if contains** — hide any call matching these substrings
-- **Exclude worked before** — skip calls you've already logged QSOs with
+- **Never auto-call worked-before** — the one entry in this list that does *not*
+  change the list. Every other filter here hides rows; this one only stops the
+  **machine** calling a station already in your log on this band — CQ answers,
+  the pile-up, Auto-work and the robot all pass over them. Worked stations stay
+  in the decode list either way, greyed, and you can still tap one to work it.
+  Per band: the same call on another band counts as new. (It was called
+  "Exclude stations worked before", which read as a promise about the list.)
+- **Hide worked-before** — new in v1.20.2, and the companion to the entry
+  above rather than part of it. This one *does* change the list: tick it and a
+  station already in your log on this band disappears from the decode list
+  altogether, on the Tab5 and in the browser. Off by default, so the grey
+  behaviour above is what you keep unless you ask for this. The two are
+  separate on purpose - working duplicates by hand while the machine leaves
+  them alone is a perfectly normal way to operate. The station you are
+  mid-exchange with is never hidden.
 - **Show only CQ callers** — hide replies, show only CQ messages
 - **Show CQs in my run** — off by default. While you are running your own CQ, other
   stations' plain CQ calls are hidden so that replies addressed to you are not buried
@@ -80,6 +113,30 @@ Tap the **Options** button to open the Options modal:
 - **Robot mode** — auto-answer CQ (disabled by default; see [FT8 Transmit](ft8-tx.md))
 
 All filters persist across sessions. Toggle any filter on/off to enable or disable it without erasing the criteria.
+
+#### Stations you skipped (v1.20.5)
+
+The **Skip** button ends the exchange in progress and leaves the robot running;
+the station is not called again this session. From v1.20.5 the web FT8 page
+lists those stations under the grey-list line, and each one can be cleared on
+its own or all at once *(Randy N4OPI)*.
+
+It is a **separate list** from the grey-list above: that one is the software
+setting aside a station that never answers, this one is your own decision, and
+one button should not quietly undo both.
+
+#### Your state (v1.20.5)
+
+**Settings → Station → Your state**, beside Your grid. Two letters. With it set,
+the robot passes over a CQ aimed at a different US state. Leave it empty — as
+everyone outside the USA should — and every state call is answered as before,
+because the radio knows which country you are in but not which state.
+
+!!! warning "`CQ DE` is never read as Delaware"
+    On the air `DE` almost always means *from*, not the state. In one operator's
+    log there were fifty-one `CQ DE` decodes, from Florida, New York and
+    California, and none from Delaware — so treating it as a state call would
+    have cost every one of those contacts.
 
 ### 4. Decoding Performance
 

@@ -199,7 +199,29 @@ static void tx_label_fit(const char *txt)
 static const wspr_band_t kBands[] = {
     { "160", 1836600u },
     { "80", 3568600u },
-    { "60", 5287200u },
+    /* ⛔ WAS 5287200, WHICH TRANSMITS OUT OF BAND IN ALL THREE REGIONS.
+     *
+     * Wolfgang DF1KZ, 2026-10-21: "this frequency is imho not allowed
+     * everywhere in IARU Region1". Checked against this firmware's OWN
+     * bandplan.c rather than taken on trust, and it is worse than he said -
+     * a 5287200 dial emits at 5288600-5288800, and 60 m is
+     * 5351500-5366500 (R1/R3) and 5330500-5366500 (R2). About 63 kHz below
+     * the bottom of the band, in every region.
+     *
+     * ⭐ It is the ONLY band that was wrong. All ten others were checked the
+     * same way and are inside the allocation in all three regions.
+     *
+     * 5364700 emits at 5366100-5366300, inside the allocation everywhere -
+     * but only after bandplan.c's R1/R3 top edge was corrected from 5366.0 to
+     * 5366.5; see the note there, because without it the right frequency
+     * reads as illegal.
+     *
+     * ⚠ OPEN, and it needs a US operator: our R2_60 models a CONTINUOUS
+     * 5330.5-5366.5 segment, where the US allocation is five discrete channels
+     * (5332.0 / 5348.0 / 5358.5 / 5373.0 / 5405.0 kHz). 5366.2 is not one of
+     * them, and neither was 5288.7 - so R2 is no worse than it was, and not
+     * yet right. Do not call this closed for Region 2. */
+    { "60", 5364700u },
     { "40", 7038600u },
     { "30", 10138700u },
     { "20", 14095600u },
@@ -3118,7 +3140,20 @@ void wspr_screen_view_tick(void)
 
     /* status straight from the slot loop - change-detected, because writing an
      * identical string still costs LVGL an invalidate. */
-    const char *st = wspr_rx_running() ? wspr_rx_status() : "receiver stopped";
+    /* Recovery first, so the status below reports the outcome of this tick
+     * rather than the previous one. A no-op unless the receiver is faulted and
+     * the memory it was refused has since arrived. */
+    wspr_rx_retry_if_faulted();
+
+    /* ⛔ "receiver stopped" IS THE WRONG WORDING FOR A FAILURE, and it was the
+     * only wording available: the out-of-memory status was written by the task
+     * and then discarded, because the same wspr_rx_running() test that chose
+     * the message was false. John W5JSS, 2026-10-18, spent a session on a page
+     * whose receiver had died on entry and was never told. */
+    const char *fault = wspr_rx_fault();
+    const char *st = wspr_rx_running() ? wspr_rx_status()
+                   : fault             ? fault
+                                       : "receiver stopped";
     if (strncmp(st, s_last_status, sizeof(s_last_status)) != 0) {
         snprintf(s_last_status, sizeof(s_last_status), "%s", st);
         lv_label_set_text(s_lbl_status, s_last_status);

@@ -99,7 +99,16 @@ have actually changed, so they cost the WiFi link almost nothing between refresh
 In FT8/FT4 the browser used to show a transmit banner and
 nothing else - you could see that your radio was transmitting, but not who was
 answering. The FT8 panel now carries the **decode list**: callsign, message, **country**,
-SNR, DT, audio tone, **distance and bearing**, slot (E/O) and age.
+SNR, **DT and DTR**, audio tone, **distance and bearing**, slot (E/O) and age.
+
+**DT and DTR are two different quantities, not a repeat.** **DT** is corrected
+against the band consensus and is character-for-character what the Tab5 prints —
+the WSJT-X-style number, blank until two separate stations have been heard.
+**DTR** is the raw boundary-relative offset and carries about 0.5 s of receive
+audio latency, so it is not comparable with WSJT-X, but it is the one that moves
+when a transmitter's timing moves. Hover either heading for the same explanation
+on the page. *(Randy N4OPI, who put the two screens side by side and found them
+disagreeing under one heading.)*
 
 The country column replaced a GRID column, because the grid was already sitting
 in the message text next to it. The country is the one thing in that row you
@@ -179,7 +188,91 @@ While an exchange is running, a **Mid-QSO** row appears under the FT8 controls:
 - **Re-send** — send the current message again
 - **RR73** / **73** — jump straight to either
 - **Pause** — skip exactly one transmission and keep the exchange
+- **Skip** — give up on *this station* and go back to answering
 - **Cancel** — stop transmitting and end the exchange
+
+**Skip** and **Cancel** are not the same thing, and the difference is
+auto-answer. **Cancel** stops everything, auto-answer included: you are
+cancelling in order to go and do something else, so the Tab5 does not start
+calling again a cycle later. **Skip** means "not this station, carry on" —
+it ends the exchange and leaves **Auto-answer CQ (robot)** running, so the next
+CQ caller is answered as normal.
+
+Two things make it worth having rather than just pressing Cancel and turning
+the robot back on:
+
+- a station calling **CQ DX**, or **CQ** for a state you are not in, was never
+  looking for you, and neither of you wants to spend slots on it;
+- a station that keeps calling CQ while you are calling *it* cannot hear you —
+  which happens to everybody running QRP.
+
+The station you skip is added to the **grey-list** at once, so the automatic
+pickers will not call it again. That is deliberate: without it, the robot would
+answer the same station's very next CQ and you would be back where you started.
+The grey-list is shown in the decode view and lives in memory only — it is
+cleared by a reboot, or you can clear it yourself.
+
+### Switching to a different caller mid-exchange
+
+**Double-click** another station in the decode list and the Tab5 drops the
+exchange it is in and calls that one instead. Auto-answer stays on, and the
+station you dropped is grey-listed so the robot does not go straight back to
+it.
+
+A **single** click still refuses while an exchange is running — it says
+"Busy: working ..." as before. That is deliberate: abandoning a contact in
+progress is destructive, and one stray click on a busy list should not cost
+you one. Double-clicking makes it a decision.
+
+Two cases behave differently on purpose:
+
+- **Double-clicking the station you are already working** does nothing. It is
+  not a re-target, and restarting the exchange you are in is never what was
+  meant.
+- **If the contact is already finished** — your 73 or RR73 is sent and waiting
+  to go out — the pick is queued rather than used to abandon anything. The
+  station is worked; grey-listing them then would be wrong.
+
+If you are calling CQ with nobody answering yet, a double-click simply ends the
+CQ run and calls that station. Nothing is grey-listed, because there was no
+partner to give up on.
+
+*Randy N4OPI asked for this, 21 October 2026.*
+
+### Skipping a CQ before you answer it
+
+**Skip** ends an exchange you are already in. The other half of Randy's request
+is the robot not starting one: **FT8 filters → Auto-answer: skip CQs not aimed
+at me** (off by default, on both screens — "Skip CQs not for me" in the Tab5's
+Options panel).
+
+With it on, while auto-answer is running the Tab5 passes over:
+
+- **CQ DX** from a station in your own country — you cannot be their DX;
+- a **US state call** (`CQ FL`, `CQ TX`) when you are not in the USA.
+
+It is deliberately cautious, and these are the limits:
+
+- **Continent calls are always answered.** `CQ EU`, `CQ NA` — deciding those
+  needs a continent for every DXCC entity, which the Tab5 does not carry.
+- **Contest and activity calls are always answered** — `CQ POTA`, `CQ TEST`,
+  `CQ WW`. Anyone may answer those.
+- **A state call is never skipped if you are in the USA**, because the Tab5
+  knows your country, not your state. A Florida station still answers `CQ FL`.
+- Several state codes are also callsign prefixes elsewhere — `OK` is Oklahoma
+  *and* Czechia, `CA` California *and* Chile, `DE` Delaware *and* Germany. If
+  the code matches your own country as a prefix, the call is answered.
+- It needs **your callsign set**. Without it nothing is judged.
+
+A skipped caller is written to the log with the reason, so a station missing
+from the robot's choices can be explained afterwards rather than guessed at.
+
+!!! note "Skip is in the browser only, for now"
+    The Tab5's own Mid-QSO row is four buttons wide to the pixel, and a fifth
+    needs the row re-measured on the glass rather than re-guessed. Randy asked
+    for the web page, so that is where it is.
+
+*Randy N4OPI asked for Skip, 21 October 2026.*
 
 **Pause** is the one to reach for when you want to listen on your own slot: to
 check the frequency is still clear, or to hear whether the station is really
@@ -280,6 +373,21 @@ things you *type* - which is exactly what the Tab5's touchscreen is worst at:
 - **The rest of the radio and display settings**, which used to be Tab5-only: CW pitch,
   IF calibration, SWR protection, the battery charge limit, the 180° screen flip,
   Fox/Hound mode, simulation mode and the spot mode filter.
+- **New in v1.20.3, and the last three that were Tab5-only:** the
+  **SelfSpotter (spot map)** switch under *Spots & reporting*, and **Audio
+  source** and **Line-in gain** under *Radio & display*. The audio pair is
+  worth a word: the browser had always been *able* to set them, but the page
+  had no value to show, so there was no control to set them with.
+
+    ⚠ **Audio source behaves differently here than on the Tab5.** From the
+    browser the change is **stored and takes effect at the next restart**;
+    the Tab5's own *Audio Settings* window restarts for you when you press
+    Save.
+
+    ⛔ Two switches are deliberately **not** on this page. The test-tone
+    controls key the radio, and a transmit control belongs nowhere a stray
+    click can reach it; the resource-monitor overlay is a diagnostic, not an
+    operator switch.
 
 Saved straight to the Tab5 - its own settings drawer shows the same values next
 time you open it.
@@ -397,7 +505,22 @@ The bottom bar groups its actions into four popup menus, plus a battery indicato
 
 **Files ▲**:
 
-- **Config download ↓** — all settings as a text file (backup or transfer to another Tab5). It is also the way to change a stored credential by hand: the `qrz_key`, `eqsl_user` and `eqsl_pass` lines are in there in plain text, and an edited file uploaded back takes effect on the next upload with no restart. Note it holds your WiFi password in plain text too, so treat the file accordingly
+- **Config download ↓** — all settings as a text file (backup or transfer to another Tab5). It is also the way to change a stored credential by hand: an edited file uploaded back takes effect on the next upload with no restart.
+
+    !!! danger "This file contains secrets in clear text"
+        It holds your **WiFi password**, your **QRZ API key**, your **eQSL
+        password** and your **LoTW certificate and private key** - all
+        readable, none of them obscured. Anyone who has the LoTW key can sign
+        contacts as you.
+
+        Treat it exactly like a password list. In particular, **do not attach
+        it to a forum post, a GitHub issue or an email when asking for
+        help** - that has already happened once. If you need to share
+        settings for diagnosis, delete the `wifi_pass`, `qrz_key`,
+        `eqsl_pass`, `lotw_cert` and `lotw_key` lines first; everything else
+        in the file is harmless.
+
+        The browser asks you to confirm before the download for this reason.
 - **Config upload ↑** — restore settings from a backup file
 - **SD Files** — opens the **microSD file browser** (`http://<tab5-ip>/files`): browse the card from your computer without pulling it — download logs and config backups, upload files, delete
 
@@ -418,6 +541,7 @@ The bottom bar groups its actions into four popup menus, plus a battery indicato
 
 - **Tab5 screenshot** — current display as PNG, including any open pop-up (band/mode dropdown), not just the base screen
 - **Reboot the Tab5** — restarts it there and then; receiving stops for about ten seconds. Until now a restart was only offered after a firmware update, which is no use when you are in another room and something is stuck *(Randy N4OPI)*
+- **Power off the Tab5** (from v1.20.1) — shuts the unit down from the browser. It does **not** come back on its own; somebody has to press the button, or cut and restore its power. It asks for confirmation. The radio is put back into receive first, so a transmission in progress cannot be left keyed. Measured to stay off with 5 V still present on the USB-C input. The same control is in the Tab5's own drawer, under Restart, in the Advanced section *(Randy N4OPI, whose headless QMX+ runs from 18650s the Tab5 was draining after the radio shut itself off)*
 - **Port mode** — chooses what owns PORT.A, the same connector the relay below uses: **Relay** or **Unit GPS v1.1**. It sits directly above the relay row because it decides whether that row can do anything. Switching is applied live through the same sequencer the Tab5 drawer uses, so both screens always agree; a refusal comes back as `refused: PORT.A mode not changed: a relay pulse or power cycle is running, or the Unit GPS UART failed to start`, and the row snaps back to what the device is actually in. When **Unit GPS** owns the port the whole relay row greys out with the reason in its tooltip. See [Settings ▸ Port mode](settings.md#port-mode-porta) and [Unit GPS Time Source](time-sync.md#unit-gps-time-source-porta).
 - **Power-cycle relay** — pulses one of two Tab5 GPIO pins (GPIO53 or GPIO54) for a chosen level and duration. Wire an external relay's trigger input to the pin and its contacts to your QMX's PWR_ON/GND **signals**, and this lets you power-cycle the radio remotely — the piece a remote firmware upgrade otherwise needs someone at the bench for, since the QMX always needs a manual power cycle after a Tab5 flash.
 

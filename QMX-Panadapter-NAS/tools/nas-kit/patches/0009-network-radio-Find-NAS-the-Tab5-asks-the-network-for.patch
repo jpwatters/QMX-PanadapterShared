@@ -1,7 +1,7 @@
-From 6e254651f5e766e67dbeb78b49a6705179ba640e Mon Sep 17 00:00:00 2001
+From e87bc052a12cb8c488d361b195e6321a360b4125 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 15:41:53 +0000
-Subject: [PATCH 09/22] network radio: Find NAS - the Tab5 asks the network for
+Subject: [PATCH 09/30] network radio: Find NAS - the Tab5 asks the network for
  the relay's address
 
 Relay: answers a UDP "QMXR?" on port 7355 (same number as the TCP service)
@@ -124,10 +124,10 @@ index 2dfd794e..66a7a9bc 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index f9ea910f..235ab7af 100644
+index 7fbf53df..d0a42757 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -16397,6 +16397,67 @@ static lv_obj_t *s_radiosrc_state;
+@@ -17452,6 +17452,67 @@ static lv_obj_t *s_radiosrc_state;
  static lv_obj_t *s_radiosrc_kb;
  static uint16_t  s_radiosrc_port = RADIO_RELAY_DEFAULT_PORT;
  
@@ -195,7 +195,7 @@ index f9ea910f..235ab7af 100644
  static void radiosrc_label_timer_cb(lv_timer_t *t)
  {
      (void)t;
-@@ -16557,11 +16618,25 @@ static void radiosrc_modal_build(void)
+@@ -17612,11 +17673,25 @@ static void radiosrc_modal_build(void)
      lv_textarea_set_one_line(s_radiosrc_ta, true);
      lv_textarea_set_max_length(s_radiosrc_ta, RADIO_RELAY_HOST_LEN - 1);
      lv_textarea_set_placeholder_text(s_radiosrc_ta, "e.g. 192.168.1.20");

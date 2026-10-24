@@ -12,6 +12,23 @@ Swipe → from the left edge to cycle **Panadapter -> FT8/FT4/JS8 -> WSPR** and 
 
 Everything in WSPR is built on a **two-minute cycle**, aligned to UTC. A transmission starts a second or two after each even minute and lasts about 110 seconds, so one cycle carries exactly one beacon.
 
+```qmxdiagram
+type: timeline
+title: One WSPR cycle - 2 minutes
+span: 120
+seg: 1-111.6 red transmitting - 110.6 s, 162 symbols of 0.683 s
+seg: 111.6-120 dim ~8 s
+tick: 0, 30, 60, 90, 120
+note: red | a transmission starts one second into an even minute, by the protocol
+note: trace | on a RECEIVE cycle the whole two minutes is captured, and the decode has a 115 s budget to work through as many candidates as fit
+note: dim | the schedule is two COUNTS of cycles, not a percentage: transmit this many, then receive this many, repeating. Transmit 2 and receive 8 is one pair of bursts every 20 minutes. Transmit cycles = 0 is how transmitting is turned off
+note: amber | the first burst after you switch transmitting on is always the very next cycle, whatever the schedule says - the duty has nothing useful to say about the first one
+```
+
+Exactly: 162 symbols of 0.683 s is **110.6 s** of the 120 s cycle. The schedule at the
+bottom is the part worth studying before you switch transmitting on — it is two
+counts, not a percentage.
+
 That slow rhythm is why the page looks calm compared with the FT8 screen. There is no countdown urging you on and no QSO furniture, because there is nothing to answer. The countdown at the top left simply tells you where you are in the current window.
 
 **Your clock has to be right.** WSPR's decoder searches only a narrow slice of time either side of the cycle boundary, so a clock that is out by more than a couple of seconds will hear nothing and be heard by nobody. The Tab5 keeps itself right from SNTP over WiFi, from the QMX's own clock, or from its internal RTC — see [Time Sync](time-sync.md). If you are running with no network and no GPS, check the clock before you trust an empty screen.
@@ -19,6 +36,12 @@ That slow rhythm is why the page looks calm compared with the FT8 screen. There 
 ---
 
 ### 2. Reading the page
+
+The browser's WSPR list carries the same columns, and from **v1.20.2** that
+includes **BAND** - it was on the Tab5 and not in the browser. It matters most
+with band hopping on, where every spot sits inside the same 200 Hz window and
+the frequency column alone cannot tell them apart. It is blank for spots
+recorded before the dial was kept.
 
 The left pane is a log, not a live list of who is on frequency. Spots stay where they are and new cycles are added — an opening band looks different from a closing one only over time, so the page is arranged to let you see that.
 
@@ -199,6 +222,25 @@ It needs WiFi and your callsign and grid.
 ---
 
 ### 4. Transmitting
+
+!!! danger "The 60 m dial was wrong, and it transmitted out of band — fixed in v1.20.3"
+
+    The 60 metre entry in the band list was **5.287200 MHz**. WSPR puts its
+    signal 1400–1600 Hz above the dial, so that dial emitted at about
+    **5.2886–5.2888 MHz** — roughly **63 kHz below the bottom of the 60 m
+    allocation in all three IARU regions**. If you ran WSPR on 60 m on any
+    earlier version, those transmissions were outside the band.
+
+    The entry is now **5.364700 MHz**, which emits inside the band in all three
+    regions. **A stored 5.287200 is moved for you** when the firmware starts —
+    changing the list alone would have fixed nobody who had already chosen 60 m,
+    because the selection is stored, not read from the list each time. The other
+    ten bands were checked the same way and are inside the allocation
+    everywhere.
+
+    Reported by Wolfgang DF1KZ. From v1.20.3 the firmware also refuses to key
+    the radio outside your region's allocation at all — see
+    [Transmitting outside the band plan](settings.md#transmitting-outside-the-band-plan).
 
 With a callsign and grid set and a transmit count other than **Receive only**, the **TX** button on the page arms the station. Which cycles actually transmit is decided by the transmit schedule, and the button shows what is happening.
 

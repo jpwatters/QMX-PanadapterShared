@@ -149,7 +149,7 @@ It uses the ESP-IDF in `~/esp/esp-idf` (v5.4.4) and an installed PowerShell
 own Python out of ESP-IDF's way, applies and checks all patches, builds, and
 does a normal flash (settings kept). Logs go to `build/mac-build-flash.log`.
 The firmware reports itself as the release it is based on plus `-NAS`, e.g.
-`v1.20.0-NAS`.
+`v1.20.5-NAS`.
 
 ## 3. PC software on QMX port 3 (optional)
 
@@ -261,6 +261,28 @@ Notes:
   effect the next time the Tab5 connects. Each burst in the transmit log
   records "tones timed by relay" or "tones timed by Tab5", and relay-sent
   commands appear as `RELAY>QMX` in the CAT log.
+
+* **I/Q copy for the Mac (TCP 7357):** a second, listen-only client can get a
+  copy of the I/Q stream on its own port, so the Mac's TCI bridge
+  (tools/mac-serial-bridge, for WS / WSJT-X / JTDX) makes its receive audio
+  without touching the Tab5's connection on 7355. Nothing it sends reaches the
+  radio; it controls the QMX on serial port 3 (7356). One listener at a time.
+  Change the port with `--iq-listen-port N`, `0` turns it off. If DSM's firewall
+  is on, allow TCP 7357.
+
+* **One transmitter at a time:** while the Mac's TCI bridge is connected (a TCI
+  program such as WS is using the radio), the transmitter is the Mac's: the
+  relay drops the Tab5's `TX;`, Tune (`MD8;`) and tone commands and refuses its
+  transmit bursts, so the Tab5 can't key the QMX. Key-up (`TA0;`, `RX;`) always
+  passes. The relay tells the Tab5 (a `TX_LOCK` frame, HELLO says `txlock=1`),
+  and the Tab5 shows **TX locked: Another Device has the transmitter** on its
+  FT8 screen and web page and refuses FT8/FT4, WSPR, Tune and power calibration
+  instead of trying.
+  The other way round, while the Tab5 is transmitting, `TX;` and tones on
+  port 3 (PC software, the TCI bridge) are dropped. Each refusal is logged as
+  `BLOCKED` in the CAT log and `qmx-relay.log`. To let the Tab5 transmit even
+  while a TCI program is connected, put a file named `tab5-tx-always` in the
+  relay folder.
 
 ## Troubleshooting
 

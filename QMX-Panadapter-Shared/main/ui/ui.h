@@ -214,6 +214,72 @@ void ui_sync_wf_rate_controls(void);
  * 20% share of invalidated pixels - see the comment above update_bandplan_strip. */
 void ui_bandplan_call_counts(unsigned *calls, unsigned *from_poll, unsigned *skipped);
 
+/* ⭐ HOW MANY FRAMES DREW THE SAME SPECTRUM - the last unmeasured stage.
+ *
+ * The chain from the FFT to the glass changes rate twice. fft_task publishes
+ * ~47 spectra/s; render_task samples ONE of them every 100 ms (so the data
+ * changes at exactly 10 Hz); LVGL then redraws whenever core 0 lets it, which
+ * measured 12.2 fps mean with the interval spread 10.9-13.0. Ten and twelve are
+ * not harmonically related, so each spectrum is shown once or twice in an
+ * irregular pattern, and a refresh that runs long skips one entirely.
+ *
+ * Nothing measured that. display_frame_spacing() counts frames and
+ * render_push_spacing() counts pushes; neither can see that two frames in a row
+ * carried the SAME numbers, which is what a stepped trace is made of.
+ *
+ * repeat[] bins the distinct spectra by how many consecutive refreshes drew
+ * them: index 0 = shown once, 1 = twice, 2 = three times, 3 = four or more. A
+ * steady 1,1,1,... or 2,2,2,... looks smooth; an alternating 1,2,1,1,2 is the
+ * stutter, in numbers. `skipped` counts pushes that NO refresh ever showed.
+ *
+ * `lock_fail` is the other silent hole: ui_push_spectrum() gives up after 20 ms
+ * waiting for the LVGL lock and returns, throwing the frame away with nothing
+ * recording it. A failed take costs the full 20 ms, so it also inflates
+ * render_push_spacing()'s push_max_us - which is exactly how a dropped frame
+ * could read as a slow draw.
+ *
+ * age_* is push -> the first refresh that showed it, i.e. how stale the trace
+ * is by the time it reaches the eye.
+ *
+ * All O(1); the per-frame half runs inside the REFR_READY callback. Reads and
+ * RESETS, so the caller's cadence is the window. */
+typedef struct {
+    unsigned frames;        /* LVGL refreshes counted in this window      */
+    unsigned gens;          /* distinct spectra those frames showed       */
+    unsigned repeat[4];     /* gens shown 1, 2, 3, >=4 times in a row     */
+    unsigned skipped;       /* pushes no refresh ever drew                */
+    unsigned lock_fail;     /* ui_push_spectrum() could not get the lock  */
+    unsigned wf_lock_fail;  /* waterfall rows lost the same way           */
+    unsigned age_mean_us;   /* push -> first refresh showing it           */
+    unsigned age_max_us;
+    /* ⭐ The gap between one spectrum APPEARING and the next appearing -
+     * i.e. how long each picture stood still. This, not the push interval and
+     * not the frame interval, is what a moving trace is made of. Nominal is
+     * 100 ms (the data rate); the SD is the stutter, in milliseconds. */
+    unsigned appear_n;
+    unsigned appear_min_us;
+    unsigned appear_mean_us;
+    unsigned appear_max_us;
+    unsigned appear_sd_us;
+    /* Partial-invalidate decision, per window: which branch rejected the
+     * band path, and how tall the band was when it was computed. */
+    unsigned pi_partial, pi_no_array, pi_stale, pi_overlay, pi_wide;
+    unsigned pi_band_mean_px;
+    /* Carpet: rows written into the buffer, and how many of those actually
+     * moved the view. rows/shifts should equal the shift batch. */
+    unsigned wf_shifts, wf_rows_written;
+} ui_spec_frame_stats_t;
+
+void ui_spec_frame_stats(ui_spec_frame_stats_t *out);
+
+/* Waterfall viewport-shift batching. Every row is still written on its own
+ * tick; the VIEW moves N rows at a time, because moving it costs the whole
+ * 474 kpx carpet whether it moves 1 px or N. 0 = auto (sized from the row
+ * rate), >=1 forces a value - 1 is the pre-2026-10-22 behaviour exactly.
+ * See the measurement above ui_push_waterfall_row(). */
+void ui_wf_set_shift_batch(int n);
+int  ui_wf_get_shift_batch(void);
+
 void ui_set_resource_monitor_text(const char *text);
 
 // Dev-only: toggle the resource-monitor overlay's visibility. Not a user

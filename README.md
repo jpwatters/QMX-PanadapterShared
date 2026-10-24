@@ -4,13 +4,13 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.20.0-NAS** — upstream QMX-Panadapter **v1.20.0** plus the NAS patch series 0001-0027 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0030 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
 2. FT8/FT4 transmit timed by the relay
 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
-4. A client that presents the networked QMX/QMX+ as a serial port on a Mac
+4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
 5. M5Stack Tab5 discovery with the web browser at http://qmx.local
 6. An update kit that rebuilds all of this on each new upstream release
 
@@ -39,13 +39,13 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
 
 **Mac tools**
-* Mac serial bridge (tools/mac-serial-bridge): presents the NAS-shared QMX as a serial port for WSJT-X, qFT8 and similar programs, finding the NAS automatically. Doesn’t connect yet; deferred.
+* TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.20.0-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.20.5-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 ________________________________________________________________________________________________________________________________________________
@@ -64,7 +64,7 @@ bash make-qmx-panadapter-nas.sh
 cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
 ```
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.20.0-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.20.5-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -80,13 +80,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v1.20.0.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
+> **Release — v1.20.5.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](QMX-Panadapter-NAS/docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](QMX-Panadapter-NAS/docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](QMX-Panadapter-NAS/docs/QMX-Panadapter-UserGuide-v1.20.0.pdf).
+Prefer a single printable file? [Download the User Guide PDF](QMX-Panadapter-NAS/docs/QMX-Panadapter-UserGuide-v1.20.5.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -420,6 +420,15 @@ Power the QMX on by itself and read the firmware version off its own display at 
 
 ### Step 1 — Flash the Tab5 firmware
 
+> ### Use this flasher, not the M5Stack launcher
+>
+> **Do not install the panadapter with the M5Launcher.** It writes its own
+> partition layout, which has no place for the panadapter's saved settings
+> and no room for its file storage. A unit installed that way can still
+> receive, but your callsign, grid and WiFi will not save - and with no
+> callsign stored, every transmit refuses. The cure is a clean flash
+> (`flash.bat`, type **E**), which rewrites the partition table.
+
 Use the one-click flasher in [`tools/QMX-Panadapter flasher/`](QMX-Panadapter-NAS/tools/QMX-Panadapter%20flasher) (also attached to each [release](https://github.com/SteffenLav/qmx-panadapter/releases)):
 
 1. Plug the Tab5 into your computer with a **USB-C data cable** — charge-only cables will not work.
@@ -627,10 +636,12 @@ halves of the passband hard left and right.
 
 **AM is demodulated here too, from v1.19.0** — on the Tab5, from the raw I/Q,
 which is why its bandwidth is yours to choose and not the radio's fixed 3.2 kHz.
-Pick 4.0, 6.0, 8.0 or 9.6 kHz from the **BW** control in the top bar while the
-radio is in AM. 6.0 kHz is the default and the safe one on a crowded band;
-9.6 kHz carries a broadcast station's full audio and reaches far enough to let
-the next channel in, because shortwave channels are spaced only 5 kHz apart.
+Pick 2.0, 3.0, 4.0, 6.0, 8.0 or 9.6 kHz from the **BW** control in the top bar
+while the radio is in AM. 6.0 kHz is the default; 9.6 kHz is the widest on offer
+from v1.20.2. The 10.0 and 20.0 kHz settings that existed earlier are withdrawn
+for good — they ran the receive chain at half decimation and the audio stutters.
+Shortwave channels are spaced only 5 kHz apart, so 6.0 kHz already reaches into
+the neighbour's carrier on a crowded band.
 
 This is the part of the panadapter that is not a picture. On a crowded CW band
 it does something no amount of screen resolution can.
@@ -1072,7 +1083,7 @@ The full per-version changelog — every release from v0.1.0 onward — lives in
 
 ### Next up
 
-**v1.20.0 is here.** Next on the bench:
+**v1.20.5 is here.** Next on the bench:
 
 - **A full two-way JS8 QSO, watched from both ends.** Receiving, sending free text and calling CQ are all proven on air, and the automatic exchange **is implemented** - with automatic replies on, the Tab5 answers JS8 callers by itself and has since v1.17.0. What is missing is a complete exchange observed end to end, not the code to do it. An earlier version of this line said the exchange "is not written yet", which was wrong and was corrected publicly in the v1.18.0 notes after Gyula HA3HZ found four stations answered unattended in his own log.
 - **JS8 Slow, Fast and Turbo on the air.** All four speeds are selectable from v1.19.0 and they transmit, but no contact has been made on anything but Normal. The Tab5's own side of Turbo is measured and fast enough; the radio's side is not.

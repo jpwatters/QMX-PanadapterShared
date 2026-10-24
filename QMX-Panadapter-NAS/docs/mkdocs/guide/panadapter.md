@@ -284,7 +284,13 @@ The background behind the keypad is intentionally semi-transparent (40% dim) so 
 
 32 memory channels (4×8 grid), free to hold any frequency/mode — not tied to a band. Each stores frequency, mode, and name. Swipe up from the bottom edge to open the memory picker.
 
-Each slot shows its **label in large text**, with the mode and frequency dimmed beneath. Mode is also colour-coded — CW (green), DiGi (teal), USB (brick red), LSB (purple) — so the grid is scannable at a glance without reading every label.
+Each slot shows its **label in large text**, with the mode and frequency dimmed beneath. Mode is also colour-coded — CW (blue), DiGi (amber), USB (brick red), LSB (purple) and AM (teal) — so the grid is scannable at a glance without reading every label.
+
+!!! info "New in v1.20.3 — AM can be stored in a memory channel"
+
+    The editor's mode row offered DiGi, USB, LSB and CW only. AM was missing for no reason: the slot could always hold it and recall already sent the right command, there was simply no button. It appears on a QMX running firmware **1.04 or later** — older radios reject the AM mode command, and a channel the radio refuses to recall is worse than no channel. Asked for by Gyula HA3HZ.
+
+    ⚠ The colours above were wrong in earlier versions of this page: CW was listed as green and DiGi as teal.
 
 **To recall a channel:** Tap it. The QMX retunes immediately.
 
@@ -448,6 +454,15 @@ rubbish are filtered out before anything reaches the screen:
 
 A dropped run leaves one space behind, so words either side of it are not welded
 together.
+
+**Clearing it, and how many rows** (from v1.20.1). A **Clear** button empties the
+pane, and the row count is **2 or 4**, chosen beside the on/off switch. Four rows
+of wrapped text can make it hard to find the boundary between fresh decode and
+old; two rows keeps the recent text where you can see it *(Bryan N0LUF)*.
+
+A click *inside* the pane still tunes the radio rather than clearing it. That is
+deliberate - the waterfall underneath stays click-to-tune - which is why Clear is
+its own button.
 
 **Turning it off.** Settings drawer -> **Radio** -> **Show decoded CW**, beside CW
 centre and the transmit offset. It is on by default and the setting is shared

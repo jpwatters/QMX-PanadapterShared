@@ -52,6 +52,7 @@ ARCHIVE="$SRC/.qmx-panadapter-archive"
 KIT="$(cd "$(dirname "$0")" && pwd)"
 PATCHES="$KIT/patches"
 TESTED_BASE=""                  # release this patch series was hardware-tested on ("" = not yet)
+SERIES_BASE="v1.20.5"           # release the patches were made against (fetched too, for git am --3way)
 STAMP=".qmx-nas-build"          # in each tree: what it was built from
 TESTED=".qmx-nas-tested"        # in each tree: when it was marked tested
 BRANCH="network-radio"
@@ -161,6 +162,25 @@ mark_tested() {
     say "Shared now holds $(stampval "$NAS" base) + patch series $(stampval "$NAS" patches)."
 }
 
+# Run "$@" up to 4 times, waiting 10, 20, 30 s between tries.
+retry() {
+    local n=1
+    while :; do
+        "$@" && return 0
+        [ "$n" -ge 4 ] && return 1
+        say "  network trouble - trying again in $((n * 10)) s (retry $n of 3)"
+        sleep $((n * 10))
+        n=$((n + 1))
+    done
+}
+
+# Shallow clone of one release tag into $2 (removed first, so a retry starts clean).
+clone_release() {
+    rm -rf "$2"
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$1" --single-branch \
+        "$UPSTREAM_URL" "$2"
+}
+
 build() {
     local ref="$1" force="$2"
     command -v git >/dev/null 2>&1 || die "git is not installed"
@@ -183,9 +203,18 @@ build() {
 
     local tmp="$SRC/.QMX-Panadapter-NAS.new"
     [ -e "$tmp" ] && archive_move "$tmp" "incomplete"
-    say "Cloning upstream ..."
-    git clone --quiet "$UPSTREAM_URL" "$tmp" || die "git clone failed"
-    ( cd "$tmp" && git checkout --quiet -b "$BRANCH" "$ref" ) || die "upstream has no $ref"
+    # Only the release itself is downloaded (~40 MB instead of the whole
+    # ~160 MB history), and a dropped connection is retried: on 2026-10-18 a
+    # full clone was cut off with "RPC failed; curl 56 Recv failure: Connection
+    # reset by peer". The release the patches were made against is fetched as
+    # well, so git am --3way can still merge around upstream's changes.
+    say "Downloading upstream $ref ..."
+    retry clone_release "$ref" "$tmp" || die "could not download $ref from $UPSTREAM_URL (network?) - run the script again"
+    ( cd "$tmp" && git checkout --quiet -b "$BRANCH" ) || die "upstream has no $ref"
+    if [ -n "$SERIES_BASE" ] && [ "$SERIES_BASE" != "$ref" ]; then
+        retry git -C "$tmp" fetch --quiet --depth 1 origin tag "$SERIES_BASE" \
+            || say "  (could not download $SERIES_BASE: patches that need a 3-way merge will fail)"
+    fi
     local commit; commit="$(cd "$tmp" && git rev-parse --short HEAD)"
     printf 'base=%s\n' "$ref" > "$tmp/$STAMP"     # so a failed attempt is archived by name
 

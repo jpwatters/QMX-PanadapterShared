@@ -86,7 +86,7 @@ When you call CQ (or work a busy run), more than one station may answer at once 
 - **Hold the button to open the ADIF log** — the log stays reachable even while the button reads "Pileup" (a one-time hint appears the first time it flips).
 - Tap a station in the list to work them (the same confirmation modal as a decode-list tap), or tap the small **✕** to dismiss them without working them. The reply is the correct **next** message for that station, built from whatever they actually last transmitted — usually a signal report for someone who has just called you, but an `R`+report if they came back later with a report of their own (v1.3.2; the same laddering as tapping a decode-list row).
 - A station is removed from the list automatically once you start a QSO with them, and a just-completed contact's trailing 73 can't put them back.
-- Stations you've worked before still appear in the pileup unless **Exclude worked-before** is checked — the pileup follows the same rule as the auto-answer.
+- Stations you've worked before still appear in the pileup unless **Never auto-call worked-before** is checked — the pileup follows the same rule as the auto-answer.
 
 The pile-up tracker never transmits on its own — it only remembers callers; you choose who to work. If you'd rather it *did*, check **Auto-work pileup** in the Options modal: the strongest waiting caller is pounced automatically when your current QSO completes — or immediately, if you enable it with callers already waiting and nothing else in progress. It carries the same unattended-TX warning as the robot.
 
@@ -120,6 +120,26 @@ note: dim | CQ stop and Listen sit top-right and apply on the tap - no Save need
 Choose a preset (or edit/save a new one), then tap **Transmit**. The QMX starts calling CQ and listening for replies.
 
 **CQ tone selection** — the panadapter automatically picks a quiet frequency (6.25 Hz tone spacing, 200–2800 Hz audio range, no other stations nearby). If your chosen tone gets busy during a QSO, the panadapter **auto-relocates to the nearest clear frequency** to avoid stepping on other stations.
+
+## Where your transmission sits in the slot
+
+```qmxdiagram
+type: timeline
+title: One FT8 slot - 15 s, and what DT and DTR measure
+span: 15
+seg: 0-12.64 steel a transmission - 12.64 s, 79 symbols
+seg: 12.64-15 dim dead air - 2.36 s
+mark: 0-0.014 red our TX starts at +14 ms
+tick: 0, 5, 10, 15
+note: steel | DTR is the RAW offset of a received signal from the slot boundary. It carries about 0.5 s of receive latency - the QMX SDR plus USB buffering - so it is not comparable with WSJT-X
+note: trace | DT is that same offset corrected against the band consensus, so the shared latency cancels and an on-time station reads about 0.0. This is the WSJT-X-style number
+note: dim | the decode runs after the capture, in the dead air and into the next slot. That is why a reply must be decided before the next boundary, not after it. FT4 is the same shape at 7.5 s - a 5.04 s burst and 2.46 s of dead air
+```
+
+Your burst starts **14 ms after the slot boundary** and runs 12.64 s, so the last
+2.36 s of every slot is dead air. That gap is the whole reason a reply has to be
+decided before the next boundary rather than after it — the decode of the slot you
+just heard is still running in it.
 
 ## What the TX status line is telling you
 
@@ -170,6 +190,23 @@ rather than someone else.
 **Pause** sits with Re-send, RR73 and 73 in the mid-QSO row, and it is on the
 browser page as well as the Tab5 (v1.16.2). It skips exactly one transmission
 and leaves the exchange intact — unlike **Cancel**, which ends it.
+
+**The row now stays up until your final is acknowledged (v1.20.2).** Until this
+release it vanished the instant the closing RR73 or 73 was sent - so the one
+window in which a missed final could still be put right was the one window with
+no buttons in it. The machine has always kept watching for five minutes and
+re-sending on its own; now you can see that it is doing so, and act inside it:
+
+- Only **Re-send** and **Cancel** are offered, because RR73 and 73 are built
+  from an exchange that has already closed.
+- **Re-send** puts that same final back on the air - the RR73 if that is what
+  you sent, not a bare 73.
+- **Cancel**, or a tap on the Tab5's TX indicator, says the contact is over and
+  stops the machine re-sending too.
+- Pressing Re-send does not use up the machine's own six tries.
+
+The QSO is logged when the final leaves the air, as it has been since v1.20.0 -
+none of this delays the log entry.
 
 - It shows a **pause** symbol normally and a **play** symbol on yellow while a
   transmission is being skipped, so you can see the state at a glance.
@@ -376,6 +413,14 @@ Presets persist across power cycles. Common modifiers:
 - **POTA** — Parks on the Air activation
 - **SOTA** — Summits on the Air activation
 - *(blank)* — standard CQ
+
+!!! tip "From v1.20.5 you do not have to set POTA by hand"
+    While an **activation is running**, your CQ goes out as `CQ POTA` — or
+    `CQ SOTA` for a summit — whatever the preset says, and goes back to normal
+    when you stop the session. Before this, starting an activation left the CQ
+    unchanged, so nobody hunting parks knew you were in one *(Bruce N9JCV)*.
+    Field Day mode has always worked this way and still outranks it: FT8 has
+    room for exactly one modifier.
 
 The preset editor's top-right **CQ stop** button sets the CQ auto-stop limit (see [Call CQ](#2-call-cq) above) — it cycles never / 1–5 / 10 and applies on tap, independent of Save/Cancel.
 

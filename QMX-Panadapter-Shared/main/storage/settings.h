@@ -220,6 +220,44 @@ typedef struct {
      * replies addressed to us are not buried; this makes it the operator's
      * choice rather than ours. */
     bool    cq_show_others;  /* running CQ: keep other stations' CQ rows visible */
+    /* --- Hide worked-before stations from the decode lists - appended, so
+     * old NVS blobs read back 0 (=off) and nothing changes for anyone who
+     * does not ask for it.
+     *
+     * Randy N4OPI, 2026-10-16: "I would expect that with this checked, worked
+     * before stations wouldn't show up at all". The checkbox he meant is
+     * excl_worked_before above, which gates who the MACHINE calls and hides
+     * nothing - 5deb388d relabelled it "Never auto-call worked-before" so it
+     * stops promising a list change.
+     *
+     * ⛔ A SEPARATE SWITCH, NOT A SECOND MEANING FOR THAT ONE. Operator's
+     * decision 2026-10-20. The two are genuinely different questions: an
+     * operator hunting new stations wants them gone from the list, and an
+     * operator who works duplicates on purpose still wants the machine to
+     * leave them alone. Folding both onto excl_worked_before would force one
+     * answer on whoever wanted the other.
+     *
+     * Display only, and the row grey (ft8_screen_view.c) stays unconditional:
+     * with this off, a worked-before station is still dimmed, which is what
+     * everyone has today. */
+    bool    hide_worked_before;
+    /* --- Decline a CQ aimed at a group we are not in - appended, so old NVS
+     * blobs read back 0 (=off) and nothing changes for anyone who does not ask.
+     *
+     * Randy N4OPI, 2026-10-21: "someone calling 'CQ DX <theirUScall>' or
+     * 'CQ <some state I don't live in> <theircall>' is looking for a specific
+     * group of stations that I do not belong to."
+     *
+     * ⛔ A DIFFERENT FEATURE from the Skip button, and the sent reply says so:
+     * this is the robot deciding not to answer at all, where Skip ends an
+     * exchange already running.
+     *
+     * The judgement lives in ft8_directed_cq.c and is deliberately
+     * under-confident - only "CQ DX" from our own entity and US state calls
+     * when we are not in the USA are declined. Continent calls are not judged
+     * at all. Declining wrongly costs a contact; answering a CQ that was not
+     * for us costs one slot. */
+    bool    robot_skip_directed_cq;
 } ft8_filters_t;
 
 // Power calibration ("Calibrate Power" WSPR-drawer button, main/ui/
@@ -338,6 +376,11 @@ typedef struct {
     uint8_t  colormap_idx; // waterfall colour map: 0=Thermal 1=Viridis 2=Turbo 3=Grayscale
     char     my_callsign[16];  // operator callsign for FT8 (15 chars + NUL)
     char     my_grid[8];       // Maidenhead grid (6 chars + NUL, e.g. "JO45ab")
+    /* US state/province, two letters, upper case, EMPTY when not set.
+     * Only the directed-CQ filter uses it: the grid gives a position but not
+     * a reliable state line, so a "CQ TX" cannot be declined from the grid
+     * alone. Randy N4OPI asked for exactly this field. */
+    char     my_state[4];
     int16_t  cw_cal_hz;        // CW LO trim (Hz), default -60, range +/-100
     float    zoom_factor;      // spectrum/waterfall zoom, 1.0=full, max 24.0
     uint8_t  brightness_pct;   // LCD backlight brightness, 0..100, default 100
@@ -499,6 +542,11 @@ typedef struct {
     // panadapter in CW/CW-R. Default ON - it is the point of the feature - but
     // it is an overlay on someone else's waterfall, so it has an off switch.
     bool     cw_decode_en;
+    /* How many rows of that overlay to draw, 2 or 4. Bryan N0LUF, 2026-10-16.
+       Four is what it has been since 2026-10-15 and stays the default; two
+       gives about 66 px of waterfall back. It is the WRAP modulus inside
+       cw_decode.c, not a draw count - see cw_decode_set_rows(). */
+    uint8_t  cw_decode_rows;
     bool     distance_in_miles; // FT8 decode list: show distance in miles instead of km (default false)
     uint8_t  freq_sep_style;    // #302: 0 = 14.074.000 (default), 1 = 14,074,000 (Don N2VGU)
     bool     rit_pill_show;     // show the RIT pill in the panadapter top bar (default TRUE)
@@ -514,6 +562,22 @@ typedef struct {
                                // slot at a decodable DT. Trades some weak/late-station yield (default true)
     bool     ft8_sync_lines;  // Panadapter: FT8-sync-vs-SNTP waterfall slot-boundary lines + 2x waterfall speed (default false)
     bool     greylist_en;     // FT8: grey-list stations after repeated failed pounces - auto pickers skip
+    /* ⛔ REFUSE TO TRANSMIT OUTSIDE THE EFFECTIVE REGION'S ALLOCATION (T48).
+     *
+     * Stored INVERTED - tx_band_guard_off - so a zero from an old NVS blob
+     * means the guard is ON. Every other appended setting here defaults to
+     * off because off is the old behaviour; this one must not, because the old
+     * behaviour is "transmit whatever is stored", and that is what let a WSPR
+     * 60 m dial 63 kHz below the band go out unattended.
+     *
+     * ⚠ THE OFF SWITCH IS NOT A COURTESY. bandplan.h says its own numbers are
+     * "an operator hint, not a legal authority", and on 2026-10-21 one was
+     * wrong by 500 Hz at exactly the edge WSPR uses. Operators with special or
+     * experimental licences have access this table does not model, and our
+     * Region 2 60 m is a continuous segment where the US has five channels.
+     * A guard that cannot be switched off would eventually stop a legal
+     * transmission with no way round it. */
+    bool     tx_band_guard_off;
                               // them, rows recolour, tap offers clear (default false; RAM-only list)
     bool     spots_en;        // draw live POTA (later RBN) spots on the spectrum (default true)
     bool     rbn_en;          // add the RBN telnet feed as a second spot source (default FALSE:
@@ -800,6 +864,30 @@ typedef struct {
     uint8_t  gpio_relay_pin;    // 53 or 54 only (gpio_relay.c whitelists these), default 53
     bool     gpio_relay_level;  // pulse level: true = active HIGH (default), false = active LOW
     uint16_t gpio_relay_ms;     // pulse duration, 50..5000 ms (default 1000)
+    /* ⛔ DRIVE ONLY THE SELECTED PIN, leaving the other one hi-Z. Default
+     * FALSE, which is the behaviour every unit has had: BOTH pads driven to
+     * the resting level whichever one is configured to pulse.
+     *
+     * WHY BOTH ARE DRIVEN BY DEFAULT, and why this is an option rather than a
+     * change: the polarity an operator declares is a fact about their wiring,
+     * so leaving the unselected pin undriven can leave a harness resting on
+     * its ASSERTED side after a pin change - on a line wired to a QMX's
+     * PWR_ON. That was Randy N4OPI's own finding on 2026-10-04 and the reason
+     * gpio_relay_init() sets both.
+     *
+     * WHY THE OPTION EXISTS, from the same operator on 2026-10-20: he now
+     * SHARES PORT.A - GPIO54 to a Unit GPS, GPIO53 to an opto-isolator on the
+     * QMX's PWR_ON - and switches modes to use each. Entering relay mode then
+     * drives GPIO54 into the still-connected module's TX output, continuously,
+     * with no pulse involved. He had assumed selecting pin 53 left 54 alone;
+     * it never did.
+     *
+     * ⚠ HI-Z IS NOT "INACTIVE" ON ITS OWN. An undriven pad floats, and what
+     * the harness on it then sees is decided by ITS pull, not by us. Turn this
+     * on only when the unselected pin is either unconnected or biased by the
+     * circuit on it - which is exactly the shared-port case and not the
+     * two-relay case. */
+    bool     gpio_relay_solo;
     // Who owns PORT.A. Kept next to the relay triplet because it is the switch
     // that turns those three off: mode != relay means the pin/level/ms are
     // still stored (a future switch back must restore them) but drive nothing.
@@ -874,6 +962,7 @@ void settings_set_colormap_idx(uint8_t idx);
 // transmitter (v0.11+) and shown in the FT8 view info pane.
 void settings_set_my_callsign(const char *call);
 void settings_set_my_grid(const char *grid);
+void settings_set_my_state(const char *st);
 
 // The grid the GPS last wrote into my_grid. Provenance, not configuration:
 // gps_autogrid.c uses it to leave a hand-corrected grid alone (see the ⭐
@@ -1018,6 +1107,10 @@ bool    settings_get_hp_mute_en(void);
 // four times. Reads the staged copy, so it reflects a change immediately.
 bool settings_get_cw_decode_en(void);
 void settings_set_cw_decode_en(bool v);
+/* Rows of decoded CW to draw, 2 or 4. The setter also applies it to
+   cw_decode.c, which WIPES the line - see cw_decode_set_rows(). */
+uint8_t settings_get_cw_decode_rows(void);
+void settings_set_cw_decode_rows(uint8_t rows);
 void settings_set_distance_in_miles(bool v);
 /* Narrow read - the WSPR decode list formats up to 18 rows per repaint on
  * taskLVGL, where settings_load_all()'s multi-kilobyte copy has crashed this
@@ -1039,6 +1132,8 @@ void settings_set_spur_mode(uint8_t v);
 // boundary and a hand-tapped reply can fire in its own slot at a decodable DT.
 void settings_set_ft8_early_decode(bool v);
 void settings_set_greylist_en(bool v);
+void settings_set_tx_band_guard_off(bool v);
+bool settings_get_tx_band_guard_off(void);
 void settings_set_pskreporter_en(bool v);
 void settings_set_spots_en(bool v);
 bool settings_get_spots_en(void);       // narrow: spots_any_source_enabled() runs on render (4096 B stack)
@@ -1381,6 +1476,17 @@ void settings_set_gpio_relay(uint8_t pin, bool level, uint16_t ms);
 // settings_load_all() - that is a multi-kilobyte struct and this is read from
 // the web handler; see the task-stack notes in CLAUDE.md.
 void settings_get_gpio_relay(uint8_t *pin, bool *level, uint16_t *ms);
+
+/* Drive only the selected relay pin, leaving the other hi-Z. The setter
+ * re-configures the pads immediately - it has to, because turning it on means
+ * RELEASING a pin that is currently driven. See gpio_relay_solo above. */
+/* False when the settings partition could not be opened: NOTHING persists
+ * this session and every setter is a no-op. See the definition for why that
+ * has to be visible rather than logged. */
+bool settings_persist_ok(void);
+
+void settings_set_gpio_relay_solo(bool solo);
+bool settings_get_gpio_relay_solo(void);
 
 // PORT.A ownership mode (port_a_mode_t). Narrow getter for gpio_relay.c's
 // refusals, main.c's boot branch and /api/status - all of them sit on stacks

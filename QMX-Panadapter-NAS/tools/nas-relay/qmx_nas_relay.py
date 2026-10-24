@@ -30,11 +30,11 @@ as the DS416j (QMX_BACKEND=libusb|usbfs forces one):
 Wire format (QMXR/1): every frame = 4-byte header + payload
      u8  type   1=HELLO 2=IQ 3=CAT 4=PING
                 5=TERM_OPEN 6=TERM_STATUS 7=TERM_DATA 8=TERM_CLOSE
-                9=TX_SCHED 10=TX_ABORT 11=TX_DONE
+                9=TX_SCHED 10=TX_ABORT 11=TX_DONE 12=TX_LOCK
      u8  flags  0
      u16 len    payload length, little-endian
   Tab5 -> relay : HELLO "QMXR/1 ...", then CAT bytes
-  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1 txsched=1", then IQ / CAT / PING
+  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1 txsched=1 txlock=1", then IQ / CAT / PING
   Terminal (second serial port), Tab5-initiated:
     Tab5 -> relay : TERM_OPEN            relay -> Tab5 : TERM_STATUS u8 ok [+ reason]
     both ways     : TERM_DATA bytes      Tab5 -> relay : TERM_CLOSE
@@ -49,6 +49,12 @@ Wire format (QMXR/1): every frame = 4-byte header + payload
     relay -> Tab5 : TX_DONE u8 status (0 complete, 1 aborted, 2 failed),
                     u16 tones sent, u32 ms TX; -> key-up, i32 ms latest symbol
     The Tab5 still sends RX; (after its power/SWR query) and its own CAT.
+  Transmitter lock ("txlock=1"):
+    relay -> Tab5 : TX_LOCK u8 locked (1/0) [+ reason text], right after the
+                    HELLO and whenever it changes. While locked (another device,
+                    the Mac's TCI program, has the transmitter) the relay drops
+                    the Tab5's TX;/TA and refuses its TX_SCHED, and the Tab5
+                    shows "TX locked: Another Device has the transmitter".
 
 The relay only answers the Tab5's HELLO after it has opened the QMX, and it
 closes the connection as soon as the QMX goes away, so for the Tab5 an open
@@ -85,11 +91,13 @@ log = logging.getLogger("qmx-nas-relay")
 PROTO_HELLO, PROTO_IQ, PROTO_CAT, PROTO_PING = 1, 2, 3, 4
 PROTO_TERM_OPEN, PROTO_TERM_STATUS, PROTO_TERM_DATA, PROTO_TERM_CLOSE = 5, 6, 7, 8
 PROTO_TX_SCHED, PROTO_TX_ABORT, PROTO_TX_DONE = 9, 10, 11
+PROTO_TX_LOCK = 12
 TX_SCHED_HDR = struct.Struct("<BBHI")
 TX_DONE_FMT = struct.Struct("<BHIi")
 HDR = struct.Struct("<BBH")
 DEFAULT_PORT = 7355
 DEFAULT_SERIAL_PORT = 7356     # QMX port 3 as raw TCP serial for PCs
+DEFAULT_IQ_LISTEN_PORT = 7357  # a copy of the I/Q stream for a second, listen-only client (the Mac's TCI bridge)
 QMX_VID, QMX_PID = 0x0483, 0xA34C
 SAMPLE_RATE = 48000
 FRAME_PAIRS = 480            # 10 ms of I/Q per IQ frame (1920 bytes)
@@ -1200,7 +1208,8 @@ class FakeRadio:
         log.info("FAKE radio: synthetic I/Q tone at +3000 Hz, CAT emulator")
 
     def _gen(self):
-        ph, step = 0.0, 2 * math.pi * 3000 / SAMPLE_RATE
+        tone = float(os.environ.get("QMX_FAKE_TONE_HZ", "3000"))   # I/Q offset; the dial is at +12000
+        ph, step = 0.0, 2 * math.pi * tone / SAMPLE_RATE
         nxt = time.monotonic()
         while self.running:
             out = bytearray()
@@ -1305,6 +1314,7 @@ class RadioManager:
         self.dead = False
         self.users: set = set()
         self.session = None          # the current Tab5 session gets I/Q and CAT
+        self.listener = None         # an I/Q listener (port 7357) gets a copy of the I/Q, nothing else
         self.txlog = None            # TxLog, unless --txlog-dir ''
         self.catlog = None           # CatLog (see catlog.off)
         self.flags = Flags(RELAY_DIR)
@@ -1327,8 +1337,33 @@ class RadioManager:
             self.users.discard(user)
             if self.session is user:
                 self.session = None
+            if self.listener is user:
+                self.listener = None
+                if self.session and self.session is not user:
+                    self.session.tx_lock_update()
             if radio is self.radio and not self.users:
                 self._close_locked()
+
+    def tab5_tx_block(self):
+        """Why the Tab5 may not transmit now, or None. While the Mac's TCI bridge
+        is connected (a TCI program like WS is using the radio), the transmitter
+        is the Mac's; a file named tab5-tx-always in the relay folder turns this off."""
+        li = self.listener
+        if li and li.tx_capable and not self.flags.has("tab5-tx-always"):
+            return "the Mac's TCI program (%s) has the transmitter" % li.peer[0]
+        return None
+
+    def tx_lock_changed(self):
+        s = self.session
+        if s:
+            s.tx_lock_update()
+
+    def pc_tx_block(self):
+        """Why port 3 (PC software, the Mac's TCI bridge) may not key now, or None."""
+        s = self.session
+        if s and (s.keyed or s.tuning):
+            return "the Tab5 is transmitting"
+        return None
 
     def _close_locked(self):
         r, self.radio = self.radio, None
@@ -1341,6 +1376,9 @@ class RadioManager:
         s = self.session
         if s:
             s._on_iq(b)
+        li = self.listener
+        if li:
+            li._on_iq(b)
 
     def _on_cat(self, b):
         s = self.session
@@ -1388,7 +1426,7 @@ class Flags:
         now = time.monotonic()
         if now - self._t > 2.0:
             self._t = now
-            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx", "tab5-timed-tx")}
+            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx", "tab5-timed-tx", "tab5-tx-always")}
         return self._v.get(name, False)
 
 
@@ -1437,10 +1475,32 @@ class CatLog:
 POWER_OFF = re.compile(rb"^\s*PS\s*0\s*$", re.I)
 
 
-def guard_cat(data: bytes, carry: bytearray, who: str, mgr) -> bytes:
+TX_KEY = re.compile(rb"^\s*(TX\s*\d?|MD\s*8|TA\s*(\d+(\.\d*)?))\s*$", re.I)   # key down, Tune (MD8), or a tone
+
+
+def keys_transmitter(cmd: bytes) -> bool:
+    """TX;, Tune (MD8; - a steady carrier), or a tone TA<f>; with f >= 10 Hz
+    (TA below 10 Hz is the key-up tone)."""
+    m = TX_KEY.match(cmd)
+    if not m:
+        return False
+    if m.group(2) is None:
+        return True
+    try:
+        return float(m.group(2)) >= 10.0
+    except ValueError:
+        return False
+
+
+_tx_block_logged: dict = {}
+
+
+def guard_cat(data: bytes, carry: bytearray, who: str, mgr, tx_block=None) -> bytes:
     """Pass complete CAT commands through, dropping PS0; unless allow-ps0 is
     present; log each command. An incomplete tail waits in `carry` for the
-    rest of it (every CAT command ends with ';')."""
+    rest of it (every CAT command ends with ';'). If tx_block() returns a
+    reason, commands that key the transmitter (TX;, TA<f>;) are dropped too;
+    key-up (TA0;, RX;) always passes."""
     carry += data
     out = bytearray()
     while True:
@@ -1455,6 +1515,16 @@ def guard_cat(data: bytes, carry: bytearray, who: str, mgr) -> bytes:
             if mgr.catlog:
                 mgr.catlog.note(who + ">QMX", cmd, "BLOCKED (power off)")
             continue
+        if tx_block and keys_transmitter(cmd[:-1]):
+            why = tx_block()
+            if why:
+                now = time.monotonic()
+                if now - _tx_block_logged.get(who, -1e9) > 10:
+                    _tx_block_logged[who] = now
+                    log.warning("%s transmit BLOCKED: %s", who, why)
+                if mgr.catlog:
+                    mgr.catlog.note(who + ">QMX", cmd, "BLOCKED (%s)" % why)
+                continue
         if mgr.catlog:
             mgr.catlog.note(who + ">QMX", cmd)
         out += cmd
@@ -1612,6 +1682,8 @@ class Session:
         self.tx_hold = False
         self.tx_hold_t0 = 0.0
         self.tx_held_frames = 0
+        self.tuning = False          # MD8; (Tune) seen and no other mode since
+        self.keyed = False           # TX; seen and no RX; yet (whoever sent it on the Tab5's behalf)
         # Relay-timed bursts (TX_SCHED). cat_lock keeps the playout thread's
         # tone writes and the Tab5's own CAT (its mid-burst PC;SW;, RX;) from
         # interleaving inside one USB write and keeps the logs in order.
@@ -1619,6 +1691,7 @@ class Session:
         self.play: threading.Thread | None = None
         self.play_abort = threading.Event()
         self.txsched = False
+        self.lock_sent = None        # the TX_LOCK state last told to the Tab5 (None: not yet)
 
     def _put_ctl(self, data: bytes):
         with self.wake:
@@ -1629,6 +1702,12 @@ class Session:
         """Follow TX;/RX; in the Tab5's CAT stream to pause I/Q while keyed."""
         for c in payload.split(b";"):
             c = c.strip()
+            if c.startswith(b"TX"):
+                self.keyed = True
+            elif c.startswith(b"RX"):
+                self.keyed = False
+            elif c.startswith(b"MD"):
+                self.tuning = c[2:].strip() == b"8"     # Tune keys a carrier until the next mode change
             if c.startswith(b"TX"):
                 if not self.tx_hold and not self.mgr.flags.has("iq-during-tx"):
                     self.tx_hold, self.tx_hold_t0, self.tx_held_frames = True, time.monotonic(), 0
@@ -1783,8 +1862,9 @@ class Session:
             # file named tab5-timed-tx in the relay folder leaves it out, so the
             # Tab5 times them as before - for comparing the two.
             self.txsched = not self.mgr.flags.has("tab5-timed-tx")
-            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1%s"
+            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1%s txlock=1"
                                % (SAMPLE_RATE, b" txsched=1" if self.txsched else b"")))
+            self.tx_lock_update()
             log.info("transmit bursts timed by %s", "this relay" if self.txsched else "the Tab5 (tab5-timed-tx)")
             sock.settimeout(None)
             sender = threading.Thread(target=self._send_loop, daemon=True)
@@ -1794,12 +1874,19 @@ class Session:
                 payload = recv_exact(sock, n) if n else b""
                 if t == PROTO_CAT and payload:
                     log.debug("Tab5 -> QMX CAT %r", payload)
-                    payload = guard_cat(payload, self.cat_carry, "T5", self.mgr)
+                    payload = guard_cat(payload, self.cat_carry, "T5", self.mgr, self.mgr.tab5_tx_block)
                     if not payload:
                         continue
                     self._send_cat(radio, payload, "")     # guard_cat already logged it
                 elif t == PROTO_TX_SCHED and self.txsched:
-                    self._tx_sched(radio, payload)
+                    why = self.mgr.tab5_tx_block()
+                    if why:
+                        log.warning("T5 transmit burst BLOCKED: %s", why)
+                        if self.mgr.catlog:
+                            self.mgr.catlog.note("T5>QMX", b"(relay-timed burst)", "BLOCKED (%s)" % why)
+                        self._put_ctl(frame(PROTO_TX_DONE, TX_DONE_FMT.pack(2, 0, 0, 0)))
+                    else:
+                        self._tx_sched(radio, payload)
                 elif t == PROTO_TX_ABORT:
                     if self.play and self.play.is_alive():
                         log.info("TX_ABORT from the Tab5")
@@ -1842,6 +1929,18 @@ class Session:
             except OSError:
                 pass
 
+    def tx_lock_update(self):
+        """Tell the Tab5 whether it may transmit (TX_LOCK), if that changed. Called
+        after the HELLO, when the I/Q listener comes or goes, and once a second
+        (so the tab5-tx-always flag file takes effect without a reconnect)."""
+        why = self.mgr.tab5_tx_block()
+        state = bool(why)
+        if state == self.lock_sent:
+            return
+        self.lock_sent = state
+        log.info("told the Tab5: transmitter %s", ("LOCKED (%s)" % why) if why else "free")
+        self._put_ctl(frame(PROTO_TX_LOCK, bytes([1 if state else 0]) + (why or "").encode()[:120]))
+
     def _send_loop(self):
         last_ping = time.monotonic()
         while self.alive:
@@ -1857,12 +1956,128 @@ class Session:
             if time.monotonic() - last_ping >= 1.0:
                 out.insert(0, frame(PROTO_PING))
                 last_ping = time.monotonic()
+                self.tx_lock_update()        # queued; goes out on the next pass
             try:
                 for data in out:
                     self.sock.sendall(data)
             except OSError as e:
                 self.stop("send failed: %s" % e)
                 return
+
+
+# ---------------------------------------------------------------------------
+# I/Q listener: a copy of the QMX's I/Q stream for a second client
+# ---------------------------------------------------------------------------
+
+class IqListener:
+    """A listen-only QMXR/1 client on its own port (default 7357): it gets the
+    same 48 kHz I/Q as the Tab5 and PINGs, and nothing it sends reaches the
+    radio. The Mac's TCI bridge uses it to make receive audio for WSJT-X/WS, and
+    controls the radio on QMX serial port 3, so the Tab5's own session (I/Q and
+    CAT on port 7355) is never touched. One listener at a time; a new one
+    replaces the old one. Frames that the network can't keep up with are dropped."""
+
+    def __init__(self, sock: socket.socket, peer, mgr: RadioManager):
+        self.sock, self.peer, self.mgr = sock, peer, mgr
+        self.q: collections.deque[bytes] = collections.deque()
+        self.wake = threading.Condition()
+        self.acc = bytearray()
+        self.alive = True
+        self.dropped = 0
+        self.tx_capable = False      # its HELLO says tx=1: a TCI program that can transmit is connected
+
+    def radio_gone(self):
+        self.stop("QMX disconnected")
+
+    def stop(self, why: str):
+        if self.alive:
+            self.alive = False
+            with self.wake:
+                self.wake.notify()
+            log.info("I/Q listener %s:%d ending: %s", self.peer[0], self.peer[1], why)
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _on_iq(self, s16: bytes):
+        self.acc += s16
+        fb = FRAME_PAIRS * 4
+        while len(self.acc) >= fb:
+            chunk = bytes(self.acc[:fb])
+            del self.acc[:fb]
+            with self.wake:
+                if len(self.q) >= 10:          # 100 ms behind: drop rather than add delay
+                    self.dropped += 1
+                    continue
+                self.q.append(frame(PROTO_IQ, chunk))
+                self.wake.notify()
+
+    def _send_loop(self):
+        last_ping = time.monotonic()
+        while self.alive:
+            with self.wake:
+                if not self.q:
+                    self.wake.wait(0.25)
+                out = list(self.q)
+                self.q.clear()
+            if time.monotonic() - last_ping >= 1.0:
+                out.insert(0, frame(PROTO_PING))
+                last_ping = time.monotonic()
+            try:
+                for data in out:
+                    self.sock.sendall(data)
+            except OSError as e:
+                self.stop("send failed: %s" % e)
+                return
+
+    def run(self):
+        sock = self.sock
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+        except OSError:
+            pass
+        radio = None
+        try:
+            sock.settimeout(5)
+            t, _, n = HDR.unpack(recv_exact(sock, 4))
+            hello = recv_exact(sock, n) if n else b""
+            if t != PROTO_HELLO or not hello.startswith(b"QMXR/1"):
+                raise ConnectionError("not a QMXR/1 client")
+            radio = self.mgr.acquire(self)
+            self.tx_capable = b"tx=1" in hello
+            self.mgr.listener = self
+            self.mgr.tx_lock_changed()
+            if self.tx_capable:
+                log.info("the Mac's TCI program has the transmitter: the Tab5 cannot transmit while it "
+                         "is connected%s", " (tab5-tx-always is set: it can)"
+                         if self.mgr.flags.has("tab5-tx-always") else "")
+            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas role=listen" % SAMPLE_RATE))
+            log.info("I/Q listener %s:%d connected (%s)", self.peer[0], self.peer[1],
+                     hello.decode(errors="replace"))
+            sock.settimeout(None)
+            threading.Thread(target=self._send_loop, daemon=True, name="iq-listener").start()
+            while self.alive:                  # read and discard; a close ends the session
+                t, _, n = HDR.unpack(recv_exact(sock, 4))
+                if n:
+                    recv_exact(sock, n)
+        except RadioGone as e:
+            log.warning("I/Q listener: %s", e)
+        except (ConnectionError, OSError, socket.timeout) as e:
+            if self.alive:
+                log.info("I/Q listener %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
+        finally:
+            self.alive = False
+            if radio:
+                if self.dropped:
+                    log.info("I/Q listener: %d frames dropped for a slow link", self.dropped)
+                self.mgr.release(self, radio)
+            try:
+                sock.close()
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1930,7 +2145,7 @@ class SerialClient:
                 if not data:
                     log.info("port 3 client %s:%d disconnected", self.peer[0], self.peer[1])
                     break
-                data = guard_cat(data, carry, "PC", self.mgr)
+                data = guard_cat(data, carry, "PC", self.mgr, self.mgr.pc_tx_block)
                 if data:
                     radio.serial_send(PORT3, data)
         except RadioGone as e:
@@ -2200,6 +2415,9 @@ def main():
     ap.add_argument("--serial-port", type=int, default=DEFAULT_SERIAL_PORT,
                     help="TCP port for the QMX's 3rd serial port, for PC software "
                          "(default 7356, 0 = off; needs 'USB serial ports' = 3 on the radio)")
+    ap.add_argument("--iq-listen-port", type=int, default=DEFAULT_IQ_LISTEN_PORT,
+                    help="TCP port giving a second, listen-only client a copy of the I/Q "
+                         "(the Mac's TCI bridge; default 7357, 0 = off)")
     ap.add_argument("--fake", action="store_true", help="synthetic radio for bench tests (no QMX needed)")
     ap.add_argument("--fake-one-port", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--fake-ports", type=int, default=3, choices=(1, 2, 3), help=argparse.SUPPRESS)
@@ -2245,6 +2463,10 @@ def main():
         threading.Thread(target=serve, daemon=True, args=(
             args.listen, args.serial_port, lambda s, p: SerialClient(s, p, mgr),
             "QMX port 3, raw serial for PC software")).start()
+    if args.iq_listen_port:
+        threading.Thread(target=serve, daemon=True, args=(
+            args.listen, args.iq_listen_port, lambda s, p: IqListener(s, p, mgr),
+            "I/Q copy for a listen-only client")).start()
     disc = args.port if args.discovery_port is None else args.discovery_port
     if disc:
         threading.Thread(target=discovery_responder, daemon=True, name="discovery",

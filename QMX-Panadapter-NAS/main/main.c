@@ -575,6 +575,29 @@ void app_main(void)
                     12000);
     }
 
+    /* ⛔ SAY IT ON THE SCREEN WHEN NOTHING CAN BE SAVED.
+     *
+     * Sergei AA1SL, issue #21: a Tab5 installed with the M5Launcher, whose
+     * partition layout has no `user_nvs`. The firmware opens no settings
+     * store, every setter becomes a no-op, and the device receives perfectly
+     * while forgetting the callsign - at which point every transmit refuses
+     * with "Set your callsign first". He re-flashed twice, the same way, and
+     * had no way to know he was chasing the wrong thing.
+     *
+     * Same reasoning as the brownout toast above: the firmware knew and told
+     * only the serial console. Longer, because this one is not a one-off -
+     * EVERY save this session will fail - and it names the cure, because the
+     * cure is not something an operator would guess. */
+    if (!settings_persist_ok()) {
+        ESP_LOGE(TAG, "SETTINGS CANNOT BE SAVED - the user_nvs partition did not open. "
+                      "Nothing entered this session will be kept. Re-flash with the "
+                      "project flasher and choose E (clean), which rewrites the "
+                      "partition table; the M5Launcher's layout has no user_nvs.");
+        ui_toast_ms("Settings cannot be saved on this unit - nothing you enter will be kept. "
+                    "Re-flash with the QMX-Panadapter flasher and choose E (clean).",
+                    30000);
+    }
+
     // Restore last-known VFO frequency (display only; QMX is source of truth).
     if (cfg->last_vfo_hz != 0) {
         ESP_LOGI(TAG, "Restored last VFO: %lu Hz", (unsigned long)cfg->last_vfo_hz);
@@ -588,16 +611,23 @@ void app_main(void)
     /* #302: the stored frequency punctuation, applied before any UI is built.
        Every caller reads g_freq_style at format time, so this is the only
        place it has to be set. */
+    uint8_t cw_rows_boot = 0;
     {
         /* Heap, not stack - same reasoning as the cfg block above. */
         qmx_settings_t *fs = heap_caps_malloc(sizeof(*fs), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (fs) {
             settings_load_all(fs);
             g_freq_style = (fs->freq_sep_style == 1) ? FREQ_STYLE_COMMA : FREQ_STYLE_DOTS;
+            cw_rows_boot = fs->cw_decode_rows;
             heap_caps_free(fs);
         }
     }
     cw_decode_init();
+    /* AFTER cw_decode_init(): it creates the mutex that cw_decode_set_rows()
+       takes, and clears the grid the setter would otherwise have just wiped.
+       The stored choice has to reach the decoder, not only the UI, because it
+       is the wrap modulus - see cw_decode_set_rows(). */
+    if (cw_rows_boot == 2 || cw_rows_boot == 4) cw_decode_set_rows(cw_rows_boot);
     /* No USB host means no CDC-ACM to find. Starting CAT anyway leaves its
      * link task retrying a device that cannot appear, and the UI showing a
      * radio that is not there. */

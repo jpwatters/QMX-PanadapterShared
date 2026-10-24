@@ -63,9 +63,12 @@
 #include "ft8/js8_text.h"
 #include "ft8/js8_reasm.h"
 #include "js8_chat.h"
+#include "js8_target.h"
+#include "ft8/js8_message.h"
 #include "common/monitor.h"
 
 #include "dsp.h"
+#include "wspr_rx.h"         /* wspr_rx_running() - see FT8_ALLOC_MAX_WAIT_TRIES */
 #include "audio/audio.h"
 #include "dsp/iq_balance.h"
 #include "cat/cat.h"
@@ -445,6 +448,18 @@ static volatile uint32_t s_decode_jobs_done   = 0;
  * WSPR cycle is 120 s so a pathological case wants room. */
 #define FT8_ALLOC_TRIES    16
 #define FT8_ALLOC_WAIT_MS 1000
+/* ⛔ SWEPT FROM THE OTHER SIDE OF THE SAME BUG. wspr_rx.c's identical loop gave
+ * up 1868 ms before THIS task released the memory it was waiting for (John
+ * W5JSS, 2026-10-18 - the capture is quoted at WSPR_ALLOC_MAX_WAIT_TRIES). The
+ * counting mistake is the same here and the direction is just reversed: 16
+ * seconds is a guess at how long wspr_rx takes to let go, and wspr_rx_running()
+ * is the fact. A second spent waiting for a receiver that is demonstrably still
+ * up does not spend the budget; it spends this ceiling.
+ *
+ * Not measured against a real FT8-starved-by-WSPR case - unlike the WSPR side,
+ * no log has shown this one firing. It is the sibling, fixed because it is the
+ * same defect, not because it has bitten anyone yet. */
+#define FT8_ALLOC_MAX_WAIT_TRIES 45   /* hard ceiling, held or not */
 
 static volatile bool  s_ft8_task_alive = false;
 
@@ -1394,6 +1409,10 @@ static bool set_time_from_qmx_rtc(bool *out_applied)
 // keep waiting and periodically update the status line so the user
 // knows we're still looking.
 //
+// TWO EXCEPTIONS, and they are the same exception twice: FT8 Simulation Mode
+// and a real audio source (the 3.5 mm jack) both run with NO RADIO AT ALL.
+// Sim mode is below; line-in is inside the loop, with its own note.
+//
 // EXCEPTION: FT8 Simulation Mode needs no radio at all (phantom stations,
 // ft8_tx.c's interlock never keys anything), yet this wait sat ahead of the
 // entire slot loop - so with no QMX the sim could inject CQs (its own task)
@@ -1410,6 +1429,35 @@ static void wait_for_cat_ready(void)
         settings_load_all(&s);
         if (s.sim_mode_en) {
             ESP_LOGI(TAG, "sim mode ON - not waiting for QMX (no radio needed)");
+            return;
+        }
+        /* ⛔ AND THE SECOND CASE OF THE SAME THING: A REAL AUDIO SOURCE.
+         *
+         * line_in.h starts the jack INSTEAD of bsp_usb_host_start() and is
+         * "mutually exclusive with the QMX, decided at boot". So on line-in
+         * there is no USB host, no QMX, and cat_is_ready() can NEVER become
+         * true - this loop was not waiting for something slow, it was waiting
+         * for something that cannot happen, for ever, before the first slot.
+         *
+         * Tony tony1tf, GitHub #19, v1.17.1: audio in, spectrum on the glass,
+         * WSPR decoding well off the same input, and FT8 never decoding a
+         * thing at any LO placement. wspr_rx.c has no cat_is_ready() anywhere,
+         * which is the whole of why WSPR worked and FT8 did not. He spent his
+         * time moving the local oscillator; nothing had got as far as looking
+         * at audio.
+         *
+         * The sim-mode escape above already made this argument - "needs no
+         * radio at all, yet this wait sat ahead of the entire slot loop" -
+         * and a real source is the same sentence with a different subject.
+         *
+         * ⚠ WHAT STILL NEEDS THE RADIO is handled below, not here: the QMX
+         * RTC query fails without CAT and falls through to SNTP, and if there
+         * is no time source at all the task parks and says so. Decoding is
+         * what this gate was wrongly blocking. */
+        if (rx_source_is_real(settings_get_rx_source())) {
+            ESP_LOGI(TAG, "RX source is the audio jack - not waiting for a QMX "
+                          "(there is none by design); FT8 runs off line-in");
+            ft8_status_set("Line-in: decoding audio");
             return;
         }
         int64_t now = esp_timer_get_time();
@@ -2032,13 +2080,25 @@ static void decode_candidate_range(monitor_t *mon, const ftx_candidate_t *cands,
                  * skip. Running advance() twice would re-scan the same message
                  * and could step the state machine twice.
                  *
-                 * ⚠ The cost, stated: advance() also captures the pileup and
-                 * scans for CQ callers, and running early shows it a PARTIAL
-                 * decode table. That is why the gate is ft8_qso_msg_is_for_us()
-                 * - it is only taken when a QSO is already running, which is
-                 * exactly when the pileup matters least and a prompt reply
-                 * matters most. An idle receiver still advances at the end of
-                 * the slot with the full picture, as before. */
+                 * ⛔ THE COST WAS STATED HERE AND THE REASONING WAS WRONG.
+                 * advance() also captures the pile-up and scans for CQ callers,
+                 * and running early shows it a PARTIAL decode table. This said
+                 * that was acceptable because the gate ft8_qso_msg_is_for_us()
+                 * means "only when a QSO is already running, which is exactly
+                 * when the pileup matters least".
+                 *
+                 * That predicate returns true for every state except IDLE,
+                 * DONE and TIMEOUT - and FT8_QSO_CQ is none of those. A CQ run
+                 * is "busy". So it fired precisely while a pile-up was
+                 * forming, which is when the pile-up matters MOST. Randy
+                 * N4OPI's 2026-10-16 log: 4 of 4 slots with more than one
+                 * station calling him lost every caller decoded after the
+                 * first, one of them 10 dB stronger than the one that won.
+                 *
+                 * Fixed by looking AGAIN at the end of the slot rather than by
+                 * weakening this gate - ft8_qso_slot_late_look() below. The
+                 * early advance keeps its reply latency; it no longer also
+                 * spends the slot's only look at the band. */
                 if (may_early_advance && !out->early_advanced &&
                     ft8_qso_msg_is_for_us(text)) {
                     out->early_advanced = true;
@@ -2490,6 +2550,39 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon, int64_t slot_sec,
                              src[rr]->js8ev[k].call);
                     snprintf(cm.text, sizeof(cm.text), "%s", jtext);
                     js8_chat_add(&cm);
+
+                    /* ⭐ THE ONE DIRECTED COMMAND WE OWE AN ANSWER TO: SNR?
+                     *
+                     * Gyula HA3HZ, 2026-10-13, from the far end. The report
+                     * EXCHANGE has always been automated - his own log caught
+                     * this unit answering four stations - but the explicit
+                     * command, index 0, was read by nothing, so a station
+                     * that used it got silence.
+                     *
+                     * ⛔ NOTED, NOT ANSWERED. This arms no transmission: it
+                     * tells the operator, who presses SNR. Answering here
+                     * would be a new unattended arming site aimed at whoever
+                     * asks, which is the operator's decision to make and not
+                     * a side effect of closing a protocol gap. The selection
+                     * is deliberately NOT moved either - it filters the
+                     * conversation pane, and yanking that out from under
+                     * somebody mid-read is the behaviour Ryan KK6DZB asked us
+                     * to stop.
+                     *
+                     * Only when it is addressed to US by name. @ALLCALL and
+                     * the group tokens carry the same command and are not a
+                     * question to this station. */
+                    if (js8_frame_type(src[rr]->js8ev[k].frame) == JS8_FRAME_DIRECTED) {
+                        js8_directed_t d;
+                        if (js8_unpack_directed(src[rr]->js8ev[k].frame, &d) &&
+                            d.cmd == JS8_CMD_SNR_QUERY && d.from[0] && d.to[0]) {
+                            char me[20];
+                            settings_get_my_callsign(me, sizeof(me));
+                            if (me[0] && strcasecmp(d.to, me) == 0)
+                                js8_request_note(d.from, src[rr]->js8ev[k].freq_hz,
+                                                 slot_sec);
+                        }
+                    }
                 }
             }
             for (int k = 0; k < js8_reasm_active(&s_js8_reasm); k++) {
@@ -2731,8 +2824,39 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon, int64_t slot_sec,
     //    progress.
     // Counter is static (persists across slots; this is the decode task, one
     // instance, no concurrency concern).
+    /* ⭐ AND WHEN THE SOFT RESET DOES NOT HELP, SAY SO (T44).
+     *
+     * MEASURED 2026-10-21, scratchpad/capture-dev.txt, boot of
+     * v1.20.2-2-geef9957a: this watchdog fired 37 times over six hours and
+     * recovered nothing, because the fault was not in the audio pipeline - the
+     * QMX had been wedged by the flash at 00:15 and was delivering no signal.
+     * ZERO fires after the operator power-cycled the radio at 08:04. The
+     * separation is total, so the fire count IS the discriminator and no new
+     * threshold is needed.
+     *
+     * ⛔ EVERY OTHER INDICATOR WAS GREEN for those six hours: UAC at a rock
+     * solid 48 000 pairs/s, CAT answering GP;/KS;/RG; all night, no UAC error,
+     * no brownout, and the breathing "turn on the QMX" banner silent - it
+     * watches the STREAM, not its content, so it cannot fire on this. 1513
+     * slots, zero decodes, and the operator found out by noticing no FT8.
+     *
+     * ⛔ TWO LEVEL-BASED DESIGNS WERE ELIMINATED BY MEASUREMENT FIRST, so do
+     * not reintroduce them:
+     *   - absolute audio peak. The wedged dev unit sat at peak L 17-24, but
+     *     the FIELD unit DECODES FT8 at peak L 6 (capture-field.txt), below
+     *     the wedged level. Any constant that catches one false-alarms the
+     *     other.
+     *   - relative spread of the peak over 5 min. Wedged 0.21 median against
+     *     0.23-0.26 healthy on two units. No separation at all.
+     *
+     * ⚠ A genuinely dead band produces the same pattern, which is why this is
+     * a HINT and fires ONCE per stuck episode rather than an alarm that
+     * repeats. At two fires the operator hears about it ~20 min in instead of
+     * six hours in. */
     {
-        static int s_stuck_slots = 0;
+        static int  s_stuck_slots = 0;
+        static int  s_stuck_fires = 0;    // consecutive fires with no decode between
+        static bool s_stuck_told  = false;
         const char *proto = ft8_op_mode_name();
         int stuck_thresh = FT8_STUCK_RESET_MS / ft8_op_mode_slot_ms();  // 8 FT8 / 16 FT4
         bool tx_or_qso = (ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE) ||
@@ -2745,15 +2869,49 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon, int64_t slot_sec,
         } else if (n_cand > 20 && n_decoded == 0 && n_js8ev == 0) {
             s_stuck_slots++;
             if (s_stuck_slots >= stuck_thresh) {
+                s_stuck_fires++;
                 ESP_LOGW(TAG, "%s: %d consecutive zero-decode idle RX slots "
-                         "(cand=%d) — soft-resetting audio+IQ",
-                         proto, s_stuck_slots, n_cand);
+                         "(cand=%d) — soft-resetting audio+IQ (fire %d)",
+                         proto, s_stuck_slots, n_cand, s_stuck_fires);
                 s_stuck_slots = 0;
                 iq_balance_reset();
                 audio_request_reset();
+
+                /* The second fire is the news: the first one could be a lull,
+                 * but a reset that changed nothing means the audio pipeline was
+                 * never the problem. Said once, and only once, until something
+                 * decodes again. */
+                if (s_stuck_fires >= 2 && !s_stuck_told) {
+                    s_stuck_told = true;
+                    /* A FLOOR, not the elapsed time, and the wording says
+                     * "over" for that reason: a QSO or a CAT pause mid-episode
+                     * resets s_stuck_slots but deliberately NOT s_stuck_fires,
+                     * so the real gap can be longer than fires x 10 min. */
+                    int mins = (s_stuck_fires * FT8_STUCK_RESET_MS) / 60000;
+                    /* 224, not 160: the fixed text alone is ~152 chars and gcc
+                     * sizes %d at 11, so -Werror=format-truncation refused the
+                     * smaller buffer. The mode name is on top of that. */
+                    char msg[224];
+                    snprintf(msg, sizeof(msg),
+                             "No %s decodes for over %d min and resetting the audio did not "
+                             "help. The radio may not be receiving - if the Tab5 was "
+                             "flashed or restarted, power-cycle the QMX.",
+                             proto, mins);
+                    ESP_LOGW(TAG, "%s", msg);
+                    ui_toast_ms(msg, 30000);
+                }
             }
         } else {
             s_stuck_slots = 0;
+            /* Something decoded, so the receiver is alive: forget the episode
+             * and re-arm, or a wedge later in the same session goes unreported.
+             * ⚠ Gated on a real decode, NOT on reaching this branch - it is
+             * also reached on a slot with cand <= 20, which a wedged radio
+             * produces too. */
+            if (n_decoded > 0 || n_js8ev > 0) {
+                s_stuck_fires = 0;
+                s_stuck_told  = false;
+            }
         }
     }
 
@@ -2764,7 +2922,20 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon, int64_t slot_sec,
        advanced), so this test is belt-and-braces rather than the only guard -
        which it has to be, now that the core-0 worker can early-advance too and
        these two flags are set from two different tasks. */
-    if (!r_main.early_advanced && !r_worker.early_advanced) ft8_qso_advance(slot_sec);
+    if (!r_main.early_advanced && !r_worker.early_advanced) {
+        ft8_qso_advance(slot_sec);
+    } else {
+        /* An early advance ran, so the state machine has already had its one
+         * step this slot - but it took that step on a PARTIAL decode table,
+         * and everything decoded afterwards was invisible to the pile-up and
+         * to the CQ answer picker. Randy N4OPI's 2026-10-16 log: 4 of 4 slots
+         * with more than one station calling him lost the later caller, one of
+         * them 10 dB stronger than the station that won.
+         *
+         * So look again now that the list is finished. This does NOT advance
+         * the machine - see ft8_qso_slot_late_look(). */
+        ft8_qso_slot_late_look(slot_sec);
+    }
     // Robot auto-answer: runs after advance() (so the existing machine reacts
     // first); self-gates to IDLE, so it only acts when no QSO is in progress.
     // Its ft8_qso_start() arms a reply for the next slot, which reply-on-
@@ -2983,12 +3154,17 @@ static void ft8_task(void *arg)
      * build_monitor_pool). So the WHOLE set is retried: a partial pool is freed
      * and the attempt repeated once the previous page has let go. */
     bool pool_ok = false;
-    for (int attempt = 0; attempt < FT8_ALLOC_TRIES; attempt++) {
+    int  charged = 0;        /* iterations with nothing visibly holding it */
+    for (int waited = 0;
+         charged < FT8_ALLOC_TRIES && waited < FT8_ALLOC_MAX_WAIT_TRIES;
+         waited++) {
         if (!s_cap_scratch)
             s_cap_scratch = heap_caps_malloc(SLOT_SAMPLES_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
         if (s_cap_scratch && build_monitor_pool(proto_for_mode())) { pool_ok = true; break; }
         free_monitor_objects();                    /* partial pool; scratch kept */
-        if (attempt == 0)
+        /* The holder we can name - see FT8_ALLOC_MAX_WAIT_TRIES. */
+        if (!wspr_rx_running()) charged++;
+        if (waited == 0)
             ESP_LOGW(TAG, "capture buffers not available yet (%u KB PSRAM free) - "
                           "waiting for the previous page to release",
                      (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));

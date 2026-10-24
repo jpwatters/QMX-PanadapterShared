@@ -201,7 +201,7 @@ static int64_t            s_manual_target_ts;
 // them from the pileup capture for a grace period so a finished contact never
 // re-enters the pileup (Dirk DK7CVD's lingering-call report), without the
 // blanket worked-before skip that also hid legitimate dupe callers whenever
-// the operator had "Exclude worked before" OFF.
+// the operator had "Never auto-call worked-before" OFF.
 #define DONE_GRACE_TTL_S 180
 static char               s_last_done_call[FT8_CALL_MAX_LEN];
 static int64_t            s_last_done_ts;
@@ -245,6 +245,36 @@ typedef struct {
     int64_t       done_ts;                 // when THIS contact completed (own window per slot)
 } final_track_t;
 static final_track_t      s_final[FINAL_TRACK_MAX];
+
+/* ⛔ WHAT THE FINAL ACTUALLY WAS, CAPTURED WHERE IT IS ARMED.
+ *
+ * finish_wait_done() used to read s_cur_req through `s_have_cur ? ... :
+ * FT8_TX_KIND_73` when filling the track entry. s_have_cur is ALWAYS false by
+ * then - rearm_current() clears it the moment the one-shot final is armed, and
+ * finish_wait_done() clears it again on its own first line - so both ternaries
+ * always took the else branch and EVERY tracked final was recorded as
+ * FT8_TX_KIND_73 / "73".
+ *
+ * The cost was silent and specific: a CQ-runner whose RR73 was missed re-sent
+ * "73". RR73 and 73 do not mean the same thing - RR73 is what confirms we got
+ * their report - so the partner was answered with the wrong message for the
+ * whole 6-try budget. Don WB0LQW, 2026-10-16.
+ *
+ * Reading s_cur_req without the s_have_cur guard would have "worked" and been
+ * wrong for a different reason: that struct is live state, and nothing
+ * promises it still describes the final by the time the QSO wraps up. The
+ * value is therefore copied out at the ONE place that knows it is the final -
+ * rearm_current()'s one_shot branch, under the same lock that clears
+ * s_have_cur.
+ *
+ * s_final_sent_valid is the guard, not decoration: today the only state that
+ * reaches WAIT_DONE without arming a final is the hound path, which is
+ * excluded from tracking anyway. If a future path joins it, the fallback
+ * below keeps the old behaviour AND says so in the log, rather than silently
+ * re-sending the previous contact's final. */
+static ft8_tx_kind_t      s_final_sent_kind  = FT8_TX_KIND_73;
+static char               s_final_sent_extra[16] = "73";
+static bool               s_final_sent_valid = false;
 
 // True while at least one just-worked partner is still asking for a final. Set
 // once per RX slot by advance(); read by rearm_current(), which is the single
@@ -1000,7 +1030,15 @@ static void rearm_current(void)
     bool one_shot  = (st == FT8_QSO_WAIT_DONE);
     bool repeating = (st == FT8_QSO_CQ || st == FT8_QSO_WAIT_RPT ||
                       st == FT8_QSO_WAIT_ROGER || st == FT8_QSO_WAIT_RR73);
-    if (have && one_shot) s_have_cur = false;   // final is sent once
+    if (have && one_shot) {
+        s_have_cur = false;   // final is sent once
+        // Remember WHICH final, for the re-send tracker - see the note on
+        // s_final_sent_kind. This is the last moment the answer is known.
+        s_final_sent_kind = req.kind;
+        snprintf(s_final_sent_extra, sizeof(s_final_sent_extra), "%s",
+                 req.extra_field[0] ? req.extra_field : "73");
+        s_final_sent_valid = true;
+    }
     int cq_sent = s_cq_calls_sent;
     unlock();
 
@@ -1603,11 +1641,38 @@ bool ft8_qso_start(const ft8_tx_request_t *tx1_req, char *err, size_t err_len)
     // operator must finish or ft8_qso_abort() the current one first.
     char busy_target[FT8_CALL_MAX_LEN];
     if (ft8_qso_is_busy(busy_target, sizeof(busy_target))) {
-        if (err) {
-            if (busy_target[0]) snprintf(err, err_len, "Busy: working %s", busy_target);
-            else                snprintf(err, err_len, "Busy: calling CQ");
+        if (busy_target[0]) {
+            if (err) snprintf(err, err_len, "Busy: working %s", busy_target);
+            return false;
         }
-        return false;
+        /* CALLING CQ IS NOT A REASON TO REFUSE A CALLER - IT IS THE REASON
+         * THERE IS ONE.
+         *
+         * Don WB0LQW, 2026-10-22, with "Pick callers myself" on: "A CQ is
+         * transmitted and I get 1 or more responders... I tap one and the
+         * window appears where I choose Pounce. However, since I did not
+         * manually stop the CQ, the Tab5 tells me 'Busy Calling CQ.' I have to
+         * close the window and go back to manually stop the CQ; then tap the
+         * responder again... By then my responder has often given up on me."
+         *
+         * He is right and the old behaviour was the radio arguing with the
+         * operator. Answering somebody who came back to your CQ is the entire
+         * purpose of having called it, so the CQ stands down and the pounce
+         * goes ahead.
+         *
+         * An empty busy_target is exactly the FT8_QSO_CQ case: a WAIT_* state
+         * always has a target, so this cannot swallow a real exchange. The
+         * refusal above is kept for that, because dropping a half-finished QSO
+         * without being asked is a different act and should stay deliberate.
+         *
+         * SAFE BY CONSTRUCTION: every caller that reaches this line today gets
+         * `false` back, so nothing that currently succeeds changes behaviour -
+         * only the paths that were failing. The robot does not come through
+         * here to answer its own CQ; if it did, it would already be refused.
+         *
+         * A burst already on the air finishes - clearing the request does not
+         * stop a transmission in progress. */
+        ft8_qso_abort();
     }
 
     if (!load_my_call(err, err_len)) return false;
@@ -2118,6 +2183,9 @@ static void capture_pileup_callers(int64_t slot_sec)
     int n = 0;
     ft8_screen_get_all(snap, FT8_CALL_TABLE_SIZE, &n);
 
+    char skipped[FT8_PILEUP_MAX][FT8_CALL_MAX_LEN];
+    int  n_skipped = 0;
+
     for (int i = 0; i < n; i++) {
         if (snap[i].last_utc != slot_sec) continue;
         char tok1[16], tok2[16], rest[FT8_FD_EXCH_LEN];
@@ -2139,16 +2207,39 @@ static void capture_pileup_callers(int64_t slot_sec)
                        strcmp(tok2, s_last_done_call) == 0 &&
                        (now_s - s_last_done_ts) < DONE_GRACE_TTL_S);
         unlock();
-        if (exempt) continue;
+        if (exempt) continue;   // being worked / just worked - not "waiting"
         // Worked-before is only a pileup exclusion when the operator has
-        // asked for it ("Exclude worked before") - matching what the CQ-run
+        // asked for it ("Never auto-call worked-before") - matching what the CQ-run
         // answer picker does. The old unconditional skip silently hid
         // legitimate dupe callers from the pileup while the machine was
         // perfectly willing to WORK them (filter off) - inconsistent, and in
         // sim practice sessions it emptied the pileup almost entirely.
         if (qs_cap.ft8_filters.excl_worked_before &&
-            adif_log_contains_call_on_band(tok2, cat_get_frequency())) continue;
+            adif_log_contains_call_on_band(tok2, cat_get_frequency())) {
+            /* ⭐ THE OTHER HALF OF THE SILENCE. A caller refused HERE never
+             * reaches the pile-up at all, so try_start_pileup_pounce()'s own
+             * reasons cannot mention them - the list is simply short, and
+             * "short" and "empty" and "everyone refused" all used to print
+             * nothing. Randy N4OPI's 2026-10-16 report could not be settled
+             * because of exactly this gap. One line per slot, only when
+             * somebody who DID call us was dropped. */
+            if (n_skipped < (int)(sizeof(skipped) / sizeof(skipped[0])))
+                snprintf(skipped[n_skipped++], sizeof(skipped[0]), "%s", tok2);
+            continue;
+        }
         ft8_pileup_note_caller(tok2, snap[i].last_snr_db, snap[i].last_freq, slot_sec);
+    }
+
+    if (n_skipped > 0) {
+        char buf[sizeof(skipped)];
+        size_t off = 0;
+        for (int i = 0; i < n_skipped && off < sizeof(buf) - 1; i++) {
+            int w = snprintf(buf + off, sizeof(buf) - off, "%s%s", off ? " " : "", skipped[i]);
+            if (w < 0) break;
+            off += (size_t)w;
+        }
+        ESP_LOGI(TAG, "pileup capture: %d caller(s) dropped by 'Never auto-call "
+                      "worked-before': %s", n_skipped, buf);
     }
 }
 
@@ -2160,38 +2251,125 @@ static void capture_pileup_callers(int64_t slot_sec)
 // them for free. Returns true if a pounce was started (state now WAIT_*), false
 // if disabled / nobody eligible / build refused (caller falls back to CQ/idle).
 // Strongest-SNR first: best chance of a clean completion, standard pileup order.
+/* Why a pile-up entry was passed over, and the ONE place that decides it.
+ *
+ * ⛔ THE FOUR TESTS USED TO BE WRITTEN TWICE - once to pick the strongest
+ * caller and again to re-pick after the busy-partner exclusion - which is two
+ * places to keep in step and two places a new rule could be forgotten.
+ *
+ * ⭐ AND NOTHING SAID WHY. Randy N4OPI, 2026-10-16: his log shows a station
+ * calling him on his own CQ tone for four slots, never worked, and the machine
+ * resuming CQ over the top. Whether that caller was in the pile-up and refused,
+ * or never captured at all, CANNOT BE TOLD FROM THAT LOG - the pile-up printed
+ * nothing about what it held or what it rejected. A silent filter and an empty
+ * list read identically. That is what this enum and the lines below fix: the
+ * next report of this shape is answerable from the capture. */
+typedef enum {
+    PILE_OK = 0,
+    PILE_SKIP_WORKED_BEFORE,
+    PILE_SKIP_WORKED_RECENTLY,
+    PILE_SKIP_GREYLIST,
+} pile_skip_t;
+
+static const char *pile_skip_name(pile_skip_t r)
+{
+    switch (r) {
+    case PILE_SKIP_WORKED_BEFORE:   return "worked-before";
+    case PILE_SKIP_WORKED_RECENTLY: return "worked just now";
+    case PILE_SKIP_GREYLIST:        return "grey-listed";
+    default:                        return "ok";
+    }
+}
+
+static pile_skip_t pileup_candidate_skip(const char *call, const qmx_settings_t *qs)
+{
+    if (qs->ft8_filters.excl_worked_before &&
+        adif_log_contains_call_on_band(call, cat_get_frequency()))
+        return PILE_SKIP_WORKED_BEFORE;
+    // Never inside the grace window, checkbox or not. Deliberately NOT applied
+    // in capture_pileup_callers(): a recently-worked caller stays VISIBLE so the
+    // operator can still pick them by hand - this only stops the machine doing
+    // it unattended.
+    if (ft8_qso_worked_recently(call, cat_get_frequency()))
+        return PILE_SKIP_WORKED_RECENTLY;
+    // Grey-listed (repeated failed pounces) - don't auto-drain into them.
+    // A HAND skip is checked first and is NOT gated on greylist_en: the
+    // pileup drain is the other unattended picker, so skipping a station in
+    // robot mode and then having the drain call it anyway would be the same
+    // defect in a second place (Randy N4OPI, 2026-10-21).
+    if (ft8_greylist_skipped_by_hand(call))
+        return PILE_SKIP_GREYLIST;
+    if (qs->greylist_en && ft8_greylist_contains(call))
+        return PILE_SKIP_GREYLIST;
+    return PILE_OK;
+}
+
+/* Strongest eligible entry, or -1. Fills `why` (one reason per entry) so the
+ * caller can say what it passed over without running the tests again. */
+static int pileup_pick_best(const ft8_pileup_entry_t *pile, int n,
+                            const qmx_settings_t *qs, pile_skip_t *why)
+{
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        if (!pile[i].call[0]) { why[i] = PILE_OK; continue; }
+        why[i] = pileup_candidate_skip(pile[i].call, qs);
+        if (why[i] != PILE_OK) continue;
+        if (best < 0 || pile[i].snr_db > pile[best].snr_db) best = i;
+    }
+    return best;
+}
+
+/* One log line naming everybody in the list and why each was passed over.
+ * Emitted only when the list is NOT empty and nobody could be taken - the case
+ * that used to look exactly like "there was nobody there". */
+static void log_pileup_refusal(const ft8_pileup_entry_t *pile, int n,
+                               const pile_skip_t *why, const char *headline)
+{
+    char buf[FT8_PILEUP_MAX * 32];
+    size_t off = 0;
+    for (int i = 0; i < n && off < sizeof(buf) - 1; i++) {
+        if (!pile[i].call[0]) continue;
+        int w = snprintf(buf + off, sizeof(buf) - off, "%s%s(%s)",
+                         off ? " " : "", pile[i].call, pile_skip_name(why[i]));
+        if (w < 0) break;
+        off += (size_t)w;
+    }
+    ESP_LOGI(TAG, "auto-pileup: %s - %d in the list: %s", headline, n,
+             off ? buf : "(none)");
+}
+
 static bool try_start_pileup_pounce(void)
 {
     qmx_settings_t qs;
     settings_load_all(&qs);
-    if (!qs.ft8_filters.auto_pileup)            return false;
+
+    /* ⭐ THE LIST FIRST, THE SETTINGS SECOND, so the log can say "there were
+     * four people waiting and the switch was off" - a different fault from
+     * "nobody was waiting", and until now the two printed identically:
+     * nothing at all. ft8_pileup_get_all() is a memcpy under a mutex. */
+    ft8_pileup_entry_t pile[FT8_PILEUP_MAX];
+    int n = ft8_pileup_get_all(pile, FT8_PILEUP_MAX);
+    pile_skip_t why[FT8_PILEUP_MAX] = {0};
+
+    if (!qs.ft8_filters.auto_pileup) {
+        if (n > 0) log_pileup_refusal(pile, n, why, "'Auto-work the pileup' is OFF");
+        return false;
+    }
     // Manual pick wins over auto-work-pileup. Both decide WHO to work next, and
     // an operator who asked to choose has not asked to have the strongest caller
     // chosen for them a moment later - leaving both live would quietly defeat the
     // setting they just turned on.
-    if (qs.ft8_filters.cq_manual_pick)          return false;
-    if (!qs.my_callsign[0] || !qs.my_grid[0])   return false;
-
-    ft8_pileup_entry_t pile[FT8_PILEUP_MAX];
-    int n = ft8_pileup_get_all(pile, FT8_PILEUP_MAX);
-    if (n <= 0) return false;
-
-    int best = -1;
-    for (int i = 0; i < n; i++) {
-        if (!pile[i].call[0]) continue;
-        // Skip anyone already worked on this band if that filter is on - same
-        // rule the robot enforces, so auto-work never re-calls a logged station.
-        if (qs.ft8_filters.excl_worked_before &&
-            adif_log_contains_call_on_band(pile[i].call, cat_get_frequency())) continue;
-        // ...and never inside the grace window, checkbox or not. Deliberately
-        // NOT applied to capture_pileup_callers() above: a recently-worked
-        // caller stays VISIBLE in the pileup so the operator can still pick
-        // them by hand - this only stops the machine doing it unattended.
-        if (ft8_qso_worked_recently(pile[i].call, cat_get_frequency())) continue;
-        // Grey-listed (repeated failed pounces) - don't auto-drain into them.
-        if (qs.greylist_en && ft8_greylist_contains(pile[i].call)) continue;
-        if (best < 0 || pile[i].snr_db > pile[best].snr_db) best = i;
+    if (qs.ft8_filters.cq_manual_pick) {
+        if (n > 0) log_pileup_refusal(pile, n, why, "'Pick callers myself' is ON");
+        return false;
     }
+    if (!qs.my_callsign[0] || !qs.my_grid[0]) {
+        if (n > 0) log_pileup_refusal(pile, n, why, "no callsign/grid set");
+        return false;
+    }
+    if (n <= 0) return false;      // genuinely nobody waiting - the quiet case
+
+    int best = pileup_pick_best(pile, n, &qs, why);
 
     /* ⛔ AND NOT WHILE THEY ARE MID-QSO WITH SOMEBODY ELSE (Gyula HA3HZ,
      * 2026-08-30: "I did not call and did not mark YL3PK before, but the
@@ -2224,17 +2402,14 @@ static bool try_start_pileup_pounce(void)
         ESP_LOGI(TAG, "auto-pileup: skipping %s - busy with %s",
                  pile[best].call, busy_with);
         pile[best].call[0] = '\0';          /* take them out of THIS pass only */
-        best = -1;
-        for (int i = 0; i < n; i++) {
-            if (!pile[i].call[0]) continue;
-            if (qs.ft8_filters.excl_worked_before &&
-                adif_log_contains_call_on_band(pile[i].call, cat_get_frequency())) continue;
-            if (ft8_qso_worked_recently(pile[i].call, cat_get_frequency())) continue;
-            if (qs.greylist_en && ft8_greylist_contains(pile[i].call)) continue;
-            if (best < 0 || pile[i].snr_db > pile[best].snr_db) best = i;
-        }
+        best = pileup_pick_best(pile, n, &qs, why);
     }
-    if (best < 0) return false;
+    if (best < 0) {
+        /* The case that used to be silent and is the whole reason the reasons
+         * exist: the list was NOT empty, and every one of them was refused. */
+        log_pileup_refusal(pile, n, why, "nobody eligible");
+        return false;
+    }
 
     // Reply on a clear tone (not their own), parity derived from the slot we last
     // heard them call us in (parity is periodic, so a several-minute-old
@@ -2477,6 +2652,123 @@ static void final_track_add(const char *call, int freq_hz, ft8_tx_kind_t kind,
     f->done_ts = time(NULL);
 }
 
+/* ---- THE CONTACT IS SENT BUT NOT YET ACKNOWLEDGED -------------------------
+ *
+ * Don WB0LQW, 2026-10-16: his RR73 was missed, the partner repeated the
+ * report, and "instead of resending my RR73 the program ends the contact and
+ * logs it". The logging is right (Bruce N9JCV's fix - the final leaves the air
+ * and the QSO is closed), and the machine does keep watching: final_track_add
+ * arms a 300 s watch and re-sends up to FINAL_RESEND_MAX times by itself.
+ *
+ * What was missing is that the OPERATOR could not see or touch any of it. The
+ * moment the final is armed, s_state leaves the WAIT_* set, and both surfaces
+ * hide their Re-send / RR73 / 73 row on exactly that test - so the window in
+ * which the contact can still be saved is the window with no controls in it.
+ *
+ * These three calls are what both surfaces need to keep the row up until the
+ * contact is acknowledged or the operator says it is over. They are the ONLY
+ * readers of s_final[] outside the decode task.
+ *
+ * ⚠ NO LOCK, and deliberately, for the reason js8_chat.h records at length:
+ * s_final[] is written by the decode task WITHOUT the QSO lock (see
+ * final_track_add / final_track_still_asking - neither takes it), so a lock
+ * here would protect nothing and only suggest it did. A torn read costs one
+ * repaint of one callsign on a row the operator is looking at anyway. */
+bool ft8_qso_final_watch(char *call, size_t len, int *resends, int *max)
+{
+    int64_t now_s = (int64_t)time(NULL);
+    int     best  = -1;
+    int64_t newest = 0;
+    for (int i = 0; i < FINAL_TRACK_MAX; i++) {
+        if (!s_final[i].call[0]) continue;
+        /* Read-only: the window check here must NOT clear the slot the way
+         * final_track_still_asking() does. That function runs in the decode
+         * task and owns the array; a display poll that reaped entries would
+         * close the watch at whatever rate a browser happened to poll. */
+        if ((now_s - s_final[i].done_ts) > FINAL_RESEND_WINDOW_SEC) continue;
+        if (best < 0 || s_final[i].done_ts > newest) { best = i; newest = s_final[i].done_ts; }
+    }
+    if (best < 0) return false;
+    if (call && len) {
+        strncpy(call, s_final[best].call, len - 1);
+        call[len - 1] = '\0';
+    }
+    if (resends) *resends = s_final[best].resends;
+    if (max)     *max     = FINAL_RESEND_MAX;
+    return true;
+}
+
+void ft8_qso_final_extra(char *buf, size_t len)
+{
+    if (!buf || !len) return;
+    buf[0] = '\0';
+    char call[FT8_CALL_MAX_LEN];
+    if (!ft8_qso_final_watch(call, sizeof(call), NULL, NULL)) return;
+    for (int i = 0; i < FINAL_TRACK_MAX; i++) {
+        if (s_final[i].call[0] && strcmp(s_final[i].call, call) == 0) {
+            strncpy(buf, s_final[i].extra, len - 1);
+            buf[len - 1] = '\0';
+            return;
+        }
+    }
+}
+
+void ft8_qso_final_watch_clear(void)
+{
+    for (int i = 0; i < FINAL_TRACK_MAX; i++) {
+        if (!s_final[i].call[0]) continue;
+        ESP_LOGI(TAG, "final watch on %s dropped by the operator", s_final[i].call);
+        s_final[i].call[0] = '\0';
+    }
+    s_final_hold = false;
+    s_final_hold_call[0] = '\0';
+}
+
+bool ft8_qso_final_resend_now(char *err, size_t err_len)
+{
+    char call[FT8_CALL_MAX_LEN];
+    if (!ft8_qso_final_watch(call, sizeof(call), NULL, NULL)) {
+        if (err) snprintf(err, err_len, "Nothing waiting to be acknowledged");
+        return false;
+    }
+    int idx = -1;
+    for (int i = 0; i < FINAL_TRACK_MAX; i++)
+        if (s_final[i].call[0] && strcmp(s_final[i].call, call) == 0) { idx = i; break; }
+    if (idx < 0) {
+        if (err) snprintf(err, err_len, "Nothing waiting to be acknowledged");
+        return false;
+    }
+    final_track_t *f = &s_final[idx];
+
+    if (ft8_tx_get_status(NULL, 0, NULL) == FT8_TX_ACTIVE) {
+        if (err) snprintf(err, err_len, "Transmitting - try again next slot");
+        return false;
+    }
+
+    ft8_tx_request_t req;
+    char build_err[64];
+    if (!ft8_tx_build_request(f->kind, f->call, f->freq_hz,
+                              (int64_t)time(NULL), f->extra,
+                              &req, build_err, sizeof(build_err))) {
+        if (err) snprintf(err, err_len, "%s", build_err);
+        return false;
+    }
+    char arm_err[64];
+    if (!ft8_tx_arm(&req, arm_err, sizeof(arm_err))) {
+        if (err) snprintf(err, err_len, "%s", arm_err);
+        return false;
+    }
+    /* ⛔ DOES NOT SPEND f->resends. That budget is the MACHINE's - six tries
+     * inside five minutes before it gives up and goes back to calling CQ. A
+     * press of this button is a human deciding to send again, and charging it
+     * to the automatic budget would let the operator exhaust the very fallback
+     * that is meant to keep running after they stop pressing. */
+    ft8_status_set("QSO %s: re-sending %s by hand", f->call, f->extra);
+    ESP_LOGI(TAG, "operator re-sent the final %s to %s (machine has used %d/%d)",
+             f->extra, f->call, f->resends, FINAL_RESEND_MAX);
+    return true;
+}
+
 bool ft8_qso_msg_is_for_us(const char *text)
 {
     if (!text || !text[0]) return false;
@@ -2659,10 +2951,20 @@ static void finish_wait_done(const char *target)
             if (s_hound_active) {
                 s_hound_active  = false;   // session over; the next start decides afresh
             } else {
+                if (!s_final_sent_valid) {
+                    ESP_LOGW(TAG, "no final was armed for %s - tracking a plain 73. "
+                                  "A non-hound path reached WAIT_DONE without arming; "
+                                  "that is the thing to look at, not this line.", target);
+                    s_final_sent_kind = FT8_TX_KIND_73;
+                    snprintf(s_final_sent_extra, sizeof(s_final_sent_extra), "73");
+                }
                 final_track_add(target, s_freq_hz,
-                                 s_have_cur ? s_cur_req.kind : FT8_TX_KIND_73,
-                                 s_have_cur && s_cur_req.extra_field[0] ? s_cur_req.extra_field : "73");
+                                 s_final_sent_kind, s_final_sent_extra);
             }
+            // Consumed on BOTH branches. The hound branch tracks nothing, but
+            // leaving the flag set would hand the next contact this one's
+            // final if that contact never armed one.
+            s_final_sent_valid = false;
             unlock();
 
             // A completed QSO with this call supersedes any older resumable
@@ -2779,6 +3081,130 @@ static void finish_wait_done(const char *target)
                      (long long)((esp_timer_get_time() - wrap_t0) / 1000),
                      (long long)(adif_us / 1000));
         }
+}
+
+/* The CQ-run answer scan, as its own function because it has TWO callers.
+ *
+ * ⛔ WHY IT MOVED OUT OF ft8_qso_advance_body(). advance() runs ONCE per
+ * slot, and ft8_test.c advances EARLY the moment any decode addressed to us
+ * appears, so on a slot with an early advance this scan - and
+ * capture_pileup_callers() at the top of advance() - saw only the decodes
+ * published up to that instant. "Strongest answer wins" quietly became
+ * "first decoded wins", and later callers never entered the pile-up at all.
+ *
+ * Randy N4OPI, 2026-10-16, MEASURED in his own diag log: 4 of 4 slots with
+ * more than one station calling him lost the later caller. In slot 143
+ * N2LEE answered at snr +6 and W5BYU at -4; W5BYU was decoded 74 ms earlier
+ * and won. N2LEE called four more times and was never worked.
+ *
+ * The early advance itself is right and stays - it exists because an exchange
+ * step was costing a whole cycle on a busy band. What was wrong is that one
+ * advance also consumed the slot's only LOOK at the band.
+ *
+ * late_look = the end-of-slot re-run with the complete table. It scans and
+ * answers, but does NOT re-run the no-answer housekeeping (CQ auto-stop,
+ * tone relocation, re-arm): the early advance already did that this slot,
+ * and running it twice would charge one quiet slot twice. */
+static void cq_listen_for_answers(int64_t slot_sec, int freq, bool late_look)
+{
+    char caller[FT8_CALL_MAX_LEN] = {0};
+    int  caller_freq = freq;
+    int  caller_snr  = 0;
+    char report[FT8_FD_EXCH_LEN] = {0};
+    bool got_rr73 = false, got_73 = false;
+    if (scan_for_reply_to_me(slot_sec, caller, sizeof(caller),
+                             &caller_freq, &caller_snr,
+                             report, sizeof(report), &got_rr73, &got_73)) {
+        ESP_LOGI(TAG, "CQ: %s answered @ %d Hz snr=%d (rr73=%d 73=%d)",
+                 caller, caller_freq, caller_snr, got_rr73, got_73);
+
+        // MANUAL PICK (Eric K3FNB): the operator chooses who to work rather
+        // than the first answer winning. Only the CHOICE is manual - a tapped
+        // caller runs the normal automated exchange from there.
+        //
+        // Deliberately keeps calling CQ instead of standing down. An activator
+        // wants the pile-up to keep building while they pick, and going silent
+        // would look like the radio had stopped. capture_pileup_callers() has
+        // already recorded this caller at the top of advance(), so they are
+        // tappable in the pile-up list without anything extra here.
+        qmx_settings_t mp;
+        settings_load_all(&mp);
+        if (mp.ft8_filters.cq_manual_pick) {
+            ESP_LOGI(TAG, "CQ: manual pick is on - %s is waiting in the pile-up, "
+                          "not answering automatically", caller);
+            return;
+        }
+
+        ft8_tx_disarm();   // cancel the re-armed CQ (no-op if already ACTIVE)
+        cqrun_answer(caller, caller_freq, caller_snr, report, slot_sec, got_rr73, got_73);
+    } else if (!late_look) {
+        // Auto-stop limit reached and the extra listening slot after the
+        // final call brought no answer - end the CQ session. Deliberately
+        // IDLE, not TIMEOUT: nothing went wrong, the operator asked for
+        // exactly this pause.
+        lock();
+        bool exhausted = s_cq_exhausted;
+        int  sent      = s_cq_calls_sent;
+        unlock();
+        if (exhausted) {
+            lock();
+            s_state         = FT8_QSO_IDLE;
+            s_have_cur      = false;
+            s_have_cq_saved = false;
+            s_cq_exhausted  = false;
+            s_cq_calls_sent = 0; s_cq_listen_done_at = -1;
+            unlock();
+            ft8_tx_disarm();
+            ft8_status_set("CQ stopped after %d calls - no answer", sent);
+            ESP_LOGI(TAG, "CQ auto-stop: %d calls unanswered - session ended", sent);
+            return;
+        }
+        // No answer - check whether someone has drifted onto our tone
+        // since we started calling, and move off it if so. Otherwise
+        // on_tx_complete keeps the CQ armed at the same tone; idle
+        // fallback only.
+        relocate_tone_if_clashing(true);
+        arm_current_if_idle();
+    }
+}
+
+/* The end-of-slot second look, for a slot whose advance ran EARLY.
+ *
+ * The early advance is a reply-latency fix and it works; the defect was that
+ * it also spent the slot's only look at the band, so everything decoded after
+ * the first message addressed to us was invisible to the pile-up and to the
+ * CQ answer picker. See cq_listen_for_answers() for the measurement.
+ *
+ * So: when ft8_test has early-advanced, it calls this once the candidate list
+ * is finished, with the COMPLETE decode table.
+ *
+ * ⛔ WHAT IT DELIBERATELY DOES NOT DO. It is not a second advance. It does
+ * not step an exchange, it leaves every WAIT state, DONE and TIMEOUT alone,
+ * and it answers
+ * nobody unless the machine is still sitting in CQ - which it can only be if
+ * the early advance did NOT start a contact. The state machine's
+ * one-advance-per-slot invariant is untouched; what changes is only what the
+ * radio is allowed to have SEEN.
+ *
+ * Its own once-per-slot guard, because two decode tasks can reach it. */
+void ft8_qso_slot_late_look(int64_t slot_sec)
+{
+    static int64_t s_last_late_slot = -1;
+    lock();
+    bool again = (s_last_late_slot == slot_sec);
+    if (!again) s_last_late_slot = slot_sec;
+    ft8_qso_state_t st = s_state;
+    int             freq = s_freq_hz;
+    unlock();
+    if (again) return;
+
+    /* The pile-up first, and unconditionally: a caller who turns up late in
+     * the list is exactly the one the early advance could not see, and the
+     * operator should be able to tap them even in a state that answers
+     * nobody automatically. */
+    capture_pileup_callers(slot_sec);
+
+    if (st == FT8_QSO_CQ) cq_listen_for_answers(slot_sec, freq, true);
 }
 
 static void ft8_qso_advance_body(int64_t slot_sec)
@@ -3030,65 +3456,7 @@ static void ft8_qso_advance_body(int64_t slot_sec)
 
     // ---- CQ: listen for anyone answering us --------------------------------
     if (st == FT8_QSO_CQ) {
-        char caller[FT8_CALL_MAX_LEN] = {0};
-        int  caller_freq = freq;
-        int  caller_snr  = 0;
-        char report[FT8_FD_EXCH_LEN] = {0};
-        bool got_rr73 = false, got_73 = false;
-        if (scan_for_reply_to_me(slot_sec, caller, sizeof(caller),
-                                 &caller_freq, &caller_snr,
-                                 report, sizeof(report), &got_rr73, &got_73)) {
-            ESP_LOGI(TAG, "CQ: %s answered @ %d Hz snr=%d (rr73=%d 73=%d)",
-                     caller, caller_freq, caller_snr, got_rr73, got_73);
-
-            // MANUAL PICK (Eric K3FNB): the operator chooses who to work rather
-            // than the first answer winning. Only the CHOICE is manual - a tapped
-            // caller runs the normal automated exchange from there.
-            //
-            // Deliberately keeps calling CQ instead of standing down. An activator
-            // wants the pile-up to keep building while they pick, and going silent
-            // would look like the radio had stopped. capture_pileup_callers() has
-            // already recorded this caller at the top of advance(), so they are
-            // tappable in the pile-up list without anything extra here.
-            qmx_settings_t mp;
-            settings_load_all(&mp);
-            if (mp.ft8_filters.cq_manual_pick) {
-                ESP_LOGI(TAG, "CQ: manual pick is on - %s is waiting in the pile-up, "
-                              "not answering automatically", caller);
-                return;
-            }
-
-            ft8_tx_disarm();   // cancel the re-armed CQ (no-op if already ACTIVE)
-            cqrun_answer(caller, caller_freq, caller_snr, report, slot_sec, got_rr73, got_73);
-        } else {
-            // Auto-stop limit reached and the extra listening slot after the
-            // final call brought no answer - end the CQ session. Deliberately
-            // IDLE, not TIMEOUT: nothing went wrong, the operator asked for
-            // exactly this pause.
-            lock();
-            bool exhausted = s_cq_exhausted;
-            int  sent      = s_cq_calls_sent;
-            unlock();
-            if (exhausted) {
-                lock();
-                s_state         = FT8_QSO_IDLE;
-                s_have_cur      = false;
-                s_have_cq_saved = false;
-                s_cq_exhausted  = false;
-                s_cq_calls_sent = 0; s_cq_listen_done_at = -1;
-                unlock();
-                ft8_tx_disarm();
-                ft8_status_set("CQ stopped after %d calls - no answer", sent);
-                ESP_LOGI(TAG, "CQ auto-stop: %d calls unanswered - session ended", sent);
-                return;
-            }
-            // No answer - check whether someone has drifted onto our tone
-            // since we started calling, and move off it if so. Otherwise
-            // on_tx_complete keeps the CQ armed at the same tone; idle
-            // fallback only.
-            relocate_tone_if_clashing(true);
-            arm_current_if_idle();
-        }
+        cq_listen_for_answers(slot_sec, freq, false);
         return;
     }
 
@@ -3712,7 +4080,7 @@ bool ft8_qso_get_working_target(char *buf, size_t len)
     return buf[0] != '\0';
 }
 
-void ft8_qso_notify_manual_final(const char *target_call)
+void ft8_qso_notify_manual_final(const char *target_call, const char *final_extra)
 {
     if (!target_call || !target_call[0]) return;
 
@@ -3758,6 +4126,14 @@ void ft8_qso_notify_manual_final(const char *target_call)
     s_target[sizeof(s_target) - 1] = '\0';
     s_from_cq       = false;
     s_have_cur      = false;   // the final is already armed by the modal
+    // ...which is why the final has to be recorded HERE: rearm_current()'s
+    // one_shot branch, where a machine QSO captures it, never runs for a
+    // hand-armed close. Without this the re-send tracker would fall back to a
+    // plain "73" and answer an operator's RR73 with the wrong message.
+    s_final_sent_kind  = FT8_TX_KIND_73;
+    snprintf(s_final_sent_extra, sizeof(s_final_sent_extra), "%s",
+             (final_extra && final_extra[0]) ? final_extra : "73");
+    s_final_sent_valid = true;
     s_have_cq_saved = false;
     s_min_scan_utc  = 0;
     s_missed_slots  = 0;
@@ -3877,6 +4253,53 @@ void ft8_qso_abort(void)
     ft8_tx_disarm();
     if (target[0]) ft8_status_set("QSO %s: aborted", target);
     ESP_LOGI(TAG, "QSO aborted");
+}
+
+bool ft8_qso_skip_exchange(char *skipped, size_t skipped_len,
+                           char *err, size_t err_len)
+{
+    if (skipped && skipped_len) skipped[0] = '\0';
+
+    lock();
+    char target[FT8_CALL_MAX_LEN];
+    strncpy(target, s_target, sizeof(target));
+    target[sizeof(target) - 1] = '\0';
+    ft8_qso_state_t st = s_state;
+    unlock();
+
+    /* Only an EXCHANGE can be skipped. Calling CQ with nobody answering has no
+     * station to give up on, and FT8_QSO_CQ is reported with an empty target,
+     * so the target test alone would read as "nothing running" there too -
+     * both are refused here with a message that says which it was. */
+    if (st == FT8_QSO_IDLE || st == FT8_QSO_DONE || st == FT8_QSO_TIMEOUT) {
+        if (err && err_len) snprintf(err, err_len, "No exchange to skip");
+        return false;
+    }
+    if (!target[0]) {
+        if (err && err_len)
+            snprintf(err, err_len, "Calling CQ - nobody to skip yet");
+        return false;
+    }
+
+    /* Order matters. abort() takes the lock itself and saves a resume record,
+     * so the record has to be dropped AFTER it, not before. */
+    ft8_qso_abort();
+
+    lock();
+    if (strcmp(s_resume_call, target) == 0) {
+        s_resume_call[0]  = '\0';
+        s_resume_have_req = false;
+    }
+    unlock();
+
+    /* ⛔ The grey-list entry is what stops the robot answering this station's
+     * very next CQ. Without it the abort above buys exactly one slot. */
+    ft8_greylist_skip_now(target);
+
+    if (skipped && skipped_len) snprintf(skipped, skipped_len, "%s", target);
+    ft8_status_set("Skipped %s - still answering", target);
+    ESP_LOGI(TAG, "operator skipped %s; exchange ended, auto-answer left ON", target);
+    return true;
 }
 
 ft8_qso_state_t ft8_qso_get_state(void)

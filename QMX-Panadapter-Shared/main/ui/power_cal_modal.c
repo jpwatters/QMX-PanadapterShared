@@ -40,6 +40,7 @@
 #include "ui_theme.h"
 #include "ui.h"
 #include "cat.h"
+#include "net/radio_relay.h"
 #include "ft8_tx.h"
 #include "wspr_rx.h"
 #include "wspr_tx.h"    // WSPR_STD_DBM[] - the known reference levels the results table is indexed by
@@ -50,6 +51,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include "tx_band_guard.h"   // T48: refuse to key outside the region's allocation
 
 static const char *TAG = "power_cal";
 
@@ -637,6 +639,19 @@ static void timer_cb(lv_timer_t *t)
             // audio-modulated, so it needs the same TA<freq>; tone WSPR/FT8
             // feed it, resent on roughly their own 160 ms cadence for as
             // long as the carrier should stay up.
+            /* ⛔ BAND GUARD (T48). This holds a real carrier for as long as
+             * the step needs, at dial + PWRCAL_TONE_HZ - the TA tone below is
+             * what makes RF at all in DiGi, as the comment above records. */
+            {
+                char gerr[160];
+                uint32_t rf = cat_get_frequency() + (uint32_t)PWRCAL_TONE_HZ;
+                if (!tx_band_guard_allows(rf, rf, "Power calibration",
+                                          gerr, sizeof gerr)) {
+                    ui_toast_ms(gerr, 15000);
+                    enter_state(PC_IDLE);
+                    return;
+                }
+            }
             cat_send_raw_cmd("TX;");
             char ta[24];
             snprintf(ta, sizeof(ta), "TA%.0f;", (double)PWRCAL_TONE_HZ);
@@ -742,6 +757,10 @@ static void start_btn_cb(lv_event_t *e)
     // section with Antenna Tune - see the file header comment.
     if (cat_user_pause_active()) {
         ui_toast("Radio released - take it back before calibrating");
+        return;
+    }
+    if (radio_relay_tx_locked(NULL, 0)) {
+        ui_toast(RADIO_RELAY_TX_LOCKED_MSG);
         return;
     }
     if (ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE) {

@@ -179,7 +179,7 @@ static rxaud_mode_t mode_from_cat_str(const char *m)
  * it would be wider still. AM pays the CPU for its own width and nothing
  * else does. */
 #define RX_DECIM_D_AM      RX_AUDIO_DECIM_D_AM        // AM up to 9.6 kHz RF
-#define RX_DECIM_D_AM_WIDE RX_AUDIO_DECIM_D_AM_WIDE   // AM at 10.0 and 20.0 kHz
+#define RX_DECIM_D_AM_WIDE RX_AUDIO_DECIM_D_AM_WIDE   // measured, NOT selectable - see decim_for_mode()
 /* ⛔ THERE IS NO D_MIN, AND THE BUFFERS DO NOT NEED ONE. This used to define
  * RX_DECIM_D_MIN and claim the buffers were sized from it. They are not, and
  * it was READ NOWHERE - a dead constant carrying a rule nothing enforced,
@@ -204,8 +204,18 @@ static int s_decim_d = RX_DECIM_D_NARROW;
 static inline int decim_for_mode(rxaud_mode_t m, int half_bw_hz)
 {
     if (m != RXAUD_MODE_AM) return RX_DECIM_D_NARROW;
-    return (half_bw_hz > RX_AUDIO_AM_D4_MAX_HALF_BW_HZ)
-               ? RX_DECIM_D_AM_WIDE : RX_DECIM_D_AM;
+    /* ⛔ ALWAYS D=4 NOW. This used to pick D=2 above
+     * RX_AUDIO_AM_D4_MAX_HALF_BW_HZ, for the 10.0 and 20.0 kHz widths. Those
+     * widths are withdrawn (see RX_AUDIO_AM_HALF_BW_MAX_HZ, which is now that
+     * same 4800 Hz), so the branch could never be taken again and a branch
+     * that cannot be taken is a trap for whoever reads this next.
+     *
+     * RX_DECIM_D_AM_WIDE and the threshold stay DEFINED: test/am_demod_harness.c
+     * still measures the D=2 skirt, and that measurement is the evidence for
+     * why D=2 was tried at all. Defined and unreachable is the honest state;
+     * deleted would lose the record. */
+    (void)half_bw_hz;
+    return RX_DECIM_D_AM;
 }
 // Headroom for the continuous clock-drift resampler (see rx_audio_preopen's
 // s_out allocation and the upsample loop). Sized for the resample clamp's
@@ -509,6 +519,9 @@ static volatile uint32_t s_loop_count = 0;   // every iteration, success or time
 // ---- Module state ----------------------------------------------------------
 static volatile bool s_enabled = false;
 static volatile uint8_t s_volume = 60;
+/* Instant speaker mute - declared here because rx_audio_set_volume() reads it.
+ * The reasoning is at rx_audio_set_muted(). */
+static volatile bool s_muted;
 
 static esp_codec_dev_handle_t s_codec = NULL;
 static i2s_chan_handle_t s_tx_chan = NULL;   // TX-only I2S channel (no RX/mic)
@@ -660,9 +673,69 @@ static float s_lim_gain = 1.0f;
 static float s_up_phase = 0.0f;
 static float s_up_inc   = 1.0f / (float)RX_DECIM_D_NARROW;   /* set_decim_factor() resets it */
 static volatile uint32_t s_rate_railed = 0;   /* times the rate loop hit its clamp */
+/* T21 instrumentation. Signed, and deliberately NOT reset by the rate loop:
+   rx_audio_take_diag() clears the min/max so each reader sees the span since
+   ITS last call, while s_resample_ppm stays live. */
+static volatile int32_t s_resample_ppm     = 0;
+static volatile int32_t s_resample_ppm_min = INT32_MAX;
+static volatile int32_t s_resample_ppm_max = INT32_MIN;
 static float    s_up_target    = 0.0f;   /* smoothed increment from the measured source rate */
 static uint32_t s_in_pairs_win = 0;      /* input pairs seen in the current measuring window */
 static int64_t  s_in_win_us    = 0;      /* when that window started */
+/* T36 - THE MEASURING WINDOW IS THE PITCH STABILITY. MEASURED, 2026-10-22.
+ *
+ * Sam W7STF heard the WWV 1 s tone change pitch over time on the Tab5 itself.
+ * s_up_inc IS the playback rate, and it is recomputed from a count of delivered
+ * pairs over this window - so the window's measurement noise is pitch noise,
+ * one-for-one.
+ *
+ * The radio does not deliver smoothly. audio.c's own comment has had the
+ * number for a year: one USB transfer is 40 packets = 1920 pairs (40 ms), and
+ * a window catches a whole number of them depending on where its edges fall.
+ * A 1 s window therefore reads 46080 / 48000 / 49920 for a PERFECT 48 kHz
+ * stream - +/-4 %.
+ *
+ * From 113,839 healthy seconds in the bench capture (2026-10-22):
+ *
+ *   window   sd of the rate estimate   full range
+ *   1 s      745 pairs = 1.55 %        -4.16 % .. +4.16 %
+ *   10 s      73 pairs = 0.15 %        -1.02 % .. +0.66 %
+ *
+ * The offset being corrected is 0.24 %. At a 1 s window the instrument was
+ * SIX TIMES noisier than the quantity it measures, and its extremes were twice
+ * the +/-2 % clamp - which is why the rail counter grows in every mode, AM and
+ * USB alike, and why the T21 "AM rails, USB does not" split did not survive a
+ * matched window: the noise was never about the mode.
+ *
+ * Replaying those same 113,833 real seconds through this filter:
+ *
+ *   1 s,  alpha 0.25 (shipped to v1.20.3)  sd 5884 ppm (0.59 %), -2.2 %..+2.5 %
+ *   10 s, alpha 0.25                       sd 1875 ppm
+ *   10 s, alpha 0.10 (this)                sd 1129 ppm (0.11 %), -0.45%..+0.44%
+ *   30 s, alpha 0.10                       sd  639 ppm
+ *
+ * 0.59 % re-rolled every second is +/-6 Hz on WWV's 1000 Hz tone, about 10
+ * cents, moving on a 1 s cadence. That is the report. 0.11 % on a ~100 s
+ * cadence is under 2 cents and drifts rather than wobbles.
+ *
+ * ⚠ The replay is a LOWER BOUND on the shipped figure. It used audio.c's
+ * delivered-pairs counter, which is a different counter over the same stream;
+ * this window counts pairs CONSUMED by this task, so the consumer's own
+ * scheduling adds noise on top. It also used only the 46000..50000 healthy
+ * band, discarding the tails that rail hardest.
+ *
+ * ⛔ Not 30 s, though it measures better: s_up_target is reset to 0 by
+ * set_decim_factor(), and until the first window closes there is NO correction
+ * at all - the 0.24 % deficit feeds zeros into the I2S descriptors, which is
+ * the chirp this corrector exists to remove. 10 s of that after a mode change
+ * is tolerable; 30 s is not. If 10 s still wobbles audibly, the next move is a
+ * 30 s window with a SHORT first window to acquire, not a wider clamp.
+ *
+ * ⛔ The clamp is not the lever. Widening it lets a wrong rate through
+ * quietly instead of pinning it; it makes the symptom less sharp and the audio
+ * no more correct. */
+#define RATE_WIN_US     10000000   /* 10 s - see above */
+#define RATE_SMOOTH_A   0.10f      /* one pole on the window estimate, ~100 s */
 static float s_noise   = 1.0f;     // slow noise-floor estimate (for squelch)
 // Linear-interpolation upsample state, one per ear - the value each
 // channel's ramp ended on, carried forward so the next frame's ramp starts
@@ -2113,14 +2186,26 @@ static void rx_audio_task(void *arg)
             s_in_pairs_win += (uint32_t)in_pairs;
             int64_t win_us = now_rm - s_in_win_us;
             if (s_in_win_us == 0) { s_in_win_us = now_rm; s_in_pairs_win = 0; }
-            else if (win_us >= 1000000) {                /* 1 s of measurement */
+            else if (win_us >= RATE_WIN_US) {            /* see RATE_WIN_US - T36 */
                 float src_rate = (float)s_in_pairs_win * 1000000.0f / (float)win_us;
                 float target   = src_rate / ((float)s_decim_d * (float)DSP_SAMPLE_RATE_HZ);
                 s_up_target = (s_up_target <= 0.0f) ? target
-                                                    : s_up_target + (target - s_up_target) * 0.25f;
+                                                    : s_up_target + (target - s_up_target) * RATE_SMOOTH_A;
                 s_in_win_us = now_rm; s_in_pairs_win = 0;
             }
             if (s_up_target > 0.0f) s_up_inc = s_up_target - (float)err * 2.0e-10f;
+
+            /* T21: record the pitch, in ppm from nominal. Taken HERE, right
+             * where the value is decided, rather than sampled by the reader -
+             * the rate loop runs per frame and a reader polling every few
+             * seconds would alias straight past a wander. min/max make a
+             * wander between two API calls impossible to miss. */
+            {
+                int32_t ppm = (int32_t)lrintf((s_up_inc / inc_nom - 1.0f) * 1.0e6f);
+                s_resample_ppm = ppm;
+                if (ppm < s_resample_ppm_min) s_resample_ppm_min = ppm;
+                if (ppm > s_resample_ppm_max) s_resample_ppm_max = ppm;
+            }
 
             /* ±2% is far more than any real unit needs (0.24% here) and is the
                only thing between a wrong measurement and a pitch change, so it
@@ -2200,7 +2285,8 @@ static void rx_audio_task(void *arg)
                 uint32_t favg = fc ? (uint32_t)(s_frame_us_sum / fc) : 0;
                 uint32_t gn = s_gap_iv_n;
                 ESP_LOGI(TAG, "diag: frame %lu/%luus (n=%lu)  write max=%luus  "
-                         "LATE %lu/%lu  OUT %lu smp/s  drift +%lu/-%lu  I2Sovf %lu  "
+                         "LATE %lu/%lu  OUT %lu smp/s  drift +%lu/-%lu  "
+                         "pitch %+ld ppm (%+ld..%+ld, railed %lu)  I2Sovf %lu  "
                          "read to=%lu  clips=%lu  gap iv %lu/%lu/%lums (n=%lu)",
                          (unsigned long)favg, (unsigned long)s_frame_us_max, (unsigned long)fc,
                          (unsigned long)s_write_us_max,
@@ -2210,6 +2296,13 @@ static void rx_audio_task(void *arg)
                                           / (uint64_t)(now_us - s_win_start_us))
                              : 0),
                          (unsigned long)s_rate_ins, (unsigned long)s_rate_drop,
+                         /* T21: the number that IS the pitch. Printed every
+                            10 s so the standing serial capture carries it -
+                            a wander only shows as a series. */
+                         (long)s_resample_ppm,
+                         (long)(s_resample_ppm_min == INT32_MAX ? s_resample_ppm : s_resample_ppm_min),
+                         (long)(s_resample_ppm_max == INT32_MIN ? s_resample_ppm : s_resample_ppm_max),
+                         (unsigned long)s_rate_railed,
                          (unsigned long)s_i2s_ovf,
                          (unsigned long)s_read_timeout_count, (unsigned long)s_clip_count,
                          (unsigned long)(gn ? s_gap_iv_min_ms : 0),
@@ -2620,7 +2713,17 @@ void rx_audio_set_enabled(bool en)
         // Codec is only opened at boot (before the USB host takes the DMA
         // RAM). Turning RX audio on mid-session can't open it safely, so it
         // takes effect after a restart.
+        //
+        // ⛔ AND THE OPERATOR HAS TO BE TOLD, ON THE GLASS. Until 2026-10-17
+        // this warning went to the serial console and nowhere else: the box
+        // ticks, stays ticked, and nothing happens, with no explanation on
+        // any surface the operator can see. Found while trying to measure
+        // T21 - I ticked it, read frame_count=0, and only the capture said
+        // why. Three operators asked about silent audio in the same week
+        // (Bryan N0LUF, Randy N4OPI, Sam W7STF); this is one of the ways to
+        // arrive there. The restart requirement itself is correct and stays.
         ESP_LOGW(TAG, "RX audio enabled - restart required to take effect");
+        ui_toast("RX audio needs a restart before it plays");
         return;
     }
     if (s_task) xTaskNotifyGive(s_task);   // wake it out of the indefinite block
@@ -2643,11 +2746,45 @@ void rx_audio_set_volume(uint8_t vol)
 {
     if (vol > 100) vol = 100;
     s_volume = vol;
-    if (s_codec) esp_codec_dev_set_out_vol(s_codec, (int)vol);
+    /* While muted the codec stays at zero; the slider still moves and is still
+     * saved, so unmuting returns to whatever was set meanwhile. */
+    if (s_codec && !s_muted) esp_codec_dev_set_out_vol(s_codec, (int)vol);
     settings_set_rx_audio_vol(vol);
 }
 
 uint8_t rx_audio_get_volume(void) { return s_volume; }
+
+/* ⭐⭐ MUTE IS NOT THE ENABLE SWITCH, AND IT CANNOT BE.
+ *
+ * Samuel W7STF asked for "a 'mute/unmute' capability; a button or a 'hot' area
+ * are IMHO sooooo much better (direct and natural) than a swipe gesture,
+ * followed by a scroll gesture, followed by a gesture to adjust".
+ *
+ * ⛔ rx_audio_set_enabled() CANNOT serve as that button, and Sam is the one
+ * who found out why: the ES8388 is opened once at boot and only when the saved
+ * flag was already set, because it must claim DMA RAM before the USB host
+ * takes the pool. Turning the enable flag on mid-session sets a flag, logs
+ * "restart required" and produces no sound until the next boot - exactly his
+ * 2026-10-02 report, "I had to reboot the Tab5 and QMX/+ for audio to work".
+ * A mute built on that switch would be silent on the way back, which is the
+ * one thing a mute must never be.
+ *
+ * So this is a separate, instant gate on the codec's output volume. The chain
+ * keeps running, the decoders keep decoding, the browser keeps receiving - it
+ * is the SPEAKER that goes quiet, in the time one I2C write takes.
+ *
+ * ⚠ RAM only, never persisted. A mute that survived a reboot would be
+ * indistinguishable from a dead speaker, and the operator would have no reason
+ * to look for a setting he does not remember leaving on. */
+void rx_audio_set_muted(bool mute)
+{
+    if (s_muted == mute) return;
+    s_muted = mute;
+    if (s_codec) esp_codec_dev_set_out_vol(s_codec, mute ? 0 : (int)s_volume);
+    ESP_LOGI(TAG, "speaker %s", mute ? "MUTED" : "unmuted");
+}
+
+bool rx_audio_is_muted(void) { return s_muted; }
 
 // ---- Live tuning ------------------------------------------------------
 // RAM only, deliberately NOT persisted - these are for iterating on the AGC/
@@ -2725,6 +2862,16 @@ void rx_audio_take_diag(rx_audio_diag_t *out)
     out->read_us_max    = s_read_us_max;
     out->write_us_avg   = loops ? (uint32_t)(s_write_us_sum / loops) : 0;
     out->write_us_max   = s_write_us_max;
+    /* T21. An untouched window (no audio running) would report
+       INT32_MAX/INT32_MIN, which reads as a wild excursion rather than as
+       'nothing happened' - so an empty span collapses to the live value. */
+    int32_t pmin = s_resample_ppm_min, pmax = s_resample_ppm_max;
+    out->resample_ppm     = s_resample_ppm;
+    out->resample_ppm_min = (pmin == INT32_MAX) ? s_resample_ppm : pmin;
+    out->resample_ppm_max = (pmax == INT32_MIN) ? s_resample_ppm : pmax;
+    out->resample_railed  = s_rate_railed;
+    s_resample_ppm_min = INT32_MAX;
+    s_resample_ppm_max = INT32_MIN;
     s_frame_us_max       -= s_frame_us_max;
     s_frame_us_sum        = 0;
     s_frame_count         -= frames;

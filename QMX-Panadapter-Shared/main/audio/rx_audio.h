@@ -47,6 +47,15 @@ void rx_audio_preopen(void);
 void rx_audio_set_enabled(bool en);
 bool rx_audio_is_enabled(void);
 
+/* ⭐ Instant speaker mute, RAM only. NOT rx_audio_set_enabled(): that one
+ * cannot be turned on mid-session (the codec is opened at boot or not at all),
+ * which is the "restart required" Samuel W7STF ran into. This gates the
+ * codec's output volume instead, so it takes effect at once and comes back at
+ * once. Deliberately not persisted - a mute surviving a reboot looks exactly
+ * like a broken speaker. */
+void rx_audio_set_muted(bool mute);
+bool rx_audio_is_muted(void);
+
 /* ⛔ TRUE WHEN THE SWITCH IS ON AND IS DOING NOTHING.
  *
  * The ES8388/I2S codec is opened once at boot, and only when the saved enable
@@ -197,6 +206,23 @@ typedef struct {
     uint32_t read_us_max;
     uint32_t write_us_avg;
     uint32_t write_us_max;
+    /* ⭐ THE PITCH, AND IT WAS OBSERVABLE NOWHERE UNTIL 2026-10-17 (T21).
+     * Sam W7STF reports the WWV 1-second tone changing pitch over time on the
+     * Tab5 itself. Pitch is set by exactly one number - s_up_inc, the phase
+     * advance per output sample - and it appeared in no log line, no API
+     * field and no header, so the symptom could only ever be argued about.
+     *
+     * Reported as PARTS PER MILLION from nominal (1/D), because that is the
+     * quantity the ear hears: 1000 ppm is a tenth of a percent, about 1.7
+     * cents, and a steady tone that wanders by tens of ppm is inaudible while
+     * one that wanders by hundreds is not. Nominal reads 0.
+     *
+     * NOT since-the-last-call like the fields above - these three are an
+     * instantaneous reading plus a running total: */
+    int32_t  resample_ppm;      /* s_up_inc vs nominal, ppm. 0 = no correction */
+    int32_t  resample_ppm_min;  /* lowest and highest seen since the last call, */
+    int32_t  resample_ppm_max;  /* so a wander between two samples cannot hide */
+    uint32_t resample_railed;   /* times the +/-2% clamp was hit, cumulative */
 } rx_audio_diag_t;
 
 void rx_audio_take_diag(rx_audio_diag_t *out);
@@ -326,7 +352,27 @@ void rx_audio_take_diag(rx_audio_diag_t *out);
  * smaller D only uses MORE of an allocation that was always big enough -
  * checked, not assumed), but the CPU cost is real and is paid only while
  * AM is the mode. CW and SSB stay at D=8. */
-#define RX_AUDIO_AM_HALF_BW_MAX_HZ  10000
+/* ⛔ 4800, NOT 10000 - THE WIDTHS THAT NEEDED D=2 ARE GONE. 10.0 and
+ * 20.0 kHz were added 2026-10-15 and withdrawn 2026-10-17, because D=2 does
+ * not play cleanly on this hardware. MEASURED on bench dev, AM 7.078 MHz,
+ * panadapter + waterfall, speaker off:
+ *
+ *                              idle1    frame avg   worst frame
+ *     6.0 kHz  (D=4)           18.4%      7.3 ms          -
+ *     10.0 kHz (D=2)            0.0%     21.9 ms        65 ms
+ *     10.0 kHz (D=2) + listener 0.0%     22.2 ms        80 ms
+ *     6.0 kHz  (D=4) + listener 13-18%   10.9 ms        56 ms
+ *
+ * Core 1 is pinned at D=2 with NOBODY listening - the browser is not the
+ * cost, the width is - and a web listener logged one re-prime in 95 s at
+ * 10 kHz against none in 100 s at 6 kHz. That re-prime is the hiccup Samuel
+ * W7STF reported, and the operator's rule is that a width which does not play
+ * cleanly should not be offered: "it is a ham radio after all".
+ *
+ * 9.6 kHz is the ceiling D=4 was measured to carry (-1.33 dB at 4800 Hz), so
+ * the list stops there. It is 400 Hz short of the 10.0 kHz amateur AM legal
+ * maximum and that difference is inaudible. */
+#define RX_AUDIO_AM_HALF_BW_MAX_HZ  4800
 
 /* The AM half-bandwidth actually in force. Settable, because the figure above
  * is a default and the right choice depends on the band: on a crowded evening

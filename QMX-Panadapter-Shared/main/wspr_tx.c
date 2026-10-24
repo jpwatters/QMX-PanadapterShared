@@ -3,7 +3,8 @@
 // TA; "Transmit Audio" technique as ft8_tx.c).
 
 #include "wspr_tx.h"
-#include "ui.h"        // ui_toast_ms - a refusal the operator can act on must reach the screen
+#include "ui.h"
+#include "tx_band_guard.h"   // T48: refuse to key outside the region's allocation        // ui_toast_ms - a refusal the operator can act on must reach the screen
 #include "ui/power_cal_modal.h"   // power_cal_dbm_for_watts - the ONE watts->dBm rule
 #include "wspr_proto.h"
 #include "wspr_fano.h"
@@ -23,6 +24,7 @@
 #include "freertos/semphr.h"
 
 #include "cat/cat.h"
+#include "net/radio_relay.h"   // radio_relay_tx_locked - another device has the transmitter
 #include "ft8_tx.h"   // ft8_tx_trip_swr / ft8_tx_swr_tripped - the STATION SWR latch
 #include "storage/settings.h"
 #include "util/psram_task.h"
@@ -501,6 +503,14 @@ static void run_burst(const wspr_tx_request_t *req)
             return;
         }
     }
+    // Another device has the transmitter (NAS relay lock). Refuse before the
+    // "burst starting" line, for the same reason as the SWR check above.
+    if (!s_burst_sim && radio_relay_tx_locked(NULL, 0)) {
+        ESP_LOGW(TAG, "WSPR TX REFUSED: " RADIO_RELAY_TX_LOCKED_MSG);
+        ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG, 8000);
+        s_state = WSPR_TX_IDLE;
+        return;
+    }
 
     uint32_t rf_hz = cat_get_frequency() + (uint32_t)req->audio_freq_hz;
     ESP_LOGW(TAG, "WSPR TX burst starting: '%s' '%s' %d dBm declared, base=%d Hz "
@@ -516,6 +526,21 @@ static void run_burst(const wspr_tx_request_t *req)
     // ft8_tx.c's identical reasoning. Cooperative flag only, never
     // vTaskSuspend.
     if (!s_burst_sim) cat_poll_hold(CAT_HOLD_TX_BURST);
+
+    /* ⛔ BAND GUARD, BEFORE KEY-DOWN (T48). rf_hz above is the emitted
+     * carrier; the four FSK tones span 3 * 1.4648 Hz, so +5 Hz covers the
+     * top one. Placed here, after the poll hold and before TX;, for the same
+     * reason as ft8_tx.c's mode-drift pre-flight: refuse cleanly rather than
+     * key and correct. */
+    {
+        char gerr[160];
+        if (!tx_band_guard_allows(rf_hz, rf_hz + 5u, "WSPR", gerr, sizeof gerr)) {
+            ui_toast_ms(gerr, 15000);
+            if (!s_burst_sim) cat_poll_release(CAT_HOLD_TX_BURST);
+            s_state = WSPR_TX_IDLE;
+            return;
+        }
+    }
 
     int64_t t0 = esp_timer_get_time();
     sleep_until(t0, 0);
@@ -814,6 +839,10 @@ bool wspr_tx_arm(const wspr_tx_request_t *req, char *out_err, size_t out_err_len
                                   (double)trip);
             return false;
         }
+    }
+    if (radio_relay_tx_locked(NULL, 0)) {
+        if (out_err) snprintf(out_err, out_err_len, "%s", RADIO_RELAY_TX_LOCKED_MSG);
+        return false;
     }
 
     /* ⭐ WARN ABOUT THE FINALS AT ARM TIME, NOT ONLY IN A DRAWER.

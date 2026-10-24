@@ -1,0 +1,591 @@
+From efed500d01f80482c7c8b16642742d478c9307fd Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Wed, 14 Oct 2026 10:28:10 -0500
+Subject: [PATCH 14/30] tx-test: log each transmit burst on the relay and
+ compare it with the Tab5 console
+
+The relay writes txlog/txlog-<date>.log: every command it handed to the QMX
+during a burst, timed on the NAS's monotonic clock, with RF on-air time, tone
+gaps and symbol timing against schedule. tools/tx-test has a Mac capture of
+the Tab5 console (Mac-time stamped, for slot pairing only) and tx_compare.py,
+which pairs bursts by slot and compares only same-clock intervals.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ tools/nas-relay/README.md             |   7 +
+ tools/nas-relay/qmx_nas_relay.py      | 119 ++++++++++++++
+ tools/tx-test/README.md               |  88 ++++++++++
+ tools/tx-test/capture-tab5-console.sh |  53 ++++++
+ tools/tx-test/tx_compare.py           | 227 ++++++++++++++++++++++++++
+ 5 files changed, 494 insertions(+)
+ create mode 100644 tools/tx-test/README.md
+ create mode 100755 tools/tx-test/capture-tab5-console.sh
+ create mode 100644 tools/tx-test/tx_compare.py
+
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index 2c356947..b4372e62 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -221,6 +221,13 @@ Notes:
+   connection on the Tab5 freezes for good about 20-50 s after boot (fixed in
+   `wifi.c`; `radio_relay.c` refuses such a send instead of hanging).
+ 
++* **Transmit log:** every transmit burst from the Tab5 is written, once `RX;` has
++  gone out, to `txlog/txlog-<date>.log` in the relay folder. The log holds each
++  command the relay handed to the QMX, timed on the NAS's clock, plus a summary
++  line: RF on-air time, tone gaps, and symbol timing against schedule. Compare it
++  with the Tab5's console using `tools/tx-test/tx_compare.py` (see
++  `tools/tx-test/README.md`). Turn it off with `--txlog-dir ''`.
++
+ ## Troubleshooting
+ 
+ * **Touch dead, but the screen and stream keep running, even after a restart:**
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 23d8200c..1b776558 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -1290,6 +1290,7 @@ class RadioManager:
+         self.dead = False
+         self.users: set = set()
+         self.session = None          # the current Tab5 session gets I/Q and CAT
++        self.txlog = None            # TxLog, unless --txlog-dir ''
+ 
+     def acquire(self, user):
+         with self.lock:
+@@ -1335,6 +1336,115 @@ class RadioManager:
+             u.radio_gone()
+ 
+ 
++# ---------------------------------------------------------------------------
++# Transmit log: what the relay actually handed to the QMX during a TX burst,
++# timed on THIS host's clock only. Every interval in it (burst length, gap
++# between tone changes, lateness of a symbol) is the difference of two
++# readings of time.monotonic() on the NAS, so it never mixes clocks. The
++# NAS's wall clock is used for one thing: naming the FT8/FT4 slot, so a burst
++# here can be paired with the same burst in the Tab5's console log
++# (tools/tx-test/tx_compare.py). Nothing is written to disk during a burst;
++# the whole burst is queued to a writer thread when RX; has gone out.
++# ---------------------------------------------------------------------------
++
++class TxLog:
++    MAX_CMDS = 400           # a burst is ~85 commands; anything beyond is noise
++
++    def __init__(self, directory: str):
++        self.dir = directory
++        self.q: "queue.Queue[str]" = queue.Queue()
++        self.burst = None        # list of (t_in_ns, t_out_ns, cmd) while keyed
++        self.wall0 = 0.0         # NAS wall clock at key down (slot naming only)
++        self.count = 0
++        self.carry = b""
++        threading.Thread(target=self._writer, daemon=True, name="txlog").start()
++
++    # called on the Tab5 session thread, around radio.send_cat()
++    def cat(self, payload: bytes, t_in: int, t_out: int):
++        data = self.carry + payload
++        cmds = data.split(b";")
++        self.carry = cmds.pop()[-64:]             # incomplete tail, if any
++        for c in cmds:
++            c = c.strip().decode(errors="replace")
++            if not c:
++                continue
++            if c.startswith("TX"):
++                if self.burst:
++                    self._finish(complete=False)
++                self.burst = [(t_in, t_out, c)]
++                self.wall0 = time.time() - (time.monotonic_ns() - t_out) / 1e9
++            elif self.burst is not None:
++                if len(self.burst) < self.MAX_CMDS:
++                    self.burst.append((t_in, t_out, c))
++                if c.startswith("RX"):
++                    self._finish(complete=True)
++
++    @staticmethod
++    def _ta_hz(c: str):
++        try:
++            return float(c[2:]) if c.startswith("TA") else None
++        except ValueError:
++            return None
++
++    def _finish(self, complete: bool):
++        b, self.burst = self.burst, None
++        self.count += 1
++        try:
++            self.q.put(self._format(b, self.wall0, complete))
++        except Exception as e:                       # never let logging hurt the relay
++            log.warning("txlog: %s", e)
++
++    def _format(self, b, wall0: float, complete: bool) -> str:
++        t_key = b[0][1]
++        ms = lambda t: (t - t_key) / 1e6
++        tones = [(ti, to, c) for ti, to, c in b if (self._ta_hz(c) or 0) >= 10]
++        keyup = next((to for ti, to, c in b if self._ta_hz(c) is not None and self._ta_hz(c) < 10), None)
++        rx = next((to for ti, to, c in b if c.startswith("RX")), None)
++        n = len(tones)
++        # FT8 = 79 tones at 160 ms, FT4 = 105 at 48 ms; anything else: no ideal
++        sym = 48.0 if 90 <= n <= 110 else (160.0 if 60 <= n < 90 else 0.0)
++        period = 7.5 if sym == 48.0 else 15.0
++        slot0 = math.floor(wall0 / period) * period
++        key_into = (wall0 - slot0) * 1000
++        utc = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(slot0)) + (".5" if slot0 % 1 else "") + "Z"
++        gaps = [(tones[i][1] - tones[i - 1][1]) / 1e6 for i in range(1, n)]
++        # symbol i is due i*sym after key down (the Tab5 sends TX; and the
++        # first tone together, at t0); + = reached the radio late, - = early
++        late = [ms(tones[i][1]) - i * sym for i in range(n)] if sym else []
++        hold = max((to - ti) / 1e6 for ti, to, c in b)
++        out = ["# burst %d  slot %s  (%s)" % (self.count, utc, "complete" if complete else "NO RX; - next TX; came first")]
++        out.append("RELAY key down at +%.0f ms into the slot (NAS clock)" % key_into)
++        parts = ["RELAY TX burst: %d tones" % n]
++        if keyup is not None:
++            parts.append("RF on-air %.0f ms (TX; -> key-up TA0;)" % ms(keyup))
++        if rx is not None:
++            parts.append("TX; -> RX; %.0f ms" % ms(rx))
++        if gaps:
++            off = sum(1 for g in gaps if sym and abs(g - sym) > 20)
++            parts.append("tone gaps min/avg/max %.0f/%.1f/%.0f ms" % (min(gaps), sum(gaps) / len(gaps), max(gaps)))
++            if sym:
++                parts.append("gaps off by >20 ms: %d" % off)
++        if late:
++            parts.append("symbol timing vs schedule %+d..%+d ms" % (round(min(late)), round(max(late))))
++        parts.append("relay USB write max %.1f ms" % hold)
++        out.append("; ".join(parts))
++        for ti, to, c in b:
++            out.append("  %9.1f ms  %s" % (ms(to), c))
++        return "\n".join(out) + "\n"
++
++    def _writer(self):
++        while True:
++            text = self.q.get()
++            try:
++                os.makedirs(self.dir, exist_ok=True)
++                path = os.path.join(self.dir, time.strftime("txlog-%Y-%m-%d.log"))
++                with open(path, "a") as f:
++                    f.write(text)
++                log.info("txlog: burst %d written to %s", self.count, path)
++            except OSError as e:
++                log.warning("txlog: cannot write %s: %s", self.dir, e)
++
++
+ # ---------------------------------------------------------------------------
+ # One Tab5 session
+ # ---------------------------------------------------------------------------
+@@ -1426,7 +1536,10 @@ class Session:
+                 payload = recv_exact(sock, n) if n else b""
+                 if t == PROTO_CAT and payload:
+                     log.debug("Tab5 -> QMX CAT %r", payload)
++                    t_in = time.monotonic_ns()
+                     radio.send_cat(payload)
++                    if self.mgr.txlog:
++                        self.mgr.txlog.cat(payload, t_in, time.monotonic_ns())
+                 elif t == PROTO_TERM_DATA and payload:
+                     radio.term_send(payload)
+                 elif t == PROTO_TERM_OPEN:
+@@ -1818,6 +1931,9 @@ def main():
+     ap.add_argument("--selftest-only", action="store_true", help="run the self-test and exit (0 = passed)")
+     ap.add_argument("--discovery-port", type=int, default=None,
+                     help="UDP port answering Tab5 'QMXR?' searches (default: same as --port; 0 = off)")
++    ap.add_argument("--txlog-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "txlog"),
++                    help="where to log each transmit burst as the relay sent it to the QMX "
++                         "(default: txlog/ next to this script; '' = off)")
+     ap.add_argument("-v", "--verbose", action="store_true")
+     args = ap.parse_args()
+     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+@@ -1826,6 +1942,9 @@ def main():
+         return probe(args)
+ 
+     mgr = RadioManager(args)
++    if args.txlog_dir:
++        mgr.txlog = TxLog(args.txlog_dir)
++        log.info("transmit bursts are logged to %s/txlog-<date>.log", args.txlog_dir)
+     if args.selftest or args.selftest_only:
+         passed = selftest(mgr)
+         if args.selftest_only:
+diff --git a/tools/tx-test/README.md b/tools/tx-test/README.md
+new file mode 100644
+index 00000000..8d9b7df7
+--- /dev/null
++++ b/tools/tx-test/README.md
+@@ -0,0 +1,88 @@
++# Transmit timing test: Tab5 console vs. NAS relay
++
++Checks that a transmit burst sent through the NAS relay reaches the QMX on time.
++It compares what the Tab5 *thinks* it sent against what the relay *actually wrote
++to the radio's USB port*.
++
++## The rule: one clock per number
++
++Every number compared here is an interval whose two ends come from the same
++clock:
++
++| Where | Number | Clock |
++|---|---|---|
++| Tab5 log | `key down at +N ms into the slot` | Tab5 |
++| Tab5 log | `TX burst ... (N ms on-air)` | Tab5 |
++| Relay txlog | `RF on-air` (TX; → key-up TA0;), tone gaps, symbol timing | NAS (monotonic) |
++
++The Tab5's and NAS's wall clocks are only used to work out **which slot** a
++burst was in, so the same burst can be found in both logs. Never subtract a
++Tab5 time from a NAS time: they are different clocks, and a stable difference
++between them is not a measurement.
++
++## Why both logs are needed
++
++The Tab5 schedules each tone change on its own timer. If the Wi-Fi or the relay
++holds a few tone changes back and then delivers them together, the Tab5 never
++notices. Its send call returns as soon as the bytes are in its TCP buffer, so its
++`on-air` number stays at its usual value. Only the relay sees when each command
++really went to the radio, which is what an on-air signal is made of.
++
++The Tab5's `on-air` figure runs from key down until `RX;` has been sent. That
++includes the post-burst power/SWR query, which waits for the radio's reply. Over
++the NAS that reply makes one network round trip, so expect the Tab5 figure to be
++somewhat longer than over direct USB even when every tone was on time. The
++relay's `RF on-air` (key down → key-up tone) is the number that should be 12640
++ms for FT8.
++
++## Running it
++
++1. **Relay:** the relay logs every transmit burst by itself, to `txlog/txlog-<date>.log`
++   in its folder on the NAS (File Share/qmx-relay/txlog). There is nothing to
++   switch on. Turn it off with `--txlog-dir ''`. Nothing is written during a
++   burst; the burst is saved once `RX;` has gone out.
++2. **Tab5 log:** use the Tab5's own log over Wi-Fi. It holds the same lines as
++   the USB console, timed on the same Tab5 clock, and needs no cable. A cable
++   matters because opening the USB console port restarts the Tab5, and after a
++   restart without a full power-off the touch screen stops responding. So, with
++   nothing plugged into the Tab5's USB-C:
++   - power the Tab5 fully off and on, so touch works and the log starts fresh
++     with its "SNTP sync: UTC ..." line;
++   - after the last burst, open `http://qmx.local/api/log` (or the Tab5's IP)
++     in the browser. This saves `qmx-log.txt`. Each download empties the
++     Tab5's log, so download it once, at the end.
++
++   The USB console capture (`capture-tab5-console.sh`) still works, but only if
++   you can live with the restart it causes.
++3. Let the Tab5 connect to the NAS, then make **ten consecutive FT8 transmissions**
++   into a dummy load, or on air if you're licensed and the frequency is clear.
++4. Copy `txlog-<date>.log` from the NAS to the Mac using File Station → Download,
++   then compare:
++   ```
++   python3 tools/tx-test/tx_compare.py ~/Downloads/qmx-log.txt ~/Downloads/txlog-<date>.log
++   ```
++5. **Optional baseline:** do the same with the QMX plugged straight into the Tab5
++   (Radio source: USB), and download the log again. Then compare the Tab5 numbers
++   on their own:
++   `python3 tools/tx-test/tx_compare.py --usb ~/Downloads/qmx-log-usb.txt`
++
++## Reading the result
++
++For each burst, `tx_compare.py` prints:
++
++- the Tab5's key-down offset and on-air time;
++- the relay's key-down offset, RF on-air time, and TX;→RX; time;
++- the longest gap between two tone changes;
++- how many tone changes were more than 20 ms off their 160 ms spacing;
++- the earliest and latest symbol compared with its schedule.
++
++It ends with medians and with how many bursts reached the radio cleanly.
++
++A healthy FT8 burst through the relay looks like this: RF on-air 12640 ± a few
++ms, tone gaps about 158–162 ms, none more than 20 ms off, and symbol timing
++within a few ms of schedule. A relay or Wi-Fi stall shows up as a long gap
++followed by short ones, and as a symbol arriving late. That can happen while the
++Tab5's own figure looks normal.
++
++Only transmissions from the Tab5 are logged. Transmissions from PC software on
++port 7356 are not.
+diff --git a/tools/tx-test/capture-tab5-console.sh b/tools/tx-test/capture-tab5-console.sh
+new file mode 100755
+index 00000000..4f407f16
+--- /dev/null
++++ b/tools/tx-test/capture-tab5-console.sh
+@@ -0,0 +1,53 @@
++#!/bin/bash
++# Record the Tab5's USB-serial console to a file for a whole test session,
++# each line stamped with this Mac's clock. Stop with Ctrl-C.
++#   bash tools/tx-test/capture-tab5-console.sh [name]
++# Output: build/tab5-console-<name or date-time>.log in this project.
++#
++# The Mac timestamps are ONLY used by tx_compare.py to tell which FT8 slot a
++# burst belongs to. Every measurement it compares comes from the firmware's
++# own lines ("key down at +N ms into the slot", "(N ms on-air)"), which are
++# timed on the Tab5's clock alone.
++#
++# On macOS, opening the port restarts the Tab5 (USB-serial-JTAG reset): start
++# this FIRST, let the Tab5 boot and connect, then begin transmitting.
++REPO="$(cd "$(dirname "$0")/../.." && pwd)"; mkdir -p "$REPO/build"
++NAME="${1:-$(date '+%Y%m%d-%H%M%S')}"
++OUT="$REPO/build/tab5-console-$NAME.log"
++PY="$(ls -d "$HOME/.espressif/python_env/idf5.4_py"*_env 2>/dev/null | sort -V | tail -1)/bin/python"
++[ -x "$PY" ] || PY="$(command -v python3)"
++"$PY" -c "import serial" 2>/dev/null || { echo "pyserial missing: $PY -m pip install pyserial"; exit 1; }
++PORT="$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)"
++[ -n "$PORT" ] || { echo "No Tab5 USB serial port found - is it plugged in with a data cable?"; exit 1; }
++echo "Recording $PORT into $OUT - Ctrl-C to stop"
++"$PY" - "$PORT" "$OUT" <<'PYEOF'
++import sys, time, serial
++port, out = sys.argv[1], sys.argv[2]
++def stamp():
++    t = time.time()
++    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) + ".%03d | " % int((t % 1) * 1000)
++buf = b""
++with open(out, "ab") as f:
++    f.write(("# Tab5 console %s, capture started %s (Mac clock)\n" % (port, time.strftime("%Y-%m-%d %H:%M:%S %z"))).encode())
++    try:
++        while True:
++            try:
++                s = serial.Serial(port, 115200, timeout=0.2)
++                s.dtr = False; s.rts = False          # never reset the board ourselves
++                while True:
++                    d = s.read(4096)
++                    if not d:
++                        continue
++                    buf += d
++                    while b"\n" in buf:
++                        line, buf = buf.split(b"\n", 1)
++                        rec = stamp().encode() + line.rstrip(b"\r") + b"\n"
++                        f.write(rec); f.flush()
++                        sys.stdout.buffer.write(rec); sys.stdout.flush()
++            except (serial.SerialException, OSError) as e:
++                f.write(("%s# [port gone: %s]\n" % (stamp(), e.__class__.__name__)).encode()); f.flush()
++                time.sleep(0.3)
++    except KeyboardInterrupt:
++        pass
++print("\nSaved:", out)
++PYEOF
+diff --git a/tools/tx-test/tx_compare.py b/tools/tx-test/tx_compare.py
+new file mode 100644
+index 00000000..2f07ae5e
+--- /dev/null
++++ b/tools/tx-test/tx_compare.py
+@@ -0,0 +1,227 @@
++#!/usr/bin/env python3
++"""
++tx_compare.py - compare transmit bursts as the Tab5 timed them with the same
++bursts as the NAS relay handed them to the QMX.
++
++    python3 tools/tx-test/tx_compare.py TAB5_CONSOLE.log RELAY_TXLOG.log [...]
++    python3 tools/tx-test/tx_compare.py --usb TAB5_USB.log      (Tab5 only, e.g. a direct-USB baseline)
++
++Inputs
++  TAB5_CONSOLE.log  from tools/tx-test/capture-tab5-console.sh (each line
++                    stamped with the Mac's clock)
++  RELAY_TXLOG.log   txlog/txlog-<date>.log from the relay folder on the NAS
++
++The rule this script is built on: every number it compares is an interval
++whose two ends were read from ONE clock.
++  Tab5 side  "key down at +N ms into the slot"  and "(N ms on-air)" - both
++             measured by the firmware on the Tab5's own clock.
++  Relay side "RF on-air", tone gaps and symbol timing - differences of the
++             NAS's monotonic clock, around the actual USB writes to the QMX.
++The Mac's and the NAS's wall clocks are used only to say which 15 s (FT8) or
++7.5 s (FT4) slot a burst was in, so the same burst can be found in both logs.
++They are never subtracted from each other. Two clocks only need to agree to
++within a few seconds for that, and a burst that cannot be placed is listed as
++unpaired rather than guessed.
++"""
++from __future__ import annotations
++
++import argparse
++import calendar
++import re
++import statistics
++import sys
++import time
++
++ANSI = re.compile(r"\x1b\[[0-9;]*m")
++STAMP = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}) \| (.*)$")
++KEY = re.compile(r"key down at \+(-?\d+) ms into the slot")
++START = re.compile(r"TX burst starting \((FT4|FT8)\)")
++DONE = re.compile(r"TX burst (\[SIM\] )?(complete|ABORTED): '(.*)' \((\d+) ms on-air\)")
++R_HEAD = re.compile(r"^# burst (\d+)\s+slot (\S+)\s+\((.*)\)")
++R_KEY = re.compile(r"^RELAY key down at \+(-?\d+) ms into the slot")
++R_SUM = re.compile(r"^RELAY TX burst: (\d+) tones")
++
++FT8_ON_AIR_MS = 79 * 160          # 12640: the burst length if every symbol is on time
++
++
++def slot_key(t: float, period: float) -> int:
++    """Index of the slot that started nearest to t (seconds since the epoch)."""
++    return int(round(t / period))
++
++
++ESPLINE = re.compile(r"^[IWEDV] \((\d+)\) [^:]+: (.*)$")
++UTC_ANCHOR = re.compile(r"(?:SNTP sync: UTC|online; UTC) (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
++
++
++def parse_tab5(path: str):
++    """Two input forms:
++      - Mac capture: "<Mac date time.ms> | <console line>"  (capture-tab5-console.sh)
++      - the Tab5's own log over WiFi (web page log download, /api/log):
++        "I (<ms since boot>) tag: text". Its slot is placed from the latest
++        "SNTP sync: UTC ..." / "online; UTC ..." line on the Tab5 itself.
++    Either way the wall time only picks the slot; the compared numbers are
++    the firmware's own "key down at +N ms" and "(N ms on-air)"."""
++    bursts, cur, proto = [], None, "FT8"
++    anchor = None                      # (boot_ms, utc_epoch) from the Tab5's own log
++    last_boot_ms = -1
++    with open(path, "rb") as f:
++        for raw in f:
++            line = ANSI.sub("", raw.decode(errors="replace").rstrip("\r\n"))
++            wall = None
++            m = STAMP.match(line)
++            if m:
++                wall = time.mktime(time.strptime(m.group(1)[:19], "%Y-%m-%d %H:%M:%S")) + int(m.group(1)[20:]) / 1000
++                line = m.group(2)
++            e = ESPLINE.match(line)
++            if e:
++                boot_ms = int(e.group(1))
++                if boot_ms < last_boot_ms:          # the Tab5 rebooted: old anchor is void
++                    anchor, cur = None, None
++                last_boot_ms = boot_ms
++                if (u := UTC_ANCHOR.search(line)):
++                    anchor = (boot_ms, calendar.timegm(time.strptime(u.group(1), "%Y-%m-%d %H:%M:%S")))
++                if wall is None and anchor:
++                    wall = anchor[1] + (boot_ms - anchor[0]) / 1000
++            text = line
++            if (s := START.search(text)):
++                proto = s.group(1)
++            elif (k := KEY.search(text)):
++                cur = {"proto": proto, "key_ms": int(k.group(1)), "wall": wall}
++            elif (d := DONE.search(text)) and cur:
++                cur.update(sim=bool(d.group(1)), status=d.group(2), text=d.group(3), on_air=int(d.group(4)))
++                period = 7.5 if cur["proto"] == "FT4" else 15.0
++                cur["period"] = period
++                if cur["wall"] is None:
++                    cur["slot"] = None                 # no clock anchor: cannot be placed
++                else:
++                    # the slot started key_ms before the key-down line was logged
++                    cur["slot"] = slot_key(cur["wall"] - cur["key_ms"] / 1000, period)
++                bursts.append(cur)
++                cur = None
++    return bursts
++
++
++def parse_relay(paths):
++    bursts, cur = [], None
++    for path in paths:
++        with open(path) as f:
++            for line in f:
++                line = line.rstrip("\n")
++                if (h := R_HEAD.match(line)):
++                    utc = h.group(2).rstrip("Z")
++                    frac = 0.5 if utc.endswith(".5") else 0.0
++                    t = calendar.timegm(time.strptime(utc[:19], "%Y-%m-%dT%H:%M:%S")) + frac
++                    cur = {"slot_t": t, "status": h.group(3)}
++                    bursts.append(cur)
++                elif cur is not None and (k := R_KEY.match(line)):
++                    cur["key_ms"] = int(k.group(1))
++                elif cur is not None and (s := R_SUM.match(line)):
++                    cur["tones"] = int(s.group(1))
++                    for key, pat in (("rf_on_air", r"RF on-air (\d+) ms"), ("tx_rx", r"TX; -> RX; (\d+) ms"),
++                                     ("gap_max", r"min/avg/max \d+/[\d.]+/(\d+) ms"),
++                                     ("gaps_off", r"off by >20 ms: (\d+)"),
++                                     ("late_min", r"vs schedule ([+-]\d+)\.\."), ("late_max", r"\.\.([+-]\d+) ms"),
++                                     ("usb_max", r"USB write max ([\d.]+) ms")):
++                        m = re.search(pat, line)
++                        if m:
++                            cur[key] = float(m.group(1))
++    for b in bursts:
++        period = 7.5 if 90 <= b.get("tones", 0) <= 110 else 15.0
++        b["period"] = period
++        b["slot"] = slot_key(b["slot_t"], period)
++    return bursts
++
++
++def fmt(v, w=6, plus=False):
++    if v is None:
++        return "-".rjust(w)
++    return (("%+d" if plus else "%d") % round(v)).rjust(w)
++
++
++def stats(name, vals):
++    vals = [v for v in vals if v is not None]
++    if not vals:
++        return "  %-34s -" % name
++    med = statistics.median(vals)
++    return "  %-34s n=%-3d min %6.0f  median %6.0f  max %6.0f" % (name, len(vals), min(vals), med, max(vals))
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
++    ap.add_argument("tab5", help="Tab5 console capture")
++    ap.add_argument("relay", nargs="*", help="relay txlog file(s); none = Tab5-only summary")
++    ap.add_argument("--usb", action="store_true", help="the Tab5 log is a direct-USB run (no relay expected)")
++    a = ap.parse_args()
++
++    t5 = [b for b in parse_tab5(a.tab5) if not b.get("sim")]
++    rl = parse_relay(a.relay) if a.relay else []
++    by_slot = {}
++    for r in rl:
++        by_slot.setdefault((r["period"], r["slot"]), []).append(r)
++
++    print("Tab5 log : %s  (%d transmit bursts)" % (a.tab5, len(t5)))
++    if a.relay:
++        print("Relay log: %s  (%d bursts)" % (", ".join(a.relay), len(rl)))
++    print()
++    hdr = "%-20s %5s | %6s %7s | %6s %7s %7s %6s %6s %13s" % (
++        "slot (local time)", "mode", "T5 key", "T5 on", "R key", "R RF on", "R TX-RX", "R gap", ">20ms", "R sym timing")
++    print(hdr)
++    print("-" * len(hdr))
++    paired, used = [], set()
++    for b in t5:
++        rs = by_slot.get((b["period"], b["slot"]), [])
++        r = rs[0] if len(rs) == 1 else None
++        if r:
++            used.add(id(r))
++            paired.append((b, r))
++        slot_txt = ("(no UTC in log)" if b["slot"] is None
++                    else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(b["slot"] * b["period"])))
++        timing = "-"
++        if r and r.get("late_min") is not None:
++            timing = "%+d..%+d" % (r["late_min"], r["late_max"])
++        flag = "" if r or not a.relay else ("  (no relay burst in this slot)" if not rs else "  (2+ relay bursts in this slot)")
++        if b["status"] != "complete":
++            flag += "  ABORTED"
++        print("%-20s %5s | %6s %7s | %6s %7s %7s %6s %6s %13s%s" % (
++            slot_txt, b["proto"], fmt(b["key_ms"], plus=True), fmt(b["on_air"]),
++            fmt(r and r.get("key_ms"), plus=True), fmt(r and r.get("rf_on_air")), fmt(r and r.get("tx_rx")),
++            fmt(r and r.get("gap_max")), fmt(r and r.get("gaps_off")), timing, flag))
++    for r in rl:
++        if id(r) not in used:
++            print("%-20s %5s | %6s %7s | %6s %7s %7s   relay burst with no Tab5 burst in this slot" % (
++                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["slot_t"])), "", "", "",
++                fmt(r.get("key_ms"), plus=True), fmt(r.get("rf_on_air")), fmt(r.get("tx_rx"))))
++
++    ft8 = [b for b in t5 if b["proto"] == "FT8" and b["status"] == "complete"]
++    print()
++    print("Columns: T5 = the Tab5's own numbers, R = the relay's (NAS clock). All in ms.")
++    print("  key     key down, ms after the slot started (each on its own clock vs UTC via NTP)")
++    print("  T5 on   Tab5 'on-air': key down -> RX; sent, including the post-burst power/SWR")
++    print("          query, which waits for the radio's reply (one network round trip on NAS)")
++    print("  R RF on what the QMX got: TX; -> key-up tone TA0; (FT8 ideal %d)" % FT8_ON_AIR_MS)
++    print("  R gap   longest gap between two tone changes reaching the radio (FT8 ideal 160)")
++    print("  >20ms   tone changes more than 20 ms off their 160 ms spacing")
++    print("  R sym timing  earliest..latest symbol vs key down + i x 160 ms")
++    print()
++    print("Summary")
++    print(stats("Tab5 key down (+ms into slot)", [b["key_ms"] for b in ft8]))
++    print(stats("Tab5 on-air (ms)", [b["on_air"] for b in ft8]))
++    pr = [(b, r) for b, r in paired if b["proto"] == "FT8"]
++    if pr:
++        print(stats("Relay RF on-air (ms)", [r.get("rf_on_air") for _, r in pr]))
++        print(stats("Relay TX; -> RX; (ms)", [r.get("tx_rx") for _, r in pr]))
++        print(stats("Relay longest tone gap (ms)", [r.get("gap_max") for _, r in pr]))
++        print(stats("Relay latest symbol (ms late)", [r.get("late_max") for _, r in pr]))
++        print(stats("Relay key down (+ms, NAS clock)", [r.get("key_ms") for _, r in pr]))
++        bad = [r for _, r in pr if (r.get("gaps_off") or 0) > 0 or abs((r.get("rf_on_air") or FT8_ON_AIR_MS) - FT8_ON_AIR_MS) > 20]
++        print()
++        print("%d of %d paired FT8 bursts reached the radio with every tone within 20 ms of schedule"
++              " and RF on-air within 20 ms of %d." % (len(pr) - len(bad), len(pr), FT8_ON_AIR_MS))
++    elif a.relay:
++        print("\nNo burst could be paired - check that both logs cover the same time and that the"
++              " Mac and the NAS clocks are set by NTP.")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.43.0
+

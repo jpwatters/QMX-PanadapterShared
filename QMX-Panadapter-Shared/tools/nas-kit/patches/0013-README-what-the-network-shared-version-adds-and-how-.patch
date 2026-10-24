@@ -1,7 +1,7 @@
-From ba28e6eee04454990257c3560d8fa20f5d432ced Mon Sep 17 00:00:00 2001
+From ca8076b32d282648800e149751b46c0097481625 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 9 Oct 2026 07:15:23 +0000
-Subject: [PATCH 13/22] README: what the network-shared version adds, and how
+Subject: [PATCH 13/30] README: what the network-shared version adds, and how
  far each part is tested
 
 Same text as QMX-Panadapter-Shared's README (commits 30dc89e + the wording
@@ -15,7 +15,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
  1 file changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index f9d982a2..6a0476a6 100644
+index bc55dbd6..fce51f0a 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,9 +1,45 @@

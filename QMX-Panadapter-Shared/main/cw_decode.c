@@ -142,6 +142,11 @@ int cw_wpm_estimate(int chars, unsigned elapsed_ms)
 #include <time.h>       /* transcript timestamps (#323) */
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+/* snprintf, in sd_transcript_putc(). It compiled on the device only because an
+   IDF header above happens to pull stdio in; built against a host shim the
+   declaration was missing and gcc fell back to the implicit int. Named here
+   rather than relied on from a neighbour. */
+#include <stdio.h>
 
 // A CW QSO's worth of text and then some. PSRAM: nothing here is hot, and
 // internal RAM is the scarce resource on this board.
@@ -156,8 +161,38 @@ int cw_wpm_estimate(int chars, unsigned elapsed_ms)
 #define CW_WPM_MIN_CHARS   12
 
 static cw_squelch_t     s_squelch;
-static char             s_line[CW_GRID_CELLS];  /* the wrapping display grid, CW_LINE_ROWS rows */
+/* The buffer is always the MAXIMUM, CW_LINE_ROWS rows. Only the part in use is
+ * written, copied and drawn - see s_rows. Sizing it to the current choice
+ * would mean a reallocation on a settings change for no gain; 288 bytes is
+ * not worth that. */
+static char             s_line[CW_GRID_CELLS];
+/* ⭐ WHICH CELLS ARE OUR OWN TRANSMISSION. Sam W7STF (T06): "transmitted morse
+ * in its own colour".
+ *
+ * The radio already tells us. TB's t-field is the number of characters of a KY
+ * send still to go, so a response carrying t > 0 arrived while the QMX was
+ * keying - and what it decoded in that same response is its own sidetone. The
+ * flag was parsed and thrown away: cw_decode_feed() passed NULL for it.
+ *
+ * ⚠ ATTRIBUTION IS APPROXIMATE AT THE SEAM, by one or two characters. The last
+ * characters of a send can land in the response where t has already fallen to
+ * 0, so they read as received. Better than not marking TX at all, and the
+ * alternative - tracking our own KY text and matching it against the decode -
+ * would be a second model that can disagree with the radio. */
+static uint8_t          s_line_tx[CW_GRID_CELLS];
 static int              s_line_col;             /* where the next character lands */
+/* How many of those rows are IN USE. Bryan N0LUF, 2026-10-16: "Maybe an option
+ * to select 2 or 4 lines as well?" - four rows cover about 66 px more of the
+ * waterfall than two, and not everyone wants to spend it.
+ *
+ * ⛔ This is the WRAP MODULUS, not just a draw count. If the text kept
+ * wrapping over four rows while two were drawn, half of every pass would be
+ * decoded into rows nobody can see and the visible half would jump. So it
+ * lives here, with the write position, and not in either screen. */
+static int              s_rows = CW_LINE_ROWS;
+
+/* Cells currently in use. Not a macro: s_rows changes at run time. */
+static inline int grid_cells(void) { return s_rows * CW_LINE_COLS; }
 static uint32_t        *s_stamp;
 static int              s_stamp_head, s_stamp_count;
 static char            *s_ring;
@@ -295,6 +330,7 @@ void cw_decode_init(void)
     s_total = 0;
     memset(&s_squelch, 0, sizeof(s_squelch));
     memset(s_line, ' ', sizeof(s_line));
+    memset(s_line_tx, 0, sizeof(s_line_tx));
     s_line_col = 0;
 }
 
@@ -302,8 +338,12 @@ void cw_decode_feed(const char *resp)
 {
     if (!s_ring) return;
     char chunk[CW_DECODE_MAX_CHUNK + 1];
-    int n = cw_decode_parse_tb(resp, chunk, sizeof(chunk), NULL);
+    int tx_pending = 0;
+    int n = cw_decode_parse_tb(resp, chunk, sizeof(chunk), &tx_pending);
     if (n <= 0) return;   // malformed, or simply nothing decoded this poll
+    /* t > 0 means a KY send is still running, so this payload is our own
+     * keying coming back through the radio's decoder - see s_line_tx. */
+    const uint8_t is_tx = (tx_pending > 0) ? 1u : 0u;
 
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
     for (int i = 0; i < n; i++) {
@@ -314,8 +354,9 @@ void cw_decode_feed(const char *resp)
             s_head = (s_head + 1) % CW_RING_CAP;
             if (s_count < CW_RING_CAP) s_count++;
             /* ...and into the wrapping line both screens draw from. */
-            s_line[s_line_col] = rel[k];
-            s_line_col = (s_line_col + 1) % CW_GRID_CELLS;
+            s_line[s_line_col]    = rel[k];
+            s_line_tx[s_line_col] = is_tx;
+            s_line_col = (s_line_col + 1) % grid_cells();
             // Timestamp every accepted character for the speed estimate. Noise
             // never reaches here, so it cannot drag the figure around.
             s_stamp[s_stamp_head] = (uint32_t)(esp_timer_get_time() / 1000);
@@ -358,7 +399,7 @@ size_t cw_decode_line(char *out, size_t out_sz)
     if (!s_ring) return 0;
 
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
-    size_t n = CW_GRID_CELLS;
+    size_t n = (size_t)grid_cells();
     if (n > out_sz - 1) n = out_sz - 1;
     memcpy(out, s_line, n);
     /* Two blank columns at the write position - see the header. Applied to the
@@ -368,10 +409,31 @@ size_t cw_decode_line(char *out, size_t out_sz)
      * Wrapped over the WHOLE grid, so the gap crosses the row boundary with the
      * text instead of stopping at the end of the first line. */
     for (int i = 0; i < 2; i++) {
-        size_t idx = (size_t)((s_line_col + i) % CW_GRID_CELLS);
+        size_t idx = (size_t)((s_line_col + i) % grid_cells());
         if (idx < n) out[idx] = ' ';
     }
     out[n] = '\0';
+    if (s_lock) xSemaphoreGive(s_lock);
+    return n;
+}
+
+/* The TX mask for the same grid cw_decode_line() returns, cell for cell: 1
+ * where the character was our own transmission. A separate call rather than a
+ * second out-parameter, because both surfaces want the mask and neither wants
+ * to re-copy the text to get it.
+ *
+ * The two-column gap cw_decode_line() lays over the write position is NOT
+ * applied here. A blank cell has no colour, so it cannot matter, and leaving
+ * the mask alone keeps this a pure read of the model. */
+size_t cw_decode_line_tx(uint8_t *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return 0;
+    if (!s_ring) { out[0] = 0; return 0; }
+
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    size_t n = (size_t)grid_cells();
+    if (n > out_sz) n = out_sz;
+    memcpy(out, s_line_tx, n);
     if (s_lock) xSemaphoreGive(s_lock);
     return n;
 }
@@ -435,6 +497,32 @@ void cw_decode_clear(void)
     s_stamp_head = s_stamp_count = 0;
     memset(&s_squelch, 0, sizeof(s_squelch));
     memset(s_line, ' ', sizeof(s_line));
+    memset(s_line_tx, 0, sizeof(s_line_tx));
+    s_line_col = 0;
+    if (s_lock) xSemaphoreGive(s_lock);
+}
+
+int cw_decode_rows(void)
+{
+    return s_rows;
+}
+
+/* ⛔ CHANGING THE COUNT WIPES THE GRID, and that is the honest behaviour, not
+ * laziness. Going 4 -> 2 leaves text in rows 3 and 4 that nothing can ever
+ * reach again, and a write position that may already be past the new modulus;
+ * going 2 -> 4 leaves two rows of whatever the last 4-row pass left there,
+ * presented as if it were current. Either way the operator would be reading a
+ * line that is partly a ghost. Wiping says what happened. */
+void cw_decode_set_rows(int rows)
+{
+    if (rows < 1) rows = 1;
+    if (rows > CW_LINE_ROWS) rows = CW_LINE_ROWS;
+    if (rows == s_rows) return;
+
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_rows = rows;
+    memset(s_line, ' ', sizeof(s_line));
+    memset(s_line_tx, 0, sizeof(s_line_tx));
     s_line_col = 0;
     if (s_lock) xSemaphoreGive(s_lock);
 }

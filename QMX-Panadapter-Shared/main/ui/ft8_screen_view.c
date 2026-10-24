@@ -40,6 +40,7 @@
 #include "ft8_pileup.h"
 #include "ft8_pileup_modal.h"
 #include "ft8_status.h"
+#include "net/radio_relay.h"   // radio_relay_tx_locked - the "TX locked" label
 #include "ft8_test.h"   // ft8_op_mode_set() - FT8/FT4 sub-mode flag
 #include "ft8_greylist.h"
 #include "js8_page.h"
@@ -689,7 +690,11 @@ static void row_activate_ex(int idx, bool direct)
     {
         qmx_settings_t gq;
         settings_load_all(&gq);
-        if (gq.greylist_en && ft8_greylist_contains(call)) {
+        /* ft8_greylist_skipped_by_hand() is deliberately ungated: without it
+         * a station skipped while "Allow grey-listing" is off would have no
+         * way back - the clear lives behind this modal. */
+        if (ft8_greylist_skipped_by_hand(call) ||
+            (gq.greylist_en && ft8_greylist_contains(call))) {
             grey_modal_show(call);
             return;
         }
@@ -1091,8 +1096,13 @@ static void update_row(int i, const ft8_call_t *src)
             col = 4; /* the one station we're mid-exchange with -> amber (highest priority) */
         } else if (s_my_call[0] && strstr(src->last_text, s_my_call)) {
             col = 2; /* own call in message -> red */
-        } else if (s_greylist_en && ft8_greylist_contains(src->call)) {
-            col = 5; /* grey-listed (repeated failed pounces) -> violet */
+        } else if (ft8_greylist_skipped_by_hand(src->call) ||
+                   (s_greylist_en && ft8_greylist_contains(src->call))) {
+            /* violet. The hand-skip arm is ungated on purpose: with
+             * greylist_en off the row would redraw unchanged and the Skip
+             * button would look like it had done nothing - the same way the
+             * Pause button first read before it lit up. */
+            col = 5;
         } else if (adif_log_contains_call_on_band(src->call, cat_get_frequency())) {
             col = 3; /* worked before on THIS band -> dim grey */
         } else if (strncmp(src->last_text, "CQ ", 3) == 0) {
@@ -1202,6 +1212,14 @@ static void rebuild_list(void)
     bool hide_cq = (ft8_qso_cq_filter_active() && !qs.ft8_filters.cq_show_others)
                    || qs.ft8_filters.excl_plain_cq;
 
+    // Hide worked-before stations outright, when the operator asks for it
+    // (Randy N4OPI). The dial is read ONCE for the whole repaint, not per
+    // row: every row in one repaint belongs to the same dial by construction,
+    // and the row grey below reads it per row only because it was already
+    // written that way.
+    bool     hide_wb      = qs.ft8_filters.hide_worked_before;
+    uint32_t hide_wb_freq = hide_wb ? cat_get_frequency() : 0;
+
     // Also hide stations whose last decode landed on OUR TX parity while the
     // CQ run is active: we transmit over every slot we could hear them in, so
     // they can't be worked right now - and since the parity-aging pause
@@ -1247,8 +1265,28 @@ static void rebuild_list(void)
         // that is hidden.
         bool is_partner = s_qso_active_target[0] &&
                           strcasecmp(snap[i].call, s_qso_active_target) == 0;
-        if (!is_partner) {
+        /* ⛔ AND ANYONE WHO IS TALKING TO US. #176's exemption covered the
+         * contact IN PROGRESS; it did not cover the one trying to START.
+         *
+         * Serhiy AA1SL, 2026-10-21, with only_cq set: "zero connect, not even
+         * attempt to handshake any stations". A reply to his CQ does not
+         * begin with "CQ ", so incl_cq_only dropped it before any exchange
+         * existed to make him a partner - he could not see the people
+         * answering him.
+         *
+         * This row is already painted RED when the text carries our callsign
+         * (update_row, col 2), so the information was here and only the
+         * filter did not use it. A message addressed to us can never be an
+         * answer to "who is worth looking at". */
+        const bool mentions_me = s_my_call[0] && strstr(snap[i].last_text, s_my_call);
+        if (!is_partner && !mentions_me) {
             if (hide_cq && strncmp(snap[i].last_text, "CQ ", 3) == 0) continue;
+            /* Worked before on THIS band, and the operator asked for them to
+             * go (Randy N4OPI). Same band-aware test the row grey uses, so a
+             * hidden row and a dim row can never disagree about who counts as
+             * worked - and the grey stays unconditional, which is what every
+             * operator who leaves this off still sees. */
+            if (hide_wb && adif_log_contains_call_on_band(snap[i].call, hide_wb_freq)) continue;
             if (cq_hide_our_parity) {
                 // Same nearest-slot parity rounding as the per-row E/O indicator.
                 int64_t sidx = ((int64_t)snap[i].last_utc * 1000 + cq_per_ms / 2) / cq_per_ms;
@@ -1354,6 +1392,7 @@ static void update_parity_btns(void);   // defined with the button, used by the 
 // s_web_reply_result carries the outcome back to the browser via /api/status -
 // a toast on the Tab5 is invisible from another room.
 static char          s_web_reply_call[FT8_CALL_MAX_LEN];   // "" = nothing pending
+static volatile bool s_web_reply_retarget;   // this pick may abandon a live exchange (T43)
 static volatile bool s_web_reply_pending;
 /* How long a pick may sit waiting for the closing 73 to finish (Randy N4OPI,
  * 2026-09-25). 0 = nothing queued.
@@ -1494,7 +1533,16 @@ void ft8_screen_view_request_reply(const char *call)
 {
     if (!call || !call[0]) return;
     snprintf(s_web_reply_call, sizeof(s_web_reply_call), "%s", call);
-    s_web_reply_pending = true;
+    s_web_reply_pending  = true;
+    s_web_reply_retarget = false;
+}
+
+void ft8_screen_view_request_reply_retarget(const char *call)
+{
+    if (!call || !call[0]) return;
+    snprintf(s_web_reply_call, sizeof(s_web_reply_call), "%s", call);
+    s_web_reply_pending  = true;
+    s_web_reply_retarget = true;
 }
 
 // #221: ask for a sub-mode preset from the API. freq_hz of 0 means "keep the
@@ -1511,7 +1559,7 @@ void ft8_screen_view_request_preset(uint32_t freq_hz, ft8_op_mode_t mode)
 
 void ft8_screen_view_request_override(int what)
 {
-    if (what < 1 || what > 5) return;
+    if (what < 1 || what > 6) return;   /* 6 = skip exchange (T43) */
     s_web_override_pending = what;
 }
 
@@ -1534,8 +1582,18 @@ static void web_reply_drain(void)
 {
     char call[FT8_CALL_MAX_LEN];
     snprintf(call, sizeof(call), "%s", s_web_reply_call);
-    s_web_reply_pending = false;
-    s_web_reply_call[0] = '\0';
+    const bool retarget = s_web_reply_retarget;
+    s_web_reply_pending  = false;
+    s_web_reply_call[0]  = '\0';
+    /* ⛔ Consumed here with the pick, not left standing. The flag is the
+     * licence to abandon a live exchange, and an ordinary single click
+     * inheriting it from an earlier double click would throw away a contact
+     * nobody meant to drop.
+     *
+     * The WAIT_DONE queue below re-arms s_web_reply_pending without it, which
+     * is correct: by the time that pick fires the exchange has closed, so
+     * there is nothing left to abandon. */
+    s_web_reply_retarget = false;
 
     ft8_call_t *snap = table_snapshot();
     if (!snap) { web_result_set("Internal: no snapshot buffer"); return; }
@@ -1547,6 +1605,54 @@ static void web_reply_drain(void)
 
     char busy_target[24];
     if (ft8_qso_is_busy(busy_target, sizeof(busy_target))) {
+        /* ⭐ RE-TARGET: abandon what is running and take this station instead
+         * (Randy N4OPI - the third piece of T43, after Skip and the
+         * directed-CQ filter). Only on a DOUBLE click, and only for a
+         * DIFFERENT station.
+         *
+         * ⛔ NOT when the exchange is already settled. FT8_QSO_WAIT_DONE
+         * means our closing 73/RR73 is armed and the contact is made;
+         * abandoning there would grey-list a station we have just WORKED, and
+         * the queue below already does the right thing - it waits the moment
+         * out and then calls the new one. So WAIT_DONE falls through
+         * deliberately.
+         *
+         * ⛔ Re-targeting the SAME station is not a re-target. Double-clicking
+         * the row you are already working must not abandon and restart it, so
+         * it falls through to the ordinary busy handling.
+         *
+         * The burst is stopped the way Cancel and Skip stop it:
+         * ft8_tx_disarm() clears only an ARMED request, and
+         * ft8_tx_request_abort() is what breaks a live symbol-send loop.
+         * Without both, the old message keeps going out at the new station. */
+        if (retarget && busy_target[0] &&
+            strcmp(call, busy_target) != 0 &&
+            ft8_qso_get_state() != FT8_QSO_WAIT_DONE) {
+            char serr[64] = "", who[FT8_CALL_MAX_LEN] = "";
+            ft8_tx_disarm();
+            ft8_tx_request_abort();
+            if (ft8_qso_skip_exchange(who, sizeof who, serr, sizeof serr)) {
+                ft8_qso_final_watch_clear();
+                ESP_LOGI(TAG, "web re-target: dropped %s for %s, auto-answer left ON",
+                         who, call);
+                busy_target[0] = ' ';   /* fall through and work the new one */
+            } else {
+                web_result_set("%s", serr[0] ? serr : "Could not drop the exchange");
+                return;
+            }
+        } else if (retarget && !busy_target[0] &&
+                   ft8_qso_get_state() == FT8_QSO_CQ) {
+            /* Calling CQ with nobody answering yet. There is no partner to
+             * give up on, so ft8_qso_skip_exchange() rightly refuses - a plain
+             * abort is what "work that station instead" means here, and it
+             * grey-lists nobody. */
+            ft8_tx_disarm();
+            ft8_tx_request_abort();
+            ft8_qso_abort();
+            ESP_LOGI(TAG, "web re-target: dropped the CQ run for %s", call);
+        }
+    }
+    if (busy_target[0] || ft8_qso_is_busy(busy_target, sizeof(busy_target))) {
         /* WAIT_DONE = the closing 73/RR73 is armed and the exchange's outcome
          * is settled. Hold the pick instead of dropping it, and let the next
          * 1 Hz tick try again - see WEB_REPLY_QUEUE_MAX_MS. Every OTHER busy
@@ -1684,7 +1790,8 @@ static void web_reply_drain(void)
     }
     if (ft8_tx_arm(&req, err, sizeof(err))) {
         if (req.target_call[0]) ft8_qso_note_manual_target(req.target_call);
-        if (req.kind == FT8_TX_KIND_73) ft8_qso_notify_manual_final(req.target_call);
+        if (req.kind == FT8_TX_KIND_73)
+            ft8_qso_notify_manual_final(req.target_call, req.extra_field);
         web_result_set("Armed: %s", req.display_text);
         ESP_LOGI(TAG, "web reply: armed '%s'", req.display_text);
     } else {
@@ -1795,7 +1902,7 @@ static void t_clock_cb(lv_timer_t *t)
         } else {
             snprintf(s_web_ftx_result, sizeof(s_web_ftx_result), "sending");
         }
-        s_web_ftx_text[0] = ' ';
+        s_web_ftx_text[0] = '\0';
     }
 
     /* The MODE label, repainted on the LVGL task - see
@@ -1891,6 +1998,34 @@ static void t_clock_cb(lv_timer_t *t)
                 web_result_set("Next transmission paused");
             else
                 web_result_set("%s", err[0] ? err : "Cannot pause now");
+        } else if (what == 6) {
+            /* Skip this exchange (Randy N4OPI, 2026-10-21). Cancel's
+             * mechanics, minus the stand-down, plus the grey-list.
+             *
+             * ⛔ THE ONE LINE THAT MUST NOT BE COPIED FROM CANCEL IS
+             * ft8_robot_stand_down(). That line is correct for Cancel - the
+             * operator is stopping in order to do something else - and it is
+             * precisely why Randy could not pass over a caller without leaving
+             * Auto-answer mode. Skip means "not this station, carry on".
+             *
+             * The burst is stopped the same way Cancel stops it:
+             * ft8_tx_disarm() only clears an ARMED request, so
+             * ft8_tx_request_abort() is what actually breaks a live
+             * symbol-send loop. Skipping while we are mid-transmission has to
+             * stop transmitting, or the slot is wasted anyway. */
+            ft8_tx_disarm();
+            ft8_tx_request_abort();
+            char who[FT8_CALL_MAX_LEN] = "";
+            if (ft8_qso_skip_exchange(who, sizeof(who), err, sizeof(err))) {
+                /* Same as Cancel: the unacknowledged-final watch has to end
+                 * with the exchange, or the row stays up re-sending to a
+                 * station we have just given up on. */
+                ft8_qso_final_watch_clear();
+                web_result_set("Skipped %s - still answering", who);
+                ESP_LOGI(TAG, "web override: skip %s - auto-answer left ON", who);
+            } else {
+                web_result_set("%s", err[0] ? err : "Nothing to skip");
+            }
         } else if (what == 4) {
             // Cancel: disarm whatever is queued AND end the exchange, which is
             // what the Tab5's tap-on-the-TX-indicator does. Randy's words were
@@ -1913,6 +2048,12 @@ static void t_clock_cb(lv_timer_t *t)
             ft8_tx_disarm();
             ft8_qso_abort();
             ft8_tx_request_abort();
+            // Cancel is also the "or he aborts" half of Don WB0LQW's request:
+            // it ends the unacknowledged-final watch as well as the exchange,
+            // so the row comes down and the machine stops re-sending. Without
+            // this, Cancel would clear the QSO and the row would stay up on
+            // the watch that Cancel is supposed to have ended.
+            ft8_qso_final_watch_clear();
             // No confirmation text - operator, 2026-09-05: "do not show
             // anything - just go back to the initial view". Every other
             // override outcome is worth reading (Armed/Busy/refused); Cancel
@@ -1920,6 +2061,27 @@ static void t_clock_cb(lv_timer_t *t)
             // with nothing left to look at afterward.
             web_result_clear();
             ESP_LOGI(TAG, "web override: cancel - TX disarmed, QSO aborted");
+        } else if (what == 1 &&
+                   ft8_qso_get_state() != FT8_QSO_WAIT_RPT &&
+                   ft8_qso_get_state() != FT8_QSO_WAIT_ROGER &&
+                   ft8_qso_get_state() != FT8_QSO_WAIT_RR73 &&
+                   ft8_qso_final_watch(NULL, 0, NULL, NULL)) {
+            /* Re-send, with the exchange already closed, means the FINAL -
+             * Don WB0LQW. ft8_qso_override_next() refuses outside the WAIT_*
+             * states by design (it works on s_cur_req, which the final's own
+             * arming has already cleared), so the two are different sends and
+             * the button has to pick between them rather than retry one.
+             *
+             * ⚠ The state test, not the refusal: falling through on a failed
+             * override would also re-send the final after "No current
+             * message", which is a different fault with a different cause. */
+            if (ft8_qso_final_resend_now(err, sizeof(err))) {
+                web_result_set("Re-sending the final");
+                ESP_LOGI(TAG, "web override: final re-sent by hand");
+            } else {
+                web_result_set("%s", err[0] ? err : "Could not re-send");
+                ESP_LOGW(TAG, "web final re-send refused: %s", err);
+            }
         } else {
             ft8_tx_kind_t k = (what == 2) ? FT8_TX_KIND_ROGER_RPT
                             : (what == 3) ? FT8_TX_KIND_73
@@ -2219,6 +2381,12 @@ static void t_clock_cb(lv_timer_t *t)
                      (double)trip_swr);
             lv_label_set_text(s_lbl_tx, b);
             lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_RED), 0);
+        } else if (radio_relay_tx_locked(NULL, 0) && tx_st != FT8_TX_ACTIVE) {
+            // NAS relay: another device (the Mac's TCI program, e.g. WS) has
+            // the transmitter, and the relay drops this Tab5's key-down until
+            // it lets go. Amber, not red: nothing is wrong, it is just not ours.
+            lv_label_set_text(s_lbl_tx, LV_SYMBOL_WARNING " TX locked:\nAnother Device has\nthe transmitter");
+            lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_AMBER), 0);
         } else if (tx_st == FT8_TX_ACTIVE) {
             // Red: transmitting right now (tap to abort). Each logical chunk
             // gets its own explicit line - "TAP TO ABORT" is always the last
@@ -2376,6 +2544,20 @@ static void t_clock_cb(lv_timer_t *t)
             bool show = (qso_st == FT8_QSO_WAIT_RPT ||
                          qso_st == FT8_QSO_WAIT_ROGER ||
                          qso_st == FT8_QSO_WAIT_RR73);
+            /* ⭐ AND WHILE THE FINAL IS STILL UNACKNOWLEDGED - Don WB0LQW's
+             * request, applied on the Tab5 as well as in the browser. Both
+             * surfaces hid this row on the same three-state test, so his
+             * report was one defect in two places
+             * ([[feedback_sweep_the_class_not_what_i_noticed]]); fixing only
+             * the browser would have brought it back from the glass.
+             *
+             * ⚠ ONLY "Again" during the watch. RR73 and 73 go through
+             * ft8_qso_override_next(), which refuses outside the WAIT_*
+             * states - two buttons that look live and answer "No active QSO
+             * exchange" are worse than two that are not there. */
+            char     fw_call[FT8_CALL_MAX_LEN] = {0};
+            bool     final_watch = !show &&
+                                   ft8_qso_final_watch(fw_call, sizeof(fw_call), NULL, NULL);
             if (show) {
                 // Update "Re-send" label to show what will actually be re-sent
                 // e.g. "Re-send\nJO45" in WAIT_RPT, "Re-send\n-07" in WAIT_ROGER
@@ -2392,6 +2574,22 @@ static void t_clock_cb(lv_timer_t *t)
                 lv_obj_clear_flag(s_btn_override_resend, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(s_btn_override_rr73,   LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_flag(s_btn_override_73,      LV_OBJ_FLAG_HIDDEN);
+            } else if (final_watch) {
+                /* The contact is sent and logged; what is left is getting it
+                 * acknowledged. The label says WHAT would go out again, the
+                 * same way it does mid-exchange - the tracked final's own
+                 * third field, so "Again RR73" and "Again 73" cannot be
+                 * confused for each other. */
+                if (s_lbl_resend) {
+                    char extra[16] = {0};
+                    ft8_qso_final_extra(extra, sizeof(extra));
+                    if (extra[0]) lv_label_set_text_fmt(s_lbl_resend, "Again\n%s", extra);
+                    else          lv_label_set_text(s_lbl_resend, "Again");
+                    lv_obj_center(s_lbl_resend);
+                }
+                lv_obj_clear_flag(s_btn_override_resend, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_btn_override_rr73, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_btn_override_73,   LV_OBJ_FLAG_HIDDEN);
             } else {
                 // Reset to the bare label so a stale report from the previous
                 // exchange is not shown on the next open. Deliberately does NOT
@@ -2618,6 +2816,19 @@ static void override_resend_cb(lv_event_t *e)
 {
     (void)e;
     char err[64];
+    /* Outside an exchange this button is only visible while a final is
+     * unacknowledged (see the visibility block), and there it re-sends THAT
+     * - Don WB0LQW. Same split as the browser's Re-send, decided on the state
+     * rather than on an override refusal. */
+    ft8_qso_state_t st = ft8_qso_get_state();
+    if (st != FT8_QSO_WAIT_RPT && st != FT8_QSO_WAIT_ROGER &&
+        st != FT8_QSO_WAIT_RR73 && ft8_qso_final_watch(NULL, 0, NULL, NULL)) {
+        if (!ft8_qso_final_resend_now(err, sizeof(err))) {
+            ft8_status_set("%s", err);
+            ESP_LOGW(TAG, "final re-send failed: %s", err);
+        }
+        return;
+    }
     if (!ft8_qso_override_next(FT8_TX_KIND_REPLY, err, sizeof(err)))
         ESP_LOGW(TAG, "Re-send override failed: %s", err);
 }
@@ -2726,7 +2937,7 @@ void ft8_screen_view_request_freetext(const char *text)
 {
     if (!text) return;
     snprintf(s_web_ftx_text, sizeof(s_web_ftx_text), "%s", text);
-    s_web_ftx_result[0] = ' ';
+    s_web_ftx_result[0] = '\0';
     s_web_ftx_pending = true;
 }
 
@@ -2878,6 +3089,15 @@ static void tx_indicator_tap_cb(lv_event_t *e)
         // window would throw the log entry away.
         ESP_LOGI(TAG, "QSO indicator tapped while TX idle — aborting session");
         ft8_qso_abort();
+    } else if (ft8_qso_final_watch(NULL, 0, NULL, NULL)) {
+        /* Nothing is armed and no session is alive, but a finished contact is
+         * still waiting to be acknowledged and this row is up because of it
+         * (Don WB0LQW). A tap here is "that one is over" - it is the Tab5's
+         * half of the browser Cancel, and it stops the machine's own re-sends
+         * as well as taking the row down. The QSO is already logged; nothing
+         * is thrown away. */
+        ESP_LOGI(TAG, "TX indicator tapped while waiting for an acknowledgement — dropping the watch");
+        ft8_qso_final_watch_clear();
     }
 }
 
@@ -3857,12 +4077,29 @@ static void js8_tx_bar_sync(void)
      * 752), and at font 20 the longer wording rendered as "> tap a stat...".
      * A callsign is at most 15 characters but a real one is 4-6, so the
      * selected form fits with room to spare. */
-    if (call[0]) snprintf(b, sizeof(b), "> %s", call);
-    else         snprintf(b, sizeof(b), "tap a call");
+    /* A station that sent SNR? and has had no answer (Gyula HA3HZ). It shows
+     * in the chip only when nothing is SELECTED: the selection is what the
+     * operator last said they are doing, and a prompt must not look as though
+     * it had replaced it.
+     *
+     * ⚠ The same 136 px between the Stations tab and the SNR button.
+     * Measured, tools/measure_label.py at font 20: "? HA3HZ" is 88.5 px
+     * against "> HA3HZ" at 88.7 and "tap a call" at 91.0 - the new wording is
+     * the narrowest of the three, so it cannot clip where they do not. */
+    char asked[FT8_CALL_MAX_LEN] = {0};
+    if (!call[0]) js8_request_get(asked, sizeof(asked), NULL, NULL);
+
+    if (call[0])       snprintf(b, sizeof(b), "> %s", call);
+    else if (asked[0]) snprintf(b, sizeof(b), "? %s", asked);
+    else               snprintf(b, sizeof(b), "tap a call");
     if (strcmp(lv_label_get_text(s_js8_chip_lbl), b) != 0)
         lv_label_set_text(s_js8_chip_lbl, b);
-    js8_macro_btn_enable(s_btn_js8_snr,  call[0] != ' ');
-    js8_macro_btn_enable(s_btn_js8_grid, call[0] != ' ');
+    /* SNR is live for a station that ASKED as well as one that is selected -
+     * js8_send_snr() falls back to the asker for exactly this press. GRID is
+     * not: nobody asked for a locator, and offering it here would put a
+     * second unprompted message in front of a one-press button. */
+    js8_macro_btn_enable(s_btn_js8_snr,  call[0] != '\0' || asked[0] != '\0');
+    js8_macro_btn_enable(s_btn_js8_grid, call[0] != '\0');
 }
 
 /* Arm ONE message, the way the TX modal's Transmit button does - never
@@ -3890,6 +4127,15 @@ static bool js8_send_snr(char *out, size_t out_len)
 {
     char call[FT8_CALL_MAX_LEN];
     js8_target_get(call, sizeof(call));
+    /* ⭐ WITH NOBODY SELECTED, ANSWER WHOEVER ASKED. A station that sent the
+     * directed SNR? is asking this exact question, and making the operator
+     * find and tap them first is the gap Gyula HA3HZ's report left open. One
+     * press, and it is still a press - nothing here transmits on its own.
+     *
+     * ⚠ A SELECTION WINS. If the operator has picked somebody, that is who
+     * they mean; a request arriving from a third station must not redirect a
+     * report at the moment the button goes down. */
+    if (!call[0]) js8_request_get(call, sizeof(call), NULL, NULL);
     if (!call[0]) { snprintf(out, out_len, "Tap a station first"); return false; }
 
     ft8_call_t *snap = table_snapshot();
@@ -3912,6 +4158,15 @@ static bool js8_send_snr(char *out, size_t out_len)
         snprintf(out, out_len, "%s", err);
         ESP_LOGW(TAG, "JS8 SNR macro refused: %s", err);
         return false;
+    }
+    /* Answered. Drop the note so the prompt does not keep asking for a report
+     * that is now on its way - the operator would read it as the press having
+     * failed. */
+    {
+        char asked[FT8_CALL_MAX_LEN];
+        if (js8_request_get(asked, sizeof(asked), NULL, NULL) &&
+            strcasecmp(asked, req.target_call) == 0)
+            js8_request_clear();
     }
     snprintf(out, out_len, "Armed: %s", req.display_text);
     ESP_LOGI(TAG, "JS8 SNR macro armed: '%s'", req.display_text);
@@ -4783,6 +5038,16 @@ void ft8_screen_view_init(lv_obj_t *parent)
         // where the old row ran 4 px past the pane's content box.
         //
         // 76*4 + 4*3 = 316, exactly.
+        //
+        // ⛔ SKIP (T43, Randy N4OPI) IS IN THE BROWSER ONLY, AND THIS ROW IS
+        // WHY. A fifth button here means bw = (316 - 4*4)/5 = 60 px, and the
+        // history above is three failed attempts to make a label fit by
+        // changing the size instead of the word - "Re-send" at 76 px, then
+        // "Resend", then font 18 which shrank the other three for one
+        // button's problem. "Again" fits 76 px with room to spare; whether it
+        // fits 60 is a PIXEL question and has to be measured on the glass, not
+        // counted in characters. Randy asked for the web UI and that is what
+        // shipped. Do not resize this row from a guess.
         //
         // ⛔ THE LABEL, NOT THE FONT, IS WHAT HAD TO GIVE. "Re-send" did not fit
         // 76 px, so I shortened it to "Resend" - still too wide - then dropped

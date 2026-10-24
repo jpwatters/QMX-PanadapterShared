@@ -30,6 +30,7 @@ static const char *TAG = "relay";
 #define PROTO_TX_SCHED    9   // Tab5 -> relay: a whole transmit burst (see radio_relay.h)
 #define PROTO_TX_ABORT   10   // Tab5 -> relay: stop the burst now
 #define PROTO_TX_DONE    11   // relay -> Tab5: u8 status, u16 tones, u32 ms, i32 latest ms
+#define PROTO_TX_LOCK    12   // relay -> Tab5: u8 locked (1/0) [+ reason text] - see radio_relay.h
 
 #define RX_PAYLOAD_MAX   8192     // NAS relay sends <=1920-byte IQ frames; anything larger is skipped
 #define RX_IDLE_TIMEOUT_S   3     // relay streams I/Q + 1 s PINGs; 3 s of silence == gone
@@ -61,6 +62,10 @@ static int64_t s_last_fail_log_us = 0;
 static volatile bool s_txsched_supported = false;
 static SemaphoreHandle_t s_txdone_sem = NULL;
 static radio_relay_tx_result_t s_txdone;
+
+// Transmitter lock (QMXR/1 "txlock=1"): another device has the transmitter.
+static volatile bool s_tx_locked = false;
+static char          s_tx_lock_why[128] = "";
 
 // ---- config ---------------------------------------------------------------
 
@@ -222,6 +227,21 @@ static void rx_task(void *arg)
                 if (s_txdone_sem) xSemaphoreGive(s_txdone_sem);
             }
             break;
+        case PROTO_TX_LOCK: {
+            bool locked = len >= 1 && payload[0] == 1;
+            size_t n = len > 1 ? len - 1 : 0;
+            if (n > sizeof(s_tx_lock_why) - 1) n = sizeof(s_tx_lock_why) - 1;
+            memcpy(s_tx_lock_why, payload + 1, n);
+            s_tx_lock_why[n] = '\0';
+            if (locked != s_tx_locked) {
+                if (locked)
+                    ESP_LOGW(TAG, RADIO_RELAY_TX_LOCKED_MSG " (relay: %s)", s_tx_lock_why);
+                else
+                    ESP_LOGI(TAG, "transmitter free again - the other device let it go");
+            }
+            s_tx_locked = locked;
+            break;
+        }
         default:   // HELLO / PING / unknown: nothing to do
             break;
         }
@@ -366,6 +386,8 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
     if (strncmp(resp, "QMXR/1", 6) != 0) { note_fail("bad protocol", 0); goto fail; }
     s_term_supported = strstr(resp, "term=1") != NULL;
     s_txsched_supported = strstr(resp, "txsched=1") != NULL;
+    s_tx_locked = false;              // the relay sends TX_LOCK right after its HELLO
+    s_tx_lock_why[0] = '\0';
     if (!strstr(resp, "rate=48000")) {
         ESP_LOGW(TAG, "relay rate is not 48000 Hz (%s) - spectrum scale will be off", resp);
     }
@@ -406,6 +428,7 @@ void radio_relay_close(void)
     s_term_gone_cb = NULL;
     s_term_supported = false;
     s_txsched_supported = false;
+    s_tx_locked = false;
     ESP_LOGI(TAG, "relay link closed");
 }
 
@@ -527,6 +550,13 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
 // ---- relay-timed transmit bursts --------------------------------------------
 
 bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }
+
+bool radio_relay_tx_locked(char *why, size_t cap)
+{
+    bool locked = s_connected && s_tx_locked;
+    if (why && cap) snprintf(why, cap, "%s", locked ? s_tx_lock_why : "");
+    return locked;
+}
 
 esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_us)
 {

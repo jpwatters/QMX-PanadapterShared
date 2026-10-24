@@ -1,0 +1,625 @@
+From 0c8e2082d85677674a066b25e68302699024195d Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Wed, 14 Oct 2026 19:11:26 -0500
+Subject: [PATCH 18/30] FT8/FT4 over the NAS: the relay times the transmit
+ burst itself
+
+Over the network every tone change crossed Wi-Fi on its own, 160 ms apart.
+In 20 test bursts on 2026-10-14 two were held up for 1.1-1.5 s (once by the
+Tab5's Wi-Fi SDIO link draining, once in transit), so symbols reached the
+radio late while the Tab5's own timing looked perfect.
+
+Now, when the relay announces "txsched=1" in its HELLO, the Tab5 sends the
+whole burst in one QMXR/1 TX_SCHED frame at key-down (u8 ver, u8 flags,
+u16 n, u32 symbol_us, n x u32 centi-Hz). The relay keys the QMX, sends each
+tone on the NAS's clock, sends the key-up tone, and answers TX_DONE (status,
+tones sent, RF on-air ms, latest symbol ms). TX_ABORT stops it at once. The
+Tab5 still runs its symbol loop for the UI, live power/SWR, SWR protection
+and abort, and still sends the post-burst PC;SW; and RX;. If the hand-off
+fails it sends the tones itself as before; if no TX_DONE arrives it sends
+the key-up tone itself. If the Tab5 disconnects mid-burst the relay keys up
+and sends RX;.
+
+A flag file tab5-timed-tx in the relay folder leaves txsched out of the
+HELLO, for A/B comparison. The txlog records "tones timed by relay|Tab5",
+the CAT log shows relay-sent commands as RELAY>QMX, and tx_compare.py
+reports the two modes separately.
+
+Tested: 10 of 10 FT8 bursts through the NAS, relay RF on-air 12640-12641
+ms, longest tone gap 161 ms, latest symbol +2 ms, no stalls.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ main/ft8_tx.c                    |  55 ++++++++++++-
+ main/net/radio_relay.c           |  68 ++++++++++++++++
+ main/net/radio_relay.h           |  24 ++++++
+ tools/nas-relay/README.md        |  13 +++
+ tools/nas-relay/qmx_nas_relay.py | 131 ++++++++++++++++++++++++++++---
+ tools/tx-test/README.md          |  16 +++-
+ tools/tx-test/tx_compare.py      |  23 ++++--
+ 7 files changed, 310 insertions(+), 20 deletions(-)
+
+diff --git a/main/ft8_tx.c b/main/ft8_tx.c
+index 8333457c..221207c7 100644
+--- a/main/ft8_tx.c
++++ b/main/ft8_tx.c
+@@ -31,6 +31,7 @@
+ #include "ft8/js8_text.h"
+ 
+ #include "cat/cat.h"
++#include "net/radio_relay.h"
+ #include "storage/settings.h"
+ 
+ static const char *TAG = "ft8_tx";
+@@ -1336,7 +1337,36 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+             ESP_LOGI(TAG, "key down at +%lld ms into the slot", 
+                      (long long)(key_ms % per_ms));
+         }
+-        tx_cmd(t0, sim, "TX;");   // key down - radio's own envelope shaping
++        /* ⭐ RELAY-TIMED BURST (QMXR/1 "txsched=1").
++         * Over the NAS relay, 79 separate tone changes each had to cross WiFi
++         * on time, and twice in 20 test bursts (2026-10-14) one stalled for
++         * 1.1-1.5 s: the Tab5's own timing was perfect, the radio's was not.
++         * So the whole burst goes to the relay in one frame, and the relay
++         * keys the QMX, plays every tone on the NAS's clock over its wired
++         * link and USB, sends the key-up tone and reports back (TX_DONE).
++         * The loop below still runs on the Tab5 clock - for the UI progress,
++         * the live power/SWR query, SWR protection and abort - it just doesn't
++         * send the tones. Any failure handing the burst over falls back to the
++         * old tone-by-tone path, so a burst is never lost to this. */
++        bool relay_play = false;
++#if FT8_TX_SEND_LIVE
++        if (!sim && strcmp(cat_get_transport(), "net") == 0 && radio_relay_txsched_supported()) {
++            float *fr = malloc((size_t)nn * sizeof(float));
++            if (fr) {
++                for (int i = 0; i < nn; i++)
++                    fr[i] = (float)req->audio_freq_hz + (float)req->tones[i] * tone_spacing_hz;
++                esp_err_t se = radio_relay_tx_schedule(fr, nn, (uint32_t)symbol_period_us);
++                free(fr);
++                if (se == ESP_OK) {
++                    relay_play = true;
++                    ESP_LOGI(TAG, "burst handed to the relay (%d tones, relay-timed)", nn);
++                } else {
++                    ESP_LOGW(TAG, "relay-timed burst refused (0x%x) - sending tones from the Tab5", se);
++                }
++            }
++        }
++#endif
++        if (!relay_play) tx_cmd(t0, sim, "TX;");   // key down - radio's own envelope shaping
+ 
+         // Live power/SWR: fire ONE non-blocking PC;SW; once the PA has settled
+         // (symbol 6 ≈ 1 s in), then read the async response a few symbols later
+@@ -1386,7 +1416,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+             }
+             float freq = (float)req->audio_freq_hz + (float)req->tones[i] * tone_spacing_hz;
+             sleep_until(t0, (int64_t)i * symbol_period_us);
+-            tx_cmd(t0, sim, "TA%.2f;", (double)freq);
++            if (!relay_play) tx_cmd(t0, sim, "TA%.2f;", (double)freq);
+             // Live power/SWR mid-burst query is FT8-only timing (tuned to FT8's
+             // 160 ms symbol slack at symbols 6/14) and is skipped for FT4 on
+             // those grounds alone - see the note on the branch below. This
+@@ -1525,10 +1555,29 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+             // up - otherwise we'd truncate the last tone for receivers.
+             sleep_until(t0, (int64_t)nn * symbol_period_us);
+         }
++        // Relay-timed: the relay sends the key-up tone itself. Tell it to stop
++        // early on an abort, then wait for its report. If no report comes (link
++        // lost, old relay), fall through and send the key-up tone from here as
++        // well - a second TA0; is harmless, a missing one is not.
++        bool relay_keyed_up = false;
++#if FT8_TX_SEND_LIVE
++        if (relay_play) {
++            if (aborted) radio_relay_tx_abort();
++            radio_relay_tx_result_t rr;
++            if (radio_relay_tx_wait_done(aborted ? 1500 : 4000, &rr)) {
++                relay_keyed_up = true;
++                ESP_LOGI(TAG, "relay burst %s: %u/%d tones, RF on-air %lu ms, latest symbol %+ld ms (NAS clock)",
++                         rr.status == 0 ? "complete" : rr.status == 1 ? "aborted" : "FAILED",
++                         (unsigned)rr.tones_sent, nn, (unsigned long)rr.duration_ms, (long)rr.latest_ms);
++            } else {
++                ESP_LOGW(TAG, "no report from the relay for the burst - sending key-up from the Tab5");
++            }
++        }
++#endif
+         // Either way - whether all symbols played or we broke out early
+         // on an abort request - key up immediately now. This is the part
+         // that must ALWAYS run: the radio must never be left transmitting.
+-        {
++        if (!relay_keyed_up) {
+             char keyup[24];
+             snprintf(keyup, sizeof(keyup), "TA%.0f;", (double)FT8_TX_KEYUP_TONE_HZ);
+             tx_cmd_critical(t0, sim, keyup);   // drops the envelope
+diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
+index 0873584e..982aeb2f 100644
+--- a/main/net/radio_relay.c
++++ b/main/net/radio_relay.c
+@@ -7,6 +7,7 @@
+ 
+ #include "esp_log.h"
+ #include "esp_timer.h"
++#include "esp_heap_caps.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ #include "freertos/semphr.h"
+@@ -26,6 +27,9 @@ static const char *TAG = "relay";
+ #define PROTO_TERM_STATUS 6   // relay -> Tab5: u8 ok (1/0) [+ reason text]
+ #define PROTO_TERM_DATA   7   // both ways: bytes on the second serial port
+ #define PROTO_TERM_CLOSE  8   // Tab5 -> relay: close it
++#define PROTO_TX_SCHED    9   // Tab5 -> relay: a whole transmit burst (see radio_relay.h)
++#define PROTO_TX_ABORT   10   // Tab5 -> relay: stop the burst now
++#define PROTO_TX_DONE    11   // relay -> Tab5: u8 status, u16 tones, u32 ms, i32 latest ms
+ 
+ #define RX_PAYLOAD_MAX   8192     // NAS relay sends <=1920-byte IQ frames; anything larger is skipped
+ #define RX_IDLE_TIMEOUT_S   3     // relay streams I/Q + 1 s PINGs; 3 s of silence == gone
+@@ -53,6 +57,11 @@ static volatile int            s_term_result = 0;   // -1 waiting, 0 failed, 1 o
+ static char                    s_term_err[64] = "";
+ static int64_t s_last_fail_log_us = 0;
+ 
++// Relay-timed transmit bursts.
++static volatile bool s_txsched_supported = false;
++static SemaphoreHandle_t s_txdone_sem = NULL;
++static radio_relay_tx_result_t s_txdone;
++
+ // ---- config ---------------------------------------------------------------
+ 
+ void radio_relay_set_target(const char *host, uint16_t port)
+@@ -201,10 +210,23 @@ static void rx_task(void *arg)
+             }
+             break;
+         }
++        case PROTO_TX_DONE:
++            if (len >= 11) {
++                s_txdone.done        = true;
++                s_txdone.status      = payload[0];
++                s_txdone.tones_sent  = (uint16_t)(payload[1] | (payload[2] << 8));
++                s_txdone.duration_ms = (uint32_t)payload[3] | ((uint32_t)payload[4] << 8) |
++                                       ((uint32_t)payload[5] << 16) | ((uint32_t)payload[6] << 24);
++                s_txdone.latest_ms   = (int32_t)((uint32_t)payload[7] | ((uint32_t)payload[8] << 8) |
++                                       ((uint32_t)payload[9] << 16) | ((uint32_t)payload[10] << 24));
++                if (s_txdone_sem) xSemaphoreGive(s_txdone_sem);
++            }
++            break;
+         default:   // HELLO / PING / unknown: nothing to do
+             break;
+         }
+     }
++    if (s_txdone_sem) xSemaphoreGive(s_txdone_sem);   // a waiting burst must not wait for a dead link
+ 
+     bool unexpected = !s_closing;
+     s_connected = false;
+@@ -343,6 +365,7 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
+     resp[len] = '\0';
+     if (strncmp(resp, "QMXR/1", 6) != 0) { note_fail("bad protocol", 0); goto fail; }
+     s_term_supported = strstr(resp, "term=1") != NULL;
++    s_txsched_supported = strstr(resp, "txsched=1") != NULL;
+     if (!strstr(resp, "rate=48000")) {
+         ESP_LOGW(TAG, "relay rate is not 48000 Hz (%s) - spectrum scale will be off", resp);
+     }
+@@ -382,6 +405,7 @@ void radio_relay_close(void)
+     s_term_cb = NULL;
+     s_term_gone_cb = NULL;
+     s_term_supported = false;
++    s_txsched_supported = false;
+     ESP_LOGI(TAG, "relay link closed");
+ }
+ 
+@@ -499,3 +523,47 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
+     ESP_LOGI(TAG, "discovery: %d relay(s) answered", n);
+     return n;
+ }
++
++// ---- relay-timed transmit bursts --------------------------------------------
++
++bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }
++
++esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_us)
++{
++    if (!radio_relay_txsched_supported()) return ESP_ERR_NOT_SUPPORTED;
++    if (!freq_hz || n <= 0 || n > 400) return ESP_ERR_INVALID_ARG;
++    if (!s_txdone_sem) {
++        s_txdone_sem = xSemaphoreCreateBinary();
++        if (!s_txdone_sem) return ESP_ERR_NO_MEM;
++    }
++    xSemaphoreTake(s_txdone_sem, 0);              // drop a stale signal
++    memset(&s_txdone, 0, sizeof(s_txdone));
++    /* u8 version, u8 flags, u16 n, u32 symbol_us, then n x u32 centi-Hz -
++     * centi-Hz so the relay can print exactly the "TA%.2f;" the Tab5 would. */
++    size_t len = 8 + (size_t)n * 4;
++    uint8_t *p = heap_caps_malloc(len, MALLOC_CAP_8BIT);
++    if (!p) return ESP_ERR_NO_MEM;
++    p[0] = 1; p[1] = 0; p[2] = (uint8_t)n; p[3] = (uint8_t)(n >> 8);
++    for (int b = 0; b < 4; b++) p[4 + b] = (uint8_t)(symbol_us >> (8 * b));
++    for (int i = 0; i < n; i++) {
++        uint32_t c = (uint32_t)(freq_hz[i] * 100.0f + 0.5f);
++        for (int b = 0; b < 4; b++) p[8 + i * 4 + b] = (uint8_t)(c >> (8 * b));
++    }
++    esp_err_t e = send_frame(PROTO_TX_SCHED, p, len, 500);
++    heap_caps_free(p);
++    return e;
++}
++
++esp_err_t radio_relay_tx_abort(void)
++{
++    if (!s_connected) return ESP_ERR_INVALID_STATE;
++    return send_frame(PROTO_TX_ABORT, NULL, 0, 500);
++}
++
++bool radio_relay_tx_wait_done(uint32_t timeout_ms, radio_relay_tx_result_t *out)
++{
++    bool got = s_txdone_sem && xSemaphoreTake(s_txdone_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE
++               && s_txdone.done;
++    if (out) { *out = s_txdone; out->done = got; }
++    return got;
++}
+diff --git a/main/net/radio_relay.h b/main/net/radio_relay.h
+index 66a7a9bc..1ea06f03 100644
+--- a/main/net/radio_relay.h
++++ b/main/net/radio_relay.h
+@@ -86,6 +86,30 @@ typedef struct {
+ } radio_relay_found_t;
+ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms);
+ 
++/* ---- Relay-timed transmit bursts (QMXR/1 "txsched=1") ----------------------
++ * Over the network every tone change used to cross WiFi on its own, 160 ms
++ * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)
++ * delivered symbols late. Instead the whole burst goes to the relay in ONE
++ * frame at key-down; the relay keys the QMX, sends each tone on the NAS's own
++ * timer over its wired link and USB, sends the key-up tone, and reports back.
++ * Only relays that announce "txsched=1" in their HELLO accept it. */
++typedef struct {
++    bool     done;            // a TX_DONE arrived (false: timed out / link lost)
++    uint8_t  status;          // 0 complete, 1 aborted, 2 failed
++    uint16_t tones_sent;
++    uint32_t duration_ms;     // TX; -> key-up, NAS clock
++    int32_t  latest_ms;       // latest symbol vs its schedule, NAS clock
++} radio_relay_tx_result_t;
++
++bool      radio_relay_txsched_supported(void);
++/* Hand the burst to the relay: n tone frequencies (Hz), one every symbol_us.
++ * The relay keys the radio on receipt. */
++esp_err_t radio_relay_tx_schedule(const float *freq_hz, int n, uint32_t symbol_us);
++/* Stop a relay-timed burst now (the relay sends the key-up tone). */
++esp_err_t radio_relay_tx_abort(void);
++/* Wait for the relay's report that the burst (including key-up) is done. */
++bool      radio_relay_tx_wait_done(uint32_t timeout_ms, radio_relay_tx_result_t *out);
++
+ /* Diagnostics for /api/relay. */
+ uint32_t radio_relay_iq_pairs_total(void);
+ const char *radio_relay_last_error(void);
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index 8cd0cd18..3281855a 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -249,6 +249,19 @@ Notes:
+   `iq-during-tx` in the relay folder. Each burst in the transmit log records
+   which way it ran ("I/Q to Tab5 paused" or "streamed").
+ 
++* **Transmit bursts timed by the relay:** with Tab5 firmware that supports it,
++  the Tab5 sends the whole burst (every tone) to the relay in one message at
++  key-down. The relay keys the QMX, sends each tone on the NAS's own clock, and
++  sends the key-up tone at the end, then reports back to the Tab5. The tones no
++  longer have to cross Wi-Fi one by one on time, so a Wi-Fi hiccup during the
++  burst can't delay a symbol. The Tab5 still sends its power/SWR query and the
++  final `RX;`. If the Tab5 disconnects mid-burst, the relay keys up and puts the
++  QMX back in receive. To go back to the Tab5 timing every tone (for an A/B
++  comparison), put a file named `tab5-timed-tx` in the relay folder; it takes
++  effect the next time the Tab5 connects. Each burst in the transmit log
++  records "tones timed by relay" or "tones timed by Tab5", and relay-sent
++  commands appear as `RELAY>QMX` in the CAT log.
++
+ ## Troubleshooting
+ 
+ * **Touch dead, but the screen and stream keep running, even after a restart:**
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index de1db7bf..9d64d1da 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -30,14 +30,25 @@ as the DS416j (QMX_BACKEND=libusb|usbfs forces one):
+ Wire format (QMXR/1): every frame = 4-byte header + payload
+      u8  type   1=HELLO 2=IQ 3=CAT 4=PING
+                 5=TERM_OPEN 6=TERM_STATUS 7=TERM_DATA 8=TERM_CLOSE
++                9=TX_SCHED 10=TX_ABORT 11=TX_DONE
+      u8  flags  0
+      u16 len    payload length, little-endian
+   Tab5 -> relay : HELLO "QMXR/1 ...", then CAT bytes
+-  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1", then IQ / CAT / PING
++  relay -> Tab5 : HELLO "QMXR/1 rate=48000 ch=2 fmt=s16le term=1 txsched=1", then IQ / CAT / PING
+   Terminal (second serial port), Tab5-initiated:
+     Tab5 -> relay : TERM_OPEN            relay -> Tab5 : TERM_STATUS u8 ok [+ reason]
+     both ways     : TERM_DATA bytes      Tab5 -> relay : TERM_CLOSE
+     relay -> Tab5 : TERM_STATUS 0 unsolicited if the port goes away while open
++  Relay-timed transmit bursts ("txsched=1"):
++    Tab5 -> relay : TX_SCHED u8 ver=1, u8 flags=0, u16 n, u32 symbol_us,
++                    n x u32 tone frequency in centi-Hz (all little-endian)
++                    The relay keys the QMX (TX;) at once, sends tone i at
++                    key down + i x symbol_us and the key-up tone (TA0;) at
++                    key down + n x symbol_us, all on its own clock.
++    Tab5 -> relay : TX_ABORT             stop now: key-up tone at once
++    relay -> Tab5 : TX_DONE u8 status (0 complete, 1 aborted, 2 failed),
++                    u16 tones sent, u32 ms TX; -> key-up, i32 ms latest symbol
++    The Tab5 still sends RX; (after its power/SWR query) and its own CAT.
+ 
+ The relay only answers the Tab5's HELLO after it has opened the QMX, and it
+ closes the connection as soon as the QMX goes away, so for the Tab5 an open
+@@ -73,6 +84,9 @@ log = logging.getLogger("qmx-nas-relay")
+ 
+ PROTO_HELLO, PROTO_IQ, PROTO_CAT, PROTO_PING = 1, 2, 3, 4
+ PROTO_TERM_OPEN, PROTO_TERM_STATUS, PROTO_TERM_DATA, PROTO_TERM_CLOSE = 5, 6, 7, 8
++PROTO_TX_SCHED, PROTO_TX_ABORT, PROTO_TX_DONE = 9, 10, 11
++TX_SCHED_HDR = struct.Struct("<BBHI")
++TX_DONE_FMT = struct.Struct("<BHIi")
+ HDR = struct.Struct("<BBH")
+ DEFAULT_PORT = 7355
+ DEFAULT_SERIAL_PORT = 7356     # QMX port 3 as raw TCP serial for PCs
+@@ -1374,7 +1388,7 @@ class Flags:
+         now = time.monotonic()
+         if now - self._t > 2.0:
+             self._t = now
+-            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx")}
++            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0", "iq-during-tx", "tab5-timed-tx")}
+         return self._v.get(name, False)
+ 
+ 
+@@ -1475,10 +1489,11 @@ class TxLog:
+         self.carry = b""
+         self.flags = None            # Flags, set by main(): records whether I/Q was paused
+         self.iq_paused = None
++        self.timed_by = "Tab5"       # who scheduled the tones: the Tab5 or this relay (TX_SCHED)
+         threading.Thread(target=self._writer, daemon=True, name="txlog").start()
+ 
+     # called on the Tab5 session thread, around radio.send_cat()
+-    def cat(self, payload: bytes, t_in: int, t_out: int):
++    def cat(self, payload: bytes, t_in: int, t_out: int, timed_by: str = "Tab5"):
+         data = self.carry + payload
+         cmds = data.split(b";")
+         self.carry = cmds.pop()[-64:]             # incomplete tail, if any
+@@ -1492,6 +1507,7 @@ class TxLog:
+                 self.burst = [(t_in, t_out, c)]
+                 self.wall0 = time.time() - (time.monotonic_ns() - t_out) / 1e9
+                 self.iq_paused = (not self.flags.has("iq-during-tx")) if self.flags else None
++                self.timed_by = timed_by
+             elif self.burst is not None:
+                 if len(self.burst) < self.MAX_CMDS:
+                     self.burst.append((t_in, t_out, c))
+@@ -1548,6 +1564,7 @@ class TxLog:
+         parts.append("relay USB write max %.1f ms" % hold)
+         if self.iq_paused is not None:
+             parts.append("I/Q to Tab5 %s" % ("paused" if self.iq_paused else "streamed"))
++        parts.append("tones timed by %s" % self.timed_by)
+         out.append("; ".join(parts))
+         for ti, to, c in b:
+             out.append("  %9.1f ms  %s" % (ms(to), c))
+@@ -1595,6 +1612,13 @@ class Session:
+         self.tx_hold = False
+         self.tx_hold_t0 = 0.0
+         self.tx_held_frames = 0
++        # Relay-timed bursts (TX_SCHED). cat_lock keeps the playout thread's
++        # tone writes and the Tab5's own CAT (its mid-burst PC;SW;, RX;) from
++        # interleaving inside one USB write and keeps the logs in order.
++        self.cat_lock = threading.Lock()
++        self.play: threading.Thread | None = None
++        self.play_abort = threading.Event()
++        self.txsched = False
+ 
+     def _put_ctl(self, data: bytes):
+         with self.wake:
+@@ -1635,6 +1659,80 @@ class Session:
+                 self.iq.append(frame(PROTO_IQ, chunk))
+                 self.wake.notify()
+ 
++    # ---- relay-timed transmit burst -------------------------------------
++    def _send_cat(self, radio, data: bytes, who: str, timed_by: str = "Tab5") -> int:
++        """One CAT write to the QMX, logged; returns the time it completed."""
++        with self.cat_lock:
++            t_in = time.monotonic_ns()
++            if who and self.mgr.catlog:
++                self.mgr.catlog.note(who, data)
++            self._tx_state(data)
++            radio.send_cat(data)
++            t_out = time.monotonic_ns()
++            if self.mgr.txlog:
++                self.mgr.txlog.cat(data, t_in, t_out, timed_by)
++            return t_out
++
++    def _tx_sched(self, radio, payload: bytes):
++        try:
++            ver, _flags, n, sym_us = TX_SCHED_HDR.unpack_from(payload)
++        except struct.error:
++            ver = n = sym_us = 0
++        if ver != 1 or not 1 <= n <= 400 or not 10_000 <= sym_us <= 1_000_000 \
++                or len(payload) < TX_SCHED_HDR.size + 4 * n:
++            log.warning("TX_SCHED: bad request (ver %d, %d tones, %d us, %d bytes) - refused",
++                        ver, n, sym_us, len(payload))
++            self._put_ctl(frame(PROTO_TX_DONE, TX_DONE_FMT.pack(2, 0, 0, 0)))
++            return
++        hz = struct.unpack_from("<%dI" % n, payload, TX_SCHED_HDR.size)
++        self._stop_playout()                       # a new burst replaces one still playing
++        self.play_abort.clear()
++        self.play = threading.Thread(target=self._playout, args=(radio, hz, sym_us),
++                                     daemon=True, name="tx-playout")
++        self.play.start()
++
++    def _playout(self, radio, centi_hz, sym_us: int):
++        n, sym_ns = len(centi_hz), sym_us * 1000
++        status, sent, latest_ns, t_key, t_up = 2, 0, 0, None, None
++        try:
++            t_key = self._send_cat(radio, b"TX;", "RELAY>QMX", "relay")
++            for i, c in enumerate(centi_hz):
++                due = t_key + i * sym_ns
++                wait = (due - time.monotonic_ns()) / 1e9
++                if wait > 0 and self.play_abort.wait(wait):
++                    break
++                if self.play_abort.is_set():
++                    break
++                t = self._send_cat(radio, b"TA%d.%02d;" % (c // 100, c % 100), "RELAY>QMX", "relay")
++                latest_ns = max(latest_ns, t - due)
++                sent += 1
++            else:
++                wait = (t_key + n * sym_ns - time.monotonic_ns()) / 1e9
++                if wait > 0:
++                    self.play_abort.wait(wait)
++            status = 1 if self.play_abort.is_set() else 0
++        except Exception as e:                        # RadioGone, USB error: still try to key up
++            log.warning("TX playout: %s", e)
++        finally:
++            try:
++                t_up = self._send_cat(radio, b"TA0;", "RELAY>QMX", "relay")
++            except Exception as e:
++                log.error("TX playout: key-up tone failed: %s", e)
++                status = 2
++        dur = int((t_up - t_key) / 1e6) if (t_key and t_up) else 0
++        log.info("TX playout %s: %d/%d tones, RF on-air %d ms, latest symbol %+.1f ms",
++                 ("complete", "aborted", "FAILED")[status], sent, n, dur, latest_ns / 1e6)
++        self._put_ctl(frame(PROTO_TX_DONE, TX_DONE_FMT.pack(status, sent, dur, int(latest_ns / 1e6))))
++
++    def _stop_playout(self, timeout: float = 2.0) -> bool:
++        """Abort a running playout and wait for its key-up. True if one was running."""
++        th = self.play
++        if not th or not th.is_alive():
++            return False
++        self.play_abort.set()
++        th.join(timeout)
++        return True
++
+     def _on_cat(self, data: bytes):
+         log.debug("QMX -> Tab5 CAT %r", data)
+         if self.mgr.catlog:
+@@ -1681,7 +1779,13 @@ class Session:
+             radio = self.mgr.acquire(self)    # raises RadioGone -> we close without answering
+             self.mgr.session = self
+ 
+-            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1" % SAMPLE_RATE))
++            # txsched=1: this relay times transmit bursts itself (TX_SCHED). A
++            # file named tab5-timed-tx in the relay folder leaves it out, so the
++            # Tab5 times them as before - for comparing the two.
++            self.txsched = not self.mgr.flags.has("tab5-timed-tx")
++            sock.sendall(frame(PROTO_HELLO, b"QMXR/1 rate=%d ch=2 fmt=s16le src=nas term=1%s"
++                               % (SAMPLE_RATE, b" txsched=1" if self.txsched else b"")))
++            log.info("transmit bursts timed by %s", "this relay" if self.txsched else "the Tab5 (tab5-timed-tx)")
+             sock.settimeout(None)
+             sender = threading.Thread(target=self._send_loop, daemon=True)
+             sender.start()
+@@ -1690,14 +1794,16 @@ class Session:
+                 payload = recv_exact(sock, n) if n else b""
+                 if t == PROTO_CAT and payload:
+                     log.debug("Tab5 -> QMX CAT %r", payload)
+-                    t_in = time.monotonic_ns()
+                     payload = guard_cat(payload, self.cat_carry, "T5", self.mgr)
+                     if not payload:
+                         continue
+-                    self._tx_state(payload)
+-                    radio.send_cat(payload)
+-                    if self.mgr.txlog:
+-                        self.mgr.txlog.cat(payload, t_in, time.monotonic_ns())
++                    self._send_cat(radio, payload, "")     # guard_cat already logged it
++                elif t == PROTO_TX_SCHED and self.txsched:
++                    self._tx_sched(radio, payload)
++                elif t == PROTO_TX_ABORT:
++                    if self.play and self.play.is_alive():
++                        log.info("TX_ABORT from the Tab5")
++                        self.play_abort.set()
+                 elif t == PROTO_TERM_DATA and payload:
+                     if self.mgr.catlog:
+                         self.mgr.catlog.note("T5 menu", payload)
+@@ -1716,6 +1822,13 @@ class Session:
+                 log.info("Tab5 %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
+         finally:
+             self.alive = False
++            # The Tab5 is gone - never leave the QMX keyed on its behalf.
++            if radio and (self._stop_playout() or self.tx_hold):
++                try:
++                    self._send_cat(radio, b"TA0;RX;", "RELAY>QMX")
++                    log.warning("Tab5 left while transmitting - QMX put back in receive")
++                except Exception as e:
++                    log.error("could not put the QMX back in receive: %s", e)
+             if radio:
+                 try:
+                     radio.term_close()
+diff --git a/tools/tx-test/README.md b/tools/tx-test/README.md
+index 0efd4fd1..c07015b5 100644
+--- a/tools/tx-test/README.md
++++ b/tools/tx-test/README.md
+@@ -22,7 +22,8 @@ between them is not a measurement.
+ 
+ ## Why both logs are needed
+ 
+-The Tab5 schedules each tone change on its own timer. If the Wi-Fi or the relay
++With Tab5 timing (the old way, or with the `tab5-timed-tx` flag file) the Tab5
++schedules each tone change on its own timer. If the Wi-Fi or the relay
+ holds a few tone changes back and then delivers them together, the Tab5 never
+ notices. Its send call returns as soon as the bytes are in its TCP buffer, so its
+ `on-air` number stays at its usual value. Only the relay sees when each command
+@@ -87,6 +88,19 @@ Tab5's own figure looks normal.
+ Only transmissions from the Tab5 are logged. Transmissions from PC software on
+ port 7356 are not.
+ 
++## Relay-timed bursts
++
++With current Tab5 firmware and relay, the relay times the tones itself (see the
++relay README), so the relay's tone gaps and symbol timing show only the NAS's
++own timing and should stay within a few ms. The Tab5's `on-air` figure then
++also includes waiting for the relay's end-of-burst report, so it is no longer
++used to spot stalls for these bursts. The Tab5 log adds one line per burst,
++`relay burst complete: 79/79 tones, RF on-air N ms, latest symbol +N ms (NAS
++clock)`, which repeats the relay's own figures. To compare with Tab5 timing,
++put a file named `tab5-timed-tx` in the relay folder, restart the Tab5's
++connection, and run another batch; `tx_compare.py` reports the two modes
++separately.
++
+ ## Does pausing I/Q during transmit help?
+ 
+ The relay pauses I/Q to the Tab5 while it transmits (see the relay README). To
+diff --git a/tools/tx-test/tx_compare.py b/tools/tx-test/tx_compare.py
+index d95cde9a..7410d216 100644
+--- a/tools/tx-test/tx_compare.py
++++ b/tools/tx-test/tx_compare.py
+@@ -127,6 +127,8 @@ def parse_relay(paths):
+                             cur[key] = float(m.group(1))
+                     m = re.search(r"I/Q to Tab5 (paused|streamed)", line)
+                     cur["iq"] = m.group(1) if m else ""
++                    m = re.search(r"tones timed by (\w+)", line)
++                    cur["timed"] = m.group(1) if m else "Tab5"
+     for b in bursts:
+         period = 7.5 if 90 <= b.get("tones", 0) <= 110 else 15.0
+         b["period"] = period
+@@ -183,6 +185,8 @@ def main():
+             timing = "%+d..%+d" % (r["late_min"], r["late_max"])
+         if r and r.get("iq"):
+             timing += "  IQ " + ("off" if r["iq"] == "paused" else "on")
++        if r and r.get("timed") == "relay":
++            timing += "  relay-timed"
+         flag = "" if r or not a.relay else ("  (no relay burst in this slot)" if not rs else "  (2+ relay bursts in this slot)")
+         if b["status"] != "complete":
+             flag += "  ABORTED"
+@@ -223,15 +227,20 @@ def main():
+               " and RF on-air within 20 ms of %d." % (len(pr) - len(bad), len(pr), FT8_ON_AIR_MS))
+         groups = {}
+         for b, r in pr:
+-            groups.setdefault(r.get("iq") or "unknown", []).append((b, r))
+-        if len(groups) > 1 or "paused" in groups:
++            g = "tones timed by %-5s I/Q %s" % (r.get("timed", "Tab5"), r.get("iq") or "unknown")
++            groups.setdefault(g, []).append((b, r))
++        if len(groups) > 1 or any("paused" in g or "relay" in g for g in groups):
+             print()
+-            print("By I/Q during transmit (relay flag file iq-during-tx):")
++            print("By mode (relay flag files tab5-timed-tx and iq-during-tx):")
+             for g, items in sorted(groups.items()):
+-                stalls = sum(1 for b, r in items if (r.get("gap_max") or 0) > 300 or b["on_air"] > 12750)
+-                print("  %-9s %3d bursts  stalls (gap > 300 ms or Tab5 on-air > 12750 ms): %d   "
+-                      "median latest symbol %+.0f ms" % (g, len(items), stalls,
+-                      statistics.median([r.get("late_max") or 0 for _, r in items])))
++                # A relay-timed burst's Tab5 on-air includes waiting for the
++                # relay's report, so only the relay's own gap counts there.
++                stalls = sum(1 for b, r in items if (r.get("gap_max") or 0) > 300 or
++                             (r.get("timed") != "relay" and b["on_air"] > 12750))
++                print("  %-30s %3d bursts  stalls: %d   median latest symbol %+.0f ms" % (
++                      g, len(items), stalls, statistics.median([r.get("late_max") or 0 for _, r in items])))
++            print("  (stall = a tone gap over 300 ms at the radio, or for Tab5-timed bursts a Tab5")
++            print("   on-air time over 12750 ms)")
+     elif a.relay:
+         print("\nNo burst could be paired - check that both logs cover the same time and that the"
+               " Mac and the NAS clocks are set by NTP.")
+-- 
+2.43.0
+

@@ -1,0 +1,263 @@
+From 7d46b5d8b45d929b5778542aeee1e1e9c9377043 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Wed, 14 Oct 2026 15:53:55 -0500
+Subject: [PATCH 16/30] nas-relay: CAT log of every command and reply; PS0
+ (power off) blocked unless flag file allow-ps0
+
+catlog/catlog-<date>.log, labelled T5 / PC / T5 menu, 40 MB a day, paused by
+a file named catlog.off. PS0; from the Tab5 or port-3 software is dropped and
+logged as BLOCKED unless a file named allow-ps0 is in the relay folder. Both
+flags are checked every 2 s.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ tools/nas-relay/README.md        |  12 +++
+ tools/nas-relay/qmx_nas_relay.py | 136 ++++++++++++++++++++++++++++++-
+ 2 files changed, 147 insertions(+), 1 deletion(-)
+
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index b4372e62..df496471 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -228,6 +228,18 @@ Notes:
+   with the Tab5's console using `tools/tx-test/tx_compare.py` (see
+   `tools/tx-test/README.md`). Turn it off with `--txlog-dir ''`.
+ 
++* **CAT log:** every CAT command sent to the QMX and every reply is written to
++  `catlog/catlog-<date>.log` in the relay folder, one timestamped line each.
++  Sources are labelled: `T5` = Tab5, `PC` = port-3 software, `T5 menu` = Radio
++  menus keystrokes. Each day's file is capped at 40 MB. Put a file named
++  `catlog.off` in the relay folder to pause it, and delete the file to resume.
++* **Power-off guard:** `PS0;` (power off) is **blocked** by default, from the Tab5
++  and from PC software alike. It's logged as `BLOCKED` in the CAT log and in
++  `qmx-relay.log`. To let it through, put a file named `allow-ps0` in the relay
++  folder; delete the file to block it again. Both flag files are re-checked
++  every 2 s, so no restart is needed. CAT cannot switch a QMX *on*: while it is
++  off the radio is not on the USB bus at all, so there is nothing to talk to.
++
+ ## Troubleshooting
+ 
+ * **Touch dead, but the screen and stream keep running, even after a restart:**
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 1b776558..3d798e8e 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -61,6 +61,7 @@ import logging
+ import math
+ import os
+ import queue
++import re
+ import select
+ import socket
+ import struct
+@@ -1291,6 +1292,8 @@ class RadioManager:
+         self.users: set = set()
+         self.session = None          # the current Tab5 session gets I/Q and CAT
+         self.txlog = None            # TxLog, unless --txlog-dir ''
++        self.catlog = None           # CatLog (see catlog.off)
++        self.flags = Flags(RELAY_DIR)
+ 
+     def acquire(self, user):
+         with self.lock:
+@@ -1336,6 +1339,115 @@ class RadioManager:
+             u.radio_gone()
+ 
+ 
++# ---------------------------------------------------------------------------
++# CAT log and the power-off guard.
++#
++# CatLog writes every command that reaches the QMX, and every reply, to
++# catlog/catlog-<date>.log, one line each, stamped with the NAS's clock:
++#     11:26:03.214  T5>QMX   FA;
++#     11:26:03.236  QMX>T5   FA00007025450;
++#     11:26:05.001  PC>QMX   PS0;   BLOCKED (power off)
++# "T5" is the Tab5 session, "PC" the port-3 client (WSJT-X, rigctld ...),
++# "T5 menu" the keystrokes the Tab5's Radio menus send to port 2. Lines are
++# queued and written by a thread once a second, never on the USB or socket
++# threads. A day's file stops at CATLOG_MAX_BYTES with a note saying so.
++#
++# Flag files in the relay folder, like restart.request, checked every 2 s:
++#     catlog.off   present = no CAT log
++#     allow-ps0    present = PS0; (power off) is passed to the radio.
++#                  Absent (the default) = it is dropped and logged as BLOCKED.
++# ---------------------------------------------------------------------------
++
++CATLOG_MAX_BYTES = 40 * 1024 * 1024
++RELAY_DIR = os.path.dirname(os.path.abspath(__file__))
++
++
++class Flags:
++    def __init__(self, directory: str):
++        self.dir, self._t, self._v = directory, 0.0, {}
++
++    def has(self, name: str) -> bool:
++        now = time.monotonic()
++        if now - self._t > 2.0:
++            self._t = now
++            self._v = {n: os.path.exists(os.path.join(self.dir, n)) for n in ("catlog.off", "allow-ps0")}
++        return self._v.get(name, False)
++
++
++class CatLog:
++    def __init__(self, directory: str, flags: Flags):
++        self.dir, self.flags = directory, flags
++        self.q: "queue.Queue[str]" = queue.Queue()
++        threading.Thread(target=self._writer, daemon=True, name="catlog").start()
++
++    def note(self, who: str, data: bytes, extra: str = ""):
++        if self.flags.has("catlog.off"):
++            return
++        t = time.time()
++        stamp = time.strftime("%H:%M:%S", time.localtime(t)) + ".%03d" % int((t % 1) * 1000)
++        text = data.decode("ascii", errors="backslashreplace").replace("\r", "\\r").replace("\n", "\\n")
++        self.q.put("%s  %-8s %s%s\n" % (stamp, who, text, ("   " + extra) if extra else ""))
++
++    def _writer(self):
++        full_for = None
++        while True:
++            lines = [self.q.get()]
++            time.sleep(1.0)
++            while True:
++                try:
++                    lines.append(self.q.get_nowait())
++                except queue.Empty:
++                    break
++            day = time.strftime("%Y-%m-%d")
++            path = os.path.join(self.dir, "catlog-%s.log" % day)
++            try:
++                os.makedirs(self.dir, exist_ok=True)
++                size = os.path.getsize(path) if os.path.exists(path) else 0
++                if size >= CATLOG_MAX_BYTES:
++                    if full_for != day:
++                        full_for = day
++                        with open(path, "a") as f:
++                            f.write("--- %s: %d MB reached, CAT log paused until tomorrow ---\n"
++                                    % (time.strftime("%H:%M:%S"), CATLOG_MAX_BYTES // 1048576))
++                    continue
++                with open(path, "a") as f:
++                    f.writelines(lines)
++            except OSError as e:
++                log.warning("catlog: cannot write %s: %s", self.dir, e)
++
++
++POWER_OFF = re.compile(rb"^\s*PS\s*0\s*$", re.I)
++
++
++def guard_cat(data: bytes, carry: bytearray, who: str, mgr) -> bytes:
++    """Pass complete CAT commands through, dropping PS0; unless allow-ps0 is
++    present; log each command. An incomplete tail waits in `carry` for the
++    rest of it (every CAT command ends with ';')."""
++    carry += data
++    out = bytearray()
++    while True:
++        i = carry.find(b";")
++        if i < 0:
++            break
++        cmd = bytes(carry[:i + 1])
++        del carry[:i + 1]
++        if POWER_OFF.match(cmd[:-1]) and not mgr.flags.has("allow-ps0"):
++            log.warning("%s sent %r (power off) - BLOCKED; put a file named allow-ps0 in %s to allow it",
++                        who, cmd, RELAY_DIR)
++            if mgr.catlog:
++                mgr.catlog.note(who + ">QMX", cmd, "BLOCKED (power off)")
++            continue
++        if mgr.catlog:
++            mgr.catlog.note(who + ">QMX", cmd)
++        out += cmd
++    if len(carry) > 256:                  # not CAT (no ';' for 256 bytes): pass it on as-is
++        if mgr.catlog:
++            mgr.catlog.note(who + ">QMX", bytes(carry), "(no ';')")
++        out += carry
++        del carry[:]
++    return bytes(out)
++
++
+ # ---------------------------------------------------------------------------
+ # Transmit log: what the relay actually handed to the QMX during a TX burst,
+ # timed on THIS host's clock only. Every interval in it (burst length, gap
+@@ -1462,6 +1574,7 @@ class Session:
+         self.alive = True
+         self.dropped = 0
+         self.iq_bytes = 0
++        self.cat_carry = bytearray()
+ 
+     def _put_ctl(self, data: bytes):
+         with self.wake:
+@@ -1485,6 +1598,8 @@ class Session:
+ 
+     def _on_cat(self, data: bytes):
+         log.debug("QMX -> Tab5 CAT %r", data)
++        if self.mgr.catlog:
++            self.mgr.catlog.note("QMX>T5", data)
+         self._put_ctl(frame(PROTO_CAT, data))
+ 
+     def _on_term(self, data: bytes):
+@@ -1537,10 +1652,15 @@ class Session:
+                 if t == PROTO_CAT and payload:
+                     log.debug("Tab5 -> QMX CAT %r", payload)
+                     t_in = time.monotonic_ns()
++                    payload = guard_cat(payload, self.cat_carry, "T5", self.mgr)
++                    if not payload:
++                        continue
+                     radio.send_cat(payload)
+                     if self.mgr.txlog:
+                         self.mgr.txlog.cat(payload, t_in, time.monotonic_ns())
+                 elif t == PROTO_TERM_DATA and payload:
++                    if self.mgr.catlog:
++                        self.mgr.catlog.note("T5 menu", payload)
+                     radio.term_send(payload)
+                 elif t == PROTO_TERM_OPEN:
+                     ok, why = radio.term_open(self._on_term)
+@@ -1621,6 +1741,8 @@ class SerialClient:
+                 pass
+ 
+     def _on_data(self, data: bytes):
++        if self.mgr.catlog:
++            self.mgr.catlog.note("QMX>PC", data)
+         self.q.put(data)               # libusb thread: never block on the PC's socket
+ 
+     def _send_loop(self):
+@@ -1649,12 +1771,15 @@ class SerialClient:
+             opened = True
+             log.info("port 3 client %s:%d connected", self.peer[0], self.peer[1])
+             threading.Thread(target=self._send_loop, daemon=True).start()
++            carry = bytearray()
+             while self.alive:
+                 data = sock.recv(4096)
+                 if not data:
+                     log.info("port 3 client %s:%d disconnected", self.peer[0], self.peer[1])
+                     break
+-                radio.serial_send(PORT3, data)
++                data = guard_cat(data, carry, "PC", self.mgr)
++                if data:
++                    radio.serial_send(PORT3, data)
+         except RadioGone as e:
+             log.warning("port 3: %s", e)
+         except OSError as e:
+@@ -1931,6 +2056,9 @@ def main():
+     ap.add_argument("--selftest-only", action="store_true", help="run the self-test and exit (0 = passed)")
+     ap.add_argument("--discovery-port", type=int, default=None,
+                     help="UDP port answering Tab5 'QMXR?' searches (default: same as --port; 0 = off)")
++    ap.add_argument("--catlog-dir", default=os.path.join(RELAY_DIR, "catlog"),
++                    help="where to log every CAT command and reply (default: catlog/ next to this "
++                         "script; '' = off; a file named catlog.off in the relay folder pauses it)")
+     ap.add_argument("--txlog-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "txlog"),
+                     help="where to log each transmit burst as the relay sent it to the QMX "
+                          "(default: txlog/ next to this script; '' = off)")
+@@ -1942,6 +2070,12 @@ def main():
+         return probe(args)
+ 
+     mgr = RadioManager(args)
++    if args.catlog_dir:
++        mgr.catlog = CatLog(args.catlog_dir, mgr.flags)
++        log.info("CAT commands are logged to %s/catlog-<date>.log (pause: file catlog.off in %s)",
++                 args.catlog_dir, RELAY_DIR)
++    log.info("PS0; (power off) is %s (flag file allow-ps0 in %s)",
++             "PASSED" if mgr.flags.has("allow-ps0") else "BLOCKED", RELAY_DIR)
+     if args.txlog_dir:
+         mgr.txlog = TxLog(args.txlog_dir)
+         log.info("transmit bursts are logged to %s/txlog-<date>.log", args.txlog_dir)
+-- 
+2.43.0
+
