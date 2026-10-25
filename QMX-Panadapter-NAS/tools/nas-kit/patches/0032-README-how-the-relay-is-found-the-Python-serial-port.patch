@@ -1,7 +1,7 @@
 From d2af99bdf2c878afe064fd35d1f05e15bea5b942 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 10:00:00 -0500
-Subject: [PATCH 32/36] README: how the relay is found, the Python serial port,
+Subject: [PATCH 32/37] README: how the relay is found, the Python serial port,
  and how TCI connects
 
 A new section on the front page explains discovery (QMXR? / QMXR! on UDP

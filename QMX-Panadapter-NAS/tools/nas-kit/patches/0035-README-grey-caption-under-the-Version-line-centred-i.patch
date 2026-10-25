@@ -1,7 +1,7 @@
 From 94c10db5179e287f39466ac14d438d8563b23c35 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 13:00:00 -0500
-Subject: [PATCH 35/36] README: grey caption under the Version line, centred in
+Subject: [PATCH 35/37] README: grey caption under the Version line, centred in
  the right half
 
 "(The above version example from Steffen's Repository)" in smaller grey

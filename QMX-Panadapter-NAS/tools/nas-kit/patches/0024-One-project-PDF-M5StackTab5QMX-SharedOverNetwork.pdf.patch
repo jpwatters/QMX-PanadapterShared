@@ -1,7 +1,7 @@
 From cbc9dd61333cae00da194e1883869581bc9cea52 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 06:06:18 -0500
-Subject: [PATCH 24/36] One project PDF: M5StackTab5QMX+SharedOverNetwork.pdf
+Subject: [PATCH 24/37] One project PDF: M5StackTab5QMX+SharedOverNetwork.pdf
 
 QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf and the Mac
 serial bridge's SharedNAS-USB-Readme.pdf are removed; everything they held

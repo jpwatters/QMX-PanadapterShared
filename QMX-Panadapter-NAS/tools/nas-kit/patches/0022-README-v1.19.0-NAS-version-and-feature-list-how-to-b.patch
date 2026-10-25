@@ -1,7 +1,7 @@
 From 55da42179b1015ac1de855c48abac39511893d6b Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 00:23:22 -0500
-Subject: [PATCH 22/36] README: v1.19.0-NAS version and feature list; how to
+Subject: [PATCH 22/37] README: v1.19.0-NAS version and feature list; how to
  build the current version
 
 The front page names the version (upstream v1.19.0 + NAS patches), lists

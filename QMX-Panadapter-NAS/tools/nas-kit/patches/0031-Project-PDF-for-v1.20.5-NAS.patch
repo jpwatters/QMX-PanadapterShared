@@ -1,7 +1,7 @@
 From e2192bf7cb87f2dc988143b6978e6e1958701704 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 23 Oct 2026 20:00:00 -0500
-Subject: [PATCH 31/36] Project PDF for v1.20.5-NAS
+Subject: [PATCH 31/37] Project PDF for v1.20.5-NAS
 
 The series now applies to upstream v1.20.5 (ported 2026-10-23): DIRTY_RELAY is
 145 (upstream took 143 and 144), the network transport is a branch inside

@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0036 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0037 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -61,19 +61,36 @@ The NAS patches were last ported on 2026-10-23, to upstream v1.20.5 (compile-che
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 ________________________________________________________________________________________________________________________________________________
 
-Steps:
+These commands build a new version whenever Steffen publishes a new upstream release:
 
 ```
-cd ~/src/qmx-panadapter-nas/tools/nas-kit
-
-# 1. publish the latest build first (patch 0021, the updated PDFs)
-bash make-qmx-panadapter-nas.sh --mark-tested
-bash push-to-github.sh
-
-# 2. build current version into QMX-Panadapter-NAS (the previous version folder is archived)
+# 1. Download the newest release and apply the NAS patches
+cd ~/src/QMX-Panadapter-NAS/tools/nas-kit
 bash make-qmx-panadapter-nas.sh
-cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
+
+# 2. Build and flash the Tab5 (nothing plugged into its USB-A port)
+cd ~/src/QMX-Panadapter-NAS
+bash tools/mac-build-flash.sh
+#    then power the Tab5 off and on
+
+# 3. Once it works on the Tab5, mark it tested and publish
+bash tools/nas-kit/make-qmx-panadapter-nas.sh --mark-tested
+bash tools/nas-kit/push-to-github.sh
 ```
+
+Step 1:
+
+* It downloads only the newest release, about 40 MB, and retries if the connection drops.
+* It moves your current `QMX-Panadapter-NAS` folder to `~/src/.qmx-panadapter-archive` and builds the new one in its place.
+* If you’re already on the newest release with these patches, it says “nothing to do”.
+
+Step 2 testing: check that the version shows `vX.Y.Z-NAS`, then try Find NAS, the spectrum, the Radio source switch in the drawer, a few FT8 bursts and a short Tune.
+
+Other options:
+
+* `--status`: shows which release NAS and Shared are on.
+* `--ref v1.20.5`: builds a specific release instead of the newest.
+* `--force`: rebuilds even when there’s nothing new.
 
 Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.20.5-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
