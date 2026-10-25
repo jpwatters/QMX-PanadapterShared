@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (35 patches). It applies to upstream **v1.20.5** as it
+* `patches/` - the NAS series (36 patches). It applies to upstream **v1.20.5** as it
   is (ported 2026-10-23; not yet built or tested on the Tab5). v1.20.1-NAS was
   marked tested on 2026-10-18 and v1.20.2-NAS built on 2026-10-21 with the
   series before it, which is in git history and in Shared's kit. `SERIES_BASE`
@@ -49,7 +49,8 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   **0032** the README section on how the relay is found, the Mac's Python serial port and how TCI connects,
   **0033** the README title "QMX/QMX+ Panadapter Shared over the network",
   **0034** the setup picture on the README (docs/nas/qmx-nas-setup.png),
-  **0035** the grey caption under the README's Version line.
+  **0035** the grey caption under the README's Version line,
+  **0036** the heading that marks where the upstream documentation starts.
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.

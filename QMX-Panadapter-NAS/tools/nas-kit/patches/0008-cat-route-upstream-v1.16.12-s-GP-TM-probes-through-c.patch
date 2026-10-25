@@ -1,7 +1,7 @@
 From 71a7e49e740e5307ae1c8bf72de753044149c68a Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 15:12:24 +0000
-Subject: [PATCH 08/35] cat: route upstream v1.16.12's GP/TM probes through
+Subject: [PATCH 08/36] cat: route upstream v1.16.12's GP/TM probes through
  cat_tx, so they work on a network radio
 
 cat_gps_gp_sync() and the GP/TM probe (new in v1.16.12) wrote straight to the

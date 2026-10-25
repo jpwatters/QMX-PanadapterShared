@@ -1,7 +1,7 @@
 From efed500d01f80482c7c8b16642742d478c9307fd Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 10:28:10 -0500
-Subject: [PATCH 14/35] tx-test: log each transmit burst on the relay and
+Subject: [PATCH 14/36] tx-test: log each transmit burst on the relay and
  compare it with the Tab5 console
 
 The relay writes txlog/txlog-<date>.log: every command it handed to the QMX

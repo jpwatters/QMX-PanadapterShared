@@ -1,7 +1,7 @@
 From 5c4041374d623280df9b1ee55e49e555e74c0eac Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 11:14:16 -0500
-Subject: [PATCH 15/35] web: 10-burst test button on the FT8 page
+Subject: [PATCH 15/36] web: 10-burst test button on the FT8 page
 
 One click sets CQ 'Stop after' = 10 calls and no listening slot, switches
 the Tab5 to FT8 if needed, starts the CQ run, counts the bursts from
