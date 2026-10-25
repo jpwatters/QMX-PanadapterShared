@@ -1,10 +1,14 @@
-# QMX+ Panadapter
+# QMX/QMX+ Panadapter Shared over the network
 
 *By Steffen Lav (OZ1LAV).* Shared over the Network Updated by JP Watters
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0030 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0035 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+
+$$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
+
+<p align="center"><img src="QMX-Panadapter-NAS/docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
@@ -12,7 +16,10 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
 5. M5Stack Tab5 discovery with the web browser at http://qmx.local
-6. An update kit that rebuilds all of this on each new upstream release
+6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
+7. An update kit that rebuilds all of this on each new upstream release
+
+The NAS patches were last ported on 2026-10-23, to upstream v1.20.5 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.20.5; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.1 with the NAS patches (2026-10-18).
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -28,22 +35,26 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 * Live spectrum on the web page. Tested.
 * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
 * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
+* TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
+* Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
 
 **On the relay**
 * I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder (catlog.off, allow-ps0, iq-during-tx, tab5-timed-tx), without a restart. Tested on the NAS.
 * Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
+* One transmitter at a time: while the Mac’s TCI bridge is connected the relay drops the Tab5’s key-down, Tune and tones and refuses its bursts, and tells the Tab5 so (TX_LOCK); while the Tab5 transmits or tunes, the Mac cannot key. A flag file tab5-tx-always lets the Tab5 transmit anyway. Bench-tested.
+* A copy of the I/Q stream on TCP 7357 for the Mac’s TCI bridge, so the Tab5’s own connection is never touched.
 * Transmit timing test (tools/tx-test): tx_compare.py compares the relay’s transmit log with the Tab5’s own log, one clock per number.
 
 **Reliability fixes needed for the network stream**
 * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
-* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
+* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
 
 **Mac tools**
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 
 **Keeping up with upstream**
-* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version.
+* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
 * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.20.5-NAS.
 
@@ -67,6 +78,31 @@ cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
 Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.20.5-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
+
+**How the pieces find and talk to each other**
+
+```
+                        ┌──────────── NAS / Raspberry Pi relay (qmx_nas_relay.py) ───────────┐
+QMX/QMX+ ──USB──▶       │ UDP 7355  answers "QMXR?" with "QMXR! <ip> 7355"   (discovery)     │
+                        │ TCP 7355  QMXR/1: I/Q + CAT + menus + timed bursts ──▶ Tab5        │
+                        │ TCP 7356  QMX serial port 3, raw CAT bytes ──────────▶ Mac bridge  │
+                        │ TCP 7357  listen-only copy of the I/Q ───────────────▶ Mac bridge  │
+                        └────────────────────────────────────────────────────────────────────┘
+Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  WS / WSJT-X / JTDX
+     qmx_serial_bridge.py (older)  ──  ~/cu.QMX-NAS (pseudo serial port)  ◀──  CAT programs
+```
+
+*Finding the relay on the network.* Nobody has to type an address. The Tab5’s **Find NAS** button (Radio source, in the drawer) and the Mac bridge both broadcast the 5-byte text `QMXR?` on UDP port 7355, three times over 1.5 s. Every relay on the same network answers straight back with `QMXR! <its IP address> <TCP port>`, for example `QMXR! 10.0.0.137 7355`; the address is the one on the network interface that reaches the asker, so a NAS with several interfaces gives the right one. The relay sends nothing unless asked. The Tab5 offers what answered and remembers the address it uses; the Mac bridge searches when it starts and again whenever the remembered address stops answering, so a relay that gets a new address is followed. Broadcasts do not cross routers, so the relay, the Tab5 and the Mac must be on the same network (and, if DSM’s firewall is on, UDP 7355 and TCP 7355-7357 must be allowed). The Tab5 itself is found the usual way: it announces **qmx.local** (mDNS), so its web page is at http://qmx.local.
+
+*How the Tab5 connects.* The Tab5 opens TCP 7355 and says `QMXR/1 tab5-qmx-panadapter`. The relay answers only once it has the QMX open, with its capabilities (`QMXR/1 rate=48000 … term=1 txsched=1 txlock=1`), so an open connection means “radio present”, exactly like a USB plug. From then on small frames (type, flags, length, data) carry the 48 kHz I/Q, CAT bytes, the radio’s menu port, whole FT8/FT4 bursts for the relay to time, and the transmitter lock. The Tab5 feeds the I/Q and CAT into the same places its USB drivers do, so the panadapter, decoders and transmit code don’t know the radio is on the network.
+
+*The Python “USB port” on the Mac (older serial mode).* Programs that expect a QMX on a USB serial port can be given a stand-in: `qmx_serial_bridge.py` (with `MODE=serial bash install-mac.sh`) creates a pseudo-terminal - a pair of connected virtual serial devices that macOS provides to any program - set to raw 8-bit with echo off, and puts a link to it at `~/cu.QMX-NAS`. A program that opens that path reads and writes it like the QMX’s USB serial port; the bridge copies every byte to and from the relay’s TCP 7356, which is the QMX’s third serial port, so the program talks to the real radio (CAT only - there is no audio on a serial port). The bridge keeps the device open so it does not disappear between programs, throws away radio replies nobody read, and reconnects to the relay on its own. WS and WSJT-X on macOS would not open a pseudo-terminal, which is why the bridge now defaults to TCI.
+
+*How a TCI program connects through the bridge to the relay.* TCI is a network-radio protocol (from Expert Electronics) that WS, WSJT-X 3 and JTDX speak natively: one WebSocket carries control, receive audio and transmit audio. The program does not talk to the relay itself; it connects to the bridge on the same Mac (**TCI Client**, server **127.0.0.1:40001**), and the bridge is the one that connects to the relay:
+* **Receive audio:** the bridge opens the relay’s **TCP 7357** and introduces itself as `QMXR/1 tci-mac tx=1`. It gets the same 48 kHz I/Q the Tab5 gets, on its own connection, and turns it into upper-sideband audio (the dial up to 3.2 kHz above it) that it streams to the program as TCI audio.
+* **Control:** frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (FA, MD, TX;/RX;) on the relay’s **TCP 7356** (serial port 3, which the Tab5 never uses); the bridge reads the frequency and mode back every second, so a change on the Tab5 or the radio shows in the program.
+* **Transmit:** the program sends transmit audio; the bridge measures each FT8/FT4/JS8/WSPR tone in it and sends it to the QMX as `TA<Hz>;` on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its spacing (bench test: 160 ms ± 1 ms). Voice does not work: the QMX has no transmit-audio path over the network.
+* **One transmitter at a time:** the `tx=1` in the bridge’s hello tells the relay that a program which can transmit is connected. While it is, the relay keeps the Tab5 off the transmitter and tells it so (the Tab5 shows “TX locked: Another Device has the transmitter”); while the Tab5 is transmitting, the Mac is kept off. The bridge holds port 3 and the I/Q copy only while a TCI program is connected.
 
 **Documentation**
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)

@@ -1,0 +1,34 @@
+From 94c10db5179e287f39466ac14d438d8563b23c35 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 13:00:00 -0500
+Subject: [PATCH 35/35] README: grey caption under the Version line, centred in
+ the right half
+
+"(The above version example from Steffen's Repository)" in smaller grey
+type. GitHub strips colour and layout styling from README HTML, so it is a
+display formula (\color{gray}, \small, \textsf) offset by \hspace{22em},
+which puts its centre at about three quarters of the README's width on a
+desktop browser.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/README.md b/README.md
+index 2230a5b3..56f87a35 100644
+--- a/README.md
++++ b/README.md
+@@ -6,6 +6,8 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
+ 
+ **Version: v1.19.0-NAS** — upstream QMX-Panadapter **v1.19.0** plus the NAS patch series 0001-0024 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+ 
++$$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
++
+ <p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
+ 
+ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
+-- 
+2.43.0
+

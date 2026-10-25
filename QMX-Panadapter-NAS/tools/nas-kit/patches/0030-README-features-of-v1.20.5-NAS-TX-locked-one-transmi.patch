@@ -1,0 +1,60 @@
+From faafa7e2a2668066e56b952de82dd0c3c9437900 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Fri, 23 Oct 2026 21:00:00 -0500
+Subject: [PATCH 30/35] README: features of v1.20.5-NAS - TX locked, one
+ transmitter at a time, I/Q copy, port status
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/README.md b/README.md
+index fc021b2a..8221c919 100644
+--- a/README.md
++++ b/README.md
+@@ -12,7 +12,10 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+ 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
+ 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
+ 5. M5Stack Tab5 discovery with the web browser at http://qmx.local
+-6. An update kit that rebuilds all of this on each new upstream release
++6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
++7. An update kit that rebuilds all of this on each new upstream release
++
++The NAS patches were last ported on 2026-10-23, to upstream v1.20.5 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.20.5; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.1 with the NAS patches (2026-10-18).
+ 
+ **Sharing the radio over the network**
+ * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
+@@ -28,22 +31,26 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+ * Live spectrum on the web page. Tested.
+ * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
+ * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
++* TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
++* Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
+ 
+ **On the relay**
+ * I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder (catlog.off, allow-ps0, iq-during-tx, tab5-timed-tx), without a restart. Tested on the NAS.
+ * Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
++* One transmitter at a time: while the Mac’s TCI bridge is connected the relay drops the Tab5’s key-down, Tune and tones and refuses its bursts, and tells the Tab5 so (TX_LOCK); while the Tab5 transmits or tunes, the Mac cannot key. A flag file tab5-tx-always lets the Tab5 transmit anyway. Bench-tested.
++* A copy of the I/Q stream on TCP 7357 for the Mac’s TCI bridge, so the Tab5’s own connection is never touched.
+ * Transmit timing test (tools/tx-test): tx_compare.py compares the relay’s transmit log with the Tab5’s own log, one clock per number.
+ 
+ **Reliability fixes needed for the network stream**
+ * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
+-* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
++* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
+ 
+ **Mac tools**
+ * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
+ * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
+ 
+ **Keeping up with upstream**
+-* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version.
++* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
+ * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
+ * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+ 
+-- 
+2.43.0
+

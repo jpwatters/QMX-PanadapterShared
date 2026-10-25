@@ -1,0 +1,58 @@
+From d2af99bdf2c878afe064fd35d1f05e15bea5b942 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 10:00:00 -0500
+Subject: [PATCH 32/35] README: how the relay is found, the Python serial port,
+ and how TCI connects
+
+A new section on the front page explains discovery (QMXR? / QMXR! on UDP
+7355, qmx.local for the Tab5), the Tab5's QMXR/1 connection, the Mac
+bridge's pseudo-terminal at ~/cu.QMX-NAS (older serial mode), and how a TCI
+program (WS, WSJT-X, JTDX) connects to the bridge, which connects to the
+relay's TCP 7357 (I/Q copy) and 7356 (serial port 3), with the transmitter
+lock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/README.md b/README.md
+index 8221c919..b12e9f89 100644
+--- a/README.md
++++ b/README.md
+@@ -75,6 +75,31 @@ Flash with nothing plugged into the Tab5’s USB-A port, then power it off and o
+ If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
+ ________________________________________________________________________________________________________________________________________________
+ 
++**How the pieces find and talk to each other**
++
++```
++                        ┌──────────── NAS / Raspberry Pi relay (qmx_nas_relay.py) ───────────┐
++QMX/QMX+ ──USB──▶       │ UDP 7355  answers "QMXR?" with "QMXR! <ip> 7355"   (discovery)     │
++                        │ TCP 7355  QMXR/1: I/Q + CAT + menus + timed bursts ──▶ Tab5        │
++                        │ TCP 7356  QMX serial port 3, raw CAT bytes ──────────▶ Mac bridge  │
++                        │ TCP 7357  listen-only copy of the I/Q ───────────────▶ Mac bridge  │
++                        └────────────────────────────────────────────────────────────────────┘
++Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  WS / WSJT-X / JTDX
++     qmx_serial_bridge.py (older)  ──  ~/cu.QMX-NAS (pseudo serial port)  ◀──  CAT programs
++```
++
++*Finding the relay on the network.* Nobody has to type an address. The Tab5’s **Find NAS** button (Radio source, in the drawer) and the Mac bridge both broadcast the 5-byte text `QMXR?` on UDP port 7355, three times over 1.5 s. Every relay on the same network answers straight back with `QMXR! <its IP address> <TCP port>`, for example `QMXR! 10.0.0.137 7355`; the address is the one on the network interface that reaches the asker, so a NAS with several interfaces gives the right one. The relay sends nothing unless asked. The Tab5 offers what answered and remembers the address it uses; the Mac bridge searches when it starts and again whenever the remembered address stops answering, so a relay that gets a new address is followed. Broadcasts do not cross routers, so the relay, the Tab5 and the Mac must be on the same network (and, if DSM’s firewall is on, UDP 7355 and TCP 7355-7357 must be allowed). The Tab5 itself is found the usual way: it announces **qmx.local** (mDNS), so its web page is at http://qmx.local.
++
++*How the Tab5 connects.* The Tab5 opens TCP 7355 and says `QMXR/1 tab5-qmx-panadapter`. The relay answers only once it has the QMX open, with its capabilities (`QMXR/1 rate=48000 … term=1 txsched=1 txlock=1`), so an open connection means “radio present”, exactly like a USB plug. From then on small frames (type, flags, length, data) carry the 48 kHz I/Q, CAT bytes, the radio’s menu port, whole FT8/FT4 bursts for the relay to time, and the transmitter lock. The Tab5 feeds the I/Q and CAT into the same places its USB drivers do, so the panadapter, decoders and transmit code don’t know the radio is on the network.
++
++*The Python “USB port” on the Mac (older serial mode).* Programs that expect a QMX on a USB serial port can be given a stand-in: `qmx_serial_bridge.py` (with `MODE=serial bash install-mac.sh`) creates a pseudo-terminal - a pair of connected virtual serial devices that macOS provides to any program - set to raw 8-bit with echo off, and puts a link to it at `~/cu.QMX-NAS`. A program that opens that path reads and writes it like the QMX’s USB serial port; the bridge copies every byte to and from the relay’s TCP 7356, which is the QMX’s third serial port, so the program talks to the real radio (CAT only - there is no audio on a serial port). The bridge keeps the device open so it does not disappear between programs, throws away radio replies nobody read, and reconnects to the relay on its own. WS and WSJT-X on macOS would not open a pseudo-terminal, which is why the bridge now defaults to TCI.
++
++*How a TCI program connects through the bridge to the relay.* TCI is a network-radio protocol (from Expert Electronics) that WS, WSJT-X 3 and JTDX speak natively: one WebSocket carries control, receive audio and transmit audio. The program does not talk to the relay itself; it connects to the bridge on the same Mac (**TCI Client**, server **127.0.0.1:40001**), and the bridge is the one that connects to the relay:
++* **Receive audio:** the bridge opens the relay’s **TCP 7357** and introduces itself as `QMXR/1 tci-mac tx=1`. It gets the same 48 kHz I/Q the Tab5 gets, on its own connection, and turns it into upper-sideband audio (the dial up to 3.2 kHz above it) that it streams to the program as TCI audio.
++* **Control:** frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (FA, MD, TX;/RX;) on the relay’s **TCP 7356** (serial port 3, which the Tab5 never uses); the bridge reads the frequency and mode back every second, so a change on the Tab5 or the radio shows in the program.
++* **Transmit:** the program sends transmit audio; the bridge measures each FT8/FT4/JS8/WSPR tone in it and sends it to the QMX as `TA<Hz>;` on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its spacing (bench test: 160 ms ± 1 ms). Voice does not work: the QMX has no transmit-audio path over the network.
++* **One transmitter at a time:** the `tx=1` in the bridge’s hello tells the relay that a program which can transmit is connected. While it is, the relay keeps the Tab5 off the transmitter and tells it so (the Tab5 shows “TX locked: Another Device has the transmitter”); while the Tab5 is transmitting, the Mac is kept off. The bridge holds port 3 and the I/Q copy only while a TCI program is connected.
++
+ **Documentation**
+ * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
+ * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+-- 
+2.43.0
+

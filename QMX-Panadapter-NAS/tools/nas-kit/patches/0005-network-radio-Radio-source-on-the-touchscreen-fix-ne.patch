@@ -1,7 +1,7 @@
 From 8a39c6c9917e1f998a3c014e8d0dd1b980ae8dca Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
-Subject: [PATCH 05/30] network-radio: Radio source on the touchscreen; fix
+Subject: [PATCH 05/35] network-radio: Radio source on the touchscreen; fix
  network freeze and DMA RAM drain
 
 - Settings drawer: "Radio source" button showing USB / NAS and link state,

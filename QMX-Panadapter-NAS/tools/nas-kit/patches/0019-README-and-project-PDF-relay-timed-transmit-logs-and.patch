@@ -1,7 +1,7 @@
 From eb5bcef0ab4a54a40d268e630a21e071384facf0 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 19:28:28 -0500
-Subject: [PATCH 19/30] README and project PDF: relay-timed transmit, logs and
+Subject: [PATCH 19/35] README and project PDF: relay-timed transmit, logs and
  guards; M5StackTab5QMX+SharedOverNetwork.pdf
 
 The README lists the relay-timed FT8/FT4 transmit, the I/Q pause, the CAT

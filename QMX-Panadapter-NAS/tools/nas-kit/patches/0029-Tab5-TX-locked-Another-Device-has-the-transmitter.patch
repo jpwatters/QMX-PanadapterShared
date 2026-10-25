@@ -1,7 +1,7 @@
 From 7302e2e3cc441cf38cb3d5aa4c7bc21cb4309f66 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
-Subject: [PATCH 29/30] Tab5: "TX locked: Another Device has the transmitter"
+Subject: [PATCH 29/35] Tab5: "TX locked: Another Device has the transmitter"
 
 The relay now tells the Tab5 when another device has the transmitter, so the
 Tab5 can say so instead of "transmitting" bursts the relay drops. A new
