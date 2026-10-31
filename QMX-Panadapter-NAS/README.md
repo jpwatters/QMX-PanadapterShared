@@ -105,7 +105,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
 
 *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
 
-**Mac tools**
+**MacOS Client for TCI and Serial Connection**
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 

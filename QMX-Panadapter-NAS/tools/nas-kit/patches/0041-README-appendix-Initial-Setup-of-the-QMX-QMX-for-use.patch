@@ -1,4 +1,4 @@
-From d848e0a6e88e252d169ec3f8b56bc2af480a3380 Mon Sep 17 00:00:00 2001
+From b547d49582f538f530cadef6369dcb5ed9c536e4 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/41] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -13,11 +13,11 @@ the end of the README.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 58 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 58 insertions(+)
+ README.md | 60 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 51d1efca..0f811da1 100644
+index 51d1efca..227791da 100644
 --- a/README.md
 +++ b/README.md
 @@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
@@ -52,6 +52,15 @@ index 51d1efca..0f811da1 100644
  **TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
  
  The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
+@@ -80,7 +105,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
+ 
+ *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
+ 
+-**Mac tools**
++**MacOS Client for TCI and Serial Connection**
+ * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
+ * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
+ 
 @@ -1339,3 +1364,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
  GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
  
