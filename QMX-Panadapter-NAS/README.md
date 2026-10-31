@@ -52,7 +52,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
 
 **QMX/QMX+ Initial Setup**
 
-[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](https://github.com/jpwatters/QMX-PanadapterShared#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
+The QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks. The same steps are also in the [Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](https://github.com/jpwatters/QMX-PanadapterShared#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter) at the end of this README.
 
 1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
    * v1.03.002 to v1.04.010 works.
