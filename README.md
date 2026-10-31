@@ -156,7 +156,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
 
-Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter, at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
+[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
 
 1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
    * v1.03.002 to v1.04.010 works.
