@@ -1,4 +1,4 @@
-From b547d49582f538f530cadef6369dcb5ed9c536e4 Mon Sep 17 00:00:00 2001
+From cb1230586da78c480ff6556a6a3714b3cbf7e1e4 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/41] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -13,11 +13,11 @@ the end of the README.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 60 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 59 insertions(+), 1 deletion(-)
+ README.md | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 93 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 51d1efca..227791da 100644
+index 51d1efca..16e0b47b 100644
 --- a/README.md
 +++ b/README.md
 @@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
@@ -52,7 +52,7 @@ index 51d1efca..227791da 100644
  **TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
  
  The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
-@@ -80,7 +105,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
+@@ -80,10 +105,44 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
  
  *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
  
@@ -61,7 +61,44 @@ index 51d1efca..227791da 100644
  * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
  * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
  
-@@ -1339,3 +1364,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
++TCI Setup in the client programs:
++
++choose TCI Client as the radio, with server 127.0.0.1:40001.
++
++The TCI Client program only ever talks to the locally to the bridge software on your Mac (part of the MACOS Serial and TCI Client), and the bridge is what connects to the relay software on the Raspberry PI or the Synlogy.
++
++* Receive audio:
++   * The bridge opens the relay’s TCP 7357 and introduces itself as `QMXR/1 tci-mac tx=1`.
++   * It gets the same 48 kHz I/Q stream the Tab5 gets, on its own connection, so the Tab5’s spectrum isn’t affected.
++   * It turns the I/Q into upper-sideband audio from the dial frequency up to 3.2 kHz above it, and streams that to the program as TCI audio.
++* Control:
++   * Frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (`FA`, `MD`, `TX;`/`RX;`).
++   * These go over the relay’s TCP 7356, which is the QMX’s third serial port. The Tab5 never uses that port.
++   * The bridge reads the frequency and mode back every second, so a change made on the Tab5 or on the radio shows up in the program.
++* Transmit:
++   * The program sends its transmit audio as TCI.
++   * The bridge measures each tone in it and sends the QMX `TA<Hz>;` commands on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its timing. A bench test measured 160 ms ± 1 ms.
++   * This works for FT8, FT4, JS8 and WSPR, which are single tones. Voice doesn’t work, because the QMX has no way to take transmit audio over the network.
++* One transmitter at a time:
++   * The `tx=1` in the bridge’s greeting tells the relay that a program which can transmit is connected.
++   * While it is, the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter”. While the Tab5 is transmitting, the Mac is kept off.
++   * The bridge only holds port 3 and the I/Q stream while a TCI program is connected.
++* Finding the relay: the bridge looks for the relay itself with the same broadcast the Tab5’s Find NAS uses (UDP 7355). It searches again if the remembered address stops answering, so it follows the NAS if its address changes.
++
++Requirements:
++
++* The Mac and the NAS must be on the same network, because the broadcast doesn’t cross routers.
++* If DSM’s firewall is on, UDP 7355 and TCP 7355–7357 must be allowed.
++* On the radio, set USB serial ports = 3.
++
++The relay has bench-tested the bridge against a simulated radio, but nobody has used it on the air with WS yet.
++
++There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that creates a fake serial port at `~/cu.QMX-NAS` for CAT-only programs. WS and WSJT-X on macOS wouldn’t open that kind of port, which is why TCI is now the default.
++
+ **Keeping up with upstream**
+ * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
+ * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
+@@ -1339,3 +1398,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
  GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
  
  Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).

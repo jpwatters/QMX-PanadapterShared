@@ -109,6 +109,40 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 
+TCI Setup in the client programs:
+
+choose TCI Client as the radio, with server 127.0.0.1:40001.
+
+The TCI Client program only ever talks to the locally to the bridge software on your Mac (part of the MACOS Serial and TCI Client), and the bridge is what connects to the relay software on the Raspberry PI or the Synlogy.
+
+* Receive audio:
+   * The bridge opens the relay’s TCP 7357 and introduces itself as `QMXR/1 tci-mac tx=1`.
+   * It gets the same 48 kHz I/Q stream the Tab5 gets, on its own connection, so the Tab5’s spectrum isn’t affected.
+   * It turns the I/Q into upper-sideband audio from the dial frequency up to 3.2 kHz above it, and streams that to the program as TCI audio.
+* Control:
+   * Frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (`FA`, `MD`, `TX;`/`RX;`).
+   * These go over the relay’s TCP 7356, which is the QMX’s third serial port. The Tab5 never uses that port.
+   * The bridge reads the frequency and mode back every second, so a change made on the Tab5 or on the radio shows up in the program.
+* Transmit:
+   * The program sends its transmit audio as TCI.
+   * The bridge measures each tone in it and sends the QMX `TA<Hz>;` commands on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its timing. A bench test measured 160 ms ± 1 ms.
+   * This works for FT8, FT4, JS8 and WSPR, which are single tones. Voice doesn’t work, because the QMX has no way to take transmit audio over the network.
+* One transmitter at a time:
+   * The `tx=1` in the bridge’s greeting tells the relay that a program which can transmit is connected.
+   * While it is, the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter”. While the Tab5 is transmitting, the Mac is kept off.
+   * The bridge only holds port 3 and the I/Q stream while a TCI program is connected.
+* Finding the relay: the bridge looks for the relay itself with the same broadcast the Tab5’s Find NAS uses (UDP 7355). It searches again if the remembered address stops answering, so it follows the NAS if its address changes.
+
+Requirements:
+
+* The Mac and the NAS must be on the same network, because the broadcast doesn’t cross routers.
+* If DSM’s firewall is on, UDP 7355 and TCP 7355–7357 must be allowed.
+* On the radio, set USB serial ports = 3.
+
+The relay has bench-tested the bridge against a simulated radio, but nobody has used it on the air with WS yet.
+
+There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that creates a fake serial port at `~/cu.QMX-NAS` for CAT-only programs. WS and WSJT-X on macOS wouldn’t open that kind of port, which is why TCI is now the default.
+
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
