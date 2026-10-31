@@ -1,4 +1,4 @@
-From 42a23255395a5f5e402a3216114227581e637bb6 Mon Sep 17 00:00:00 2001
+From 61b8dcd6858cd5d8c21a1869d4934af7db6f3347 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/42] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -13,14 +13,23 @@ the end of the README.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 94 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 93 insertions(+), 1 deletion(-)
+ README.md | 96 +++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 94 insertions(+), 2 deletions(-)
 
 diff --git a/README.md b/README.md
-index 35c54c3e..a7c5ba09 100644
+index c444ee2e..20c262de 100644
 --- a/README.md
 +++ b/README.md
-@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-che
+@@ -8,7 +8,7 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
+ 
+ $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
+ 
+-<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
++<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
+ 
+ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
+ 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
+@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  

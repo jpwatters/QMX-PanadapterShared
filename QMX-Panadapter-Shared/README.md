@@ -8,7 +8,7 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
-<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
+<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
@@ -20,7 +20,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 8. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.1; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
+The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’s own checks and host tests give the same results as plain v1.23.1). v1.23.1-NAS was flashed and marked tested on the Tab5 on 2026-10-31, including Find NAS with the relay’s discovery fix.
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.

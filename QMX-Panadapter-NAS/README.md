@@ -8,7 +8,7 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
-<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
+<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)

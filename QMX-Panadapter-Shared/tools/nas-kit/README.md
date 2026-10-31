@@ -12,7 +12,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
 * `patches/` - the NAS series (42 patches). It applies to upstream **v1.23.1** as it
-  is (ported 2026-10-31; compile-checked, not yet flashed or tested on the Tab5). v1.20.5-NAS was
+  is (ported 2026-10-31; flashed and marked tested on the Tab5 on 2026-10-31). v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
   which is in git history and in Shared's kit. `SERIES_BASE` in the script names
   the release the patches were made against. Each build writes the release into

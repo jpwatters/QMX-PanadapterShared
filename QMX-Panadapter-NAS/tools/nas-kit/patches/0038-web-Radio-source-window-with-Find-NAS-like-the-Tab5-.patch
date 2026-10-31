@@ -1,4 +1,4 @@
-From 621eba48f6cd1c101e5862c3136d310514f5b2fb Mon Sep 17 00:00:00 2001
+From d290684bbabf5ba1b4f1d6d686ae8495934d39aa Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
 Subject: [PATCH 38/42] web: Radio source window with Find NAS, like the Tab5's

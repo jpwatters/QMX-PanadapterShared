@@ -1,4 +1,4 @@
-From 332c6327e9d00f795fbc44fd6a8dbc157f8eab2f Mon Sep 17 00:00:00 2001
+From d290684bbabf5ba1b4f1d6d686ae8495934d39aa Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
 Subject: [PATCH 38/42] web: Radio source window with Find NAS, like the Tab5's
@@ -30,10 +30,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  3 files changed, 174 insertions(+), 15 deletions(-)
 
 diff --git a/README.md b/README.md
-index 59bd890d..b8cb1c45 100644
+index 78a9d3c4..585563bb 100644
 --- a/README.md
 +++ b/README.md
-@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-che
+@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  
  **On the Tab5**
  * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.

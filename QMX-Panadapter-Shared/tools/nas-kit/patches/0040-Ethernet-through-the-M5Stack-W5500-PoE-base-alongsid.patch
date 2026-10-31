@@ -1,4 +1,4 @@
-From 1d70a74f5968d0102790423c63bbe088e6e1080d Mon Sep 17 00:00:00 2001
+From d43893b22f9c8de890cec823d1322df00336ad20 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/42] Ethernet through the M5Stack W5500 PoE base, alongside
@@ -64,7 +64,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index b8cb1c45..35c54c3e 100644
+index 585563bb..c444ee2e 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -75,9 +75,9 @@ index b8cb1c45..35c54c3e 100644
 +7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +8. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.1; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
+ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’s own checks and host tests give the same results as plain v1.23.1). v1.23.1-NAS was flashed and marked tested on the Tab5 on 2026-10-31, including Find NAS with the relay’s discovery fix.
  
-@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-che
+@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
