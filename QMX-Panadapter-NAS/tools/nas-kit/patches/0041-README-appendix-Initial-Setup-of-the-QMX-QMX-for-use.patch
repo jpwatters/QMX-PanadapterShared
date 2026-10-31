@@ -1,4 +1,4 @@
-From 0bef0ea1c5729e02ef10cd5adb307c3c585ff85d Mon Sep 17 00:00:00 2001
+From 89c8a424583650c9d509addca5571612238b0bd5 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/41] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -13,18 +13,20 @@ the end of the README.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 57 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 57 insertions(+)
+ README.md | 58 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 58 insertions(+)
 
 diff --git a/README.md b/README.md
-index 51d1efca..9bcb4b8b 100644
+index 51d1efca..0b611af6 100644
 --- a/README.md
 +++ b/README.md
-@@ -156,6 +156,30 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
- * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
- * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+ * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
+ * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
-+[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
++**QMX/QMX+ Initial Setup**
++
++[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](https://github.com/jpwatters/QMX-PanadapterShared#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
 +
 +1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
 +   * v1.03.002 to v1.04.010 works.
@@ -45,13 +47,12 @@ index 51d1efca..9bcb4b8b 100644
 +   * Pick a few bands, including 60 m, and confirm the radio follows.
 +   * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
 +5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
++6. If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
 +
-+If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
-+
- ---
+ **TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
  
- ## Documentation from the upstream repository<br><sub>&nbsp;</sub><br><sub><i>Below is the documentation from the repository <a href="https://github.com/SteffenLav/qmx-panadapter">SteffenLav/qmx-panadapter</a>,<br>by Steffen Lav (OZ1LAV).</i></sub>
-@@ -1339,3 +1363,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
+ The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
+@@ -1339,3 +1364,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
  GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
  
  Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).

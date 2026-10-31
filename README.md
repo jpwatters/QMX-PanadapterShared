@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
 * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
 * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
 
+**QMX/QMX+ Initial Setup**
+
+[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](https://github.com/jpwatters/QMX-PanadapterShared#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
+
+1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
+   * v1.03.002 to v1.04.010 works.
+   * v1.04 versions also give you AM mode and the Antenna Tune button.
+   * v1.04.011 is not recommended yet. Steffen’s docs report no transmit output when keyed over CAT from the Tab5, and the QMX’s own Tune SWR and Hardware Test screens freezing. Go back to v1.04.010 if you’re on it.
+2. Check these settings on the radio (or through the Tab5’s Radio menus):
+   * System config → IQ Mode: enabled. The Tab5 switches it on at each connection, and this keeps it on. If it’s missing, signals look shifted or mirrored and slide across the whole spectrum when you tune.
+   * System config → GPS & Ser. ports → USB serial ports = 3.
+   * Port 1 carries CAT for the Tab5.
+   * Port 2 is for the Tab5’s Radio menus (the QMX menu terminal on the Tab5 screen).
+   * Port 3 is for PC software through the NAS relay (TCP 7356).
+   * Band config: enable every band you want to use. The Tab5 builds its band list from this table. A band the radio doesn’t have enabled is ignored when the Tab5 asks for it. That’s the 60 m problem you saw: the QMX stayed put, and the Tab5 now tells you so.
+3. Connect and power up in order.
+   * With the QMX+ on the Synology, the relay picks the radio up again after it restarts, so you don’t need to do anything there.
+   * If the QMX is plugged into the Tab5 directly: start the Tab5 first and wait for the spectrum and Wi-Fi to come up, then switch the QMX on. Steffen warns that turning the radio on while the Tab5 is still starting up can leave it short of memory.
+4. Check it from the Tab5.
+   * The top bar shows Band, Mode and BW, and the spectrum is live.
+   * Pick a few bands, including 60 m, and confirm the radio follows.
+   * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
+5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
+6. If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
+
 **TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
 
 The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
@@ -155,30 +180,6 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  
 **Documentation**
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
-
-[Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
-
-1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
-   * v1.03.002 to v1.04.010 works.
-   * v1.04 versions also give you AM mode and the Antenna Tune button.
-   * v1.04.011 is not recommended yet. Steffen’s docs report no transmit output when keyed over CAT from the Tab5, and the QMX’s own Tune SWR and Hardware Test screens freezing. Go back to v1.04.010 if you’re on it.
-2. Check these settings on the radio (or through the Tab5’s Radio menus):
-   * System config → IQ Mode: enabled. The Tab5 switches it on at each connection, and this keeps it on. If it’s missing, signals look shifted or mirrored and slide across the whole spectrum when you tune.
-   * System config → GPS & Ser. ports → USB serial ports = 3.
-   * Port 1 carries CAT for the Tab5.
-   * Port 2 is for the Tab5’s Radio menus (the QMX menu terminal on the Tab5 screen).
-   * Port 3 is for PC software through the NAS relay (TCP 7356).
-   * Band config: enable every band you want to use. The Tab5 builds its band list from this table. A band the radio doesn’t have enabled is ignored when the Tab5 asks for it. That’s the 60 m problem you saw: the QMX stayed put, and the Tab5 now tells you so.
-3. Connect and power up in order.
-   * With the QMX+ on the Synology, the relay picks the radio up again after it restarts, so you don’t need to do anything there.
-   * If the QMX is plugged into the Tab5 directly: start the Tab5 first and wait for the spectrum and Wi-Fi to come up, then switch the QMX on. Steffen warns that turning the radio on while the Tab5 is still starting up can leave it short of memory.
-4. Check it from the Tab5.
-   * The top bar shows Band, Mode and BW, and the spectrum is live.
-   * Pick a few bands, including 60 m, and confirm the radio follows.
-   * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
-5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
-
-If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
 
 ---
 
