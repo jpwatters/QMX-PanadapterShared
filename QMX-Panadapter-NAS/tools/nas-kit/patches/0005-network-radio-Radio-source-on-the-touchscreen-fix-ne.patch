@@ -1,7 +1,7 @@
-From e1b877c33ef15c32262420de2a2adc08db277b4c Mon Sep 17 00:00:00 2001
+From 3baba2965cf9e5add2e263c29585c8abe1cc09e2 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
-Subject: [PATCH 05/41] network-radio: Radio source on the touchscreen; fix
+Subject: [PATCH 05/42] network-radio: Radio source on the touchscreen; fix
  network freeze and DMA RAM drain
 
 - Settings drawer: "Radio source" button showing USB / NAS and link state,
@@ -6578,7 +6578,7 @@ index 1c6e15ce..1e8a3e18 100644
          return ESP_ERR_TIMEOUT;
      }
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 9bad8934..fac51d4f 100644
+index e09d5ebc..3538dab3 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
 @@ -92,6 +92,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
@@ -6631,7 +6631,7 @@ index 9bad8934..fac51d4f 100644
  static void topbar_reconcile_cb(lv_timer_t *t);
  static void drawer_slider_cwtxoff_cb(lv_event_t *e);
  static void ui_set_cw_tx_offset_label(int hz);
-@@ -15732,6 +15747,29 @@ static void drawer_build(void)
+@@ -15762,6 +15777,29 @@ static void drawer_build(void)
      //
      // Directly under the pause button on purpose: an operator reaching for
      // "let me use the QMX menus" on a radio with no front panel wanted this.
@@ -6661,7 +6661,7 @@ index 9bad8934..fac51d4f 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -19049,6 +19087,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
+@@ -19079,6 +19117,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
   * physically swap a card - which is exactly when it disappears. It also has a
   * second instruction after the swap, so it has to still be there afterwards.
   * A window waits. */
@@ -6893,7 +6893,7 @@ index 9bad8934..fac51d4f 100644
  
  static void sdeject_modal_close_cb(lv_event_t *e)
 diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
-index 1e369861..17c404e2 100644
+index 3c42746f..8fb7f910 100644
 --- a/main/wifi/wifi.c
 +++ b/main/wifi/wifi.c
 @@ -203,6 +203,26 @@ static void set_sdio_gpio_drive(void)

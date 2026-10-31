@@ -1138,6 +1138,19 @@ void wifi_debug_kill_c6(void)
     bsp_set_wifi_power_enable(false);
 }
 
+/* Set once esp_netif_init() has returned, never cleared: the tcpip thread is
+ * not torn down for the life of the boot, and a flag that could go false
+ * would invite callers to poll it as a liveness test, which it is not. */
+static volatile bool s_tcpip_up = false;
+
+bool wifi_tcpip_stack_up(void) { return s_tcpip_up; }
+
+/* net/eth_w5500.c runs esp_netif_init() itself, in parallel with wifi_task(),
+ * so on a boot where the C6 never comes up the stack can still be up - started
+ * by the Ethernet task. Without this, the guard above would keep saying "no
+ * stack" on a Tab5 that is online over the W5500 PoE base. */
+void wifi_tcpip_stack_mark_up(void) { s_tcpip_up = true; }
+
 static void wifi_task(void *arg)
 {
     ESP_LOGI(TAG, "calling esp_hosted_init() explicitly (constructor not running)");
@@ -1157,6 +1170,12 @@ static void wifi_task(void *arg)
 
     // ESP-IDF core init (event loop, default STA netif).
     ESP_ERROR_CHECK(esp_netif_init());
+    /* ⭐ THE TCPIP THREAD EXISTS FROM HERE, AND NOT ONE LINE EARLIER.
+     * Everything above this can return early - the esp_hosted_init() failure
+     * a few lines up does exactly that - and in that case no socket call
+     * anywhere in the firmware can be made without aborting the board. See
+     * wifi_tcpip_stack_up() in wifi.h for the measurement. */
+    s_tcpip_up = true;
     /* net/eth_w5500.c may have created the default loop first (it starts in
      * parallel and needs it for its own events) - that is not an error. */
     {

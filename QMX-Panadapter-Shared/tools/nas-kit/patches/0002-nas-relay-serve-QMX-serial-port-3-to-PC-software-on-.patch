@@ -1,7 +1,7 @@
-From 86995179f5a77020eeeea87ecad394bcb4c6ae4c Mon Sep 17 00:00:00 2001
+From 4987d66387dd06458e22e7ea2d3e5fb9ec6d9a8f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 14:46:23 +0000
-Subject: [PATCH 02/41] nas-relay: serve QMX serial port 3 to PC software on
+Subject: [PATCH 02/42] nas-relay: serve QMX serial port 3 to PC software on
  TCP 7356
 
 With the QMX set to "USB serial ports" = 3, the relay now serves the

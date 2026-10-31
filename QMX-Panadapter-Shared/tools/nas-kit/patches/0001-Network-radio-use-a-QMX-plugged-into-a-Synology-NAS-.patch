@@ -1,7 +1,7 @@
-From 8d8bad52ff9345943c461666edbe59396a368680 Mon Sep 17 00:00:00 2001
+From 860ac2a4474c5ab0453c6418955cab02de168d0e Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 00:57:14 +0000
-Subject: [PATCH 01/41] Network radio: use a QMX plugged into a Synology NAS
+Subject: [PATCH 01/42] Network radio: use a QMX plugged into a Synology NAS
  over TCP/IP
 
 Adds a "network radio" source so the Tab5 can use a QMX that is plugged
@@ -3483,10 +3483,10 @@ index 00000000..2dfd794e
 +uint32_t radio_relay_iq_pairs_total(void);
 +const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index ba307700..53ef737a 100644
+index 7bb38de6..b1bdd425 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -91,6 +91,7 @@
+@@ -93,6 +93,7 @@
  #include <ctype.h>
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
@@ -3494,7 +3494,7 @@ index ba307700..53ef737a 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -731,6 +732,7 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -733,6 +734,7 @@ static esp_err_t status_handler(httpd_req_t *req)
      }
  
      cJSON_AddNumberToObject(root, "freq_hz",     (double)cat_get_frequency());
@@ -3502,7 +3502,7 @@ index ba307700..53ef737a 100644
      cJSON_AddStringToObject(root, "qmx_fw",       cat_get_qmx_fw());
      cJSON_AddStringToObject(root, "mode",         ui_get_mode_str());
      // Decoded CW, EXACTLY the line the Tab5 is drawing - same grid, same wrap
-@@ -5225,6 +5227,70 @@ static esp_err_t eqsl_upload_handler(httpd_req_t *req)
+@@ -5396,6 +5398,70 @@ static esp_err_t eqsl_upload_handler(httpd_req_t *req)
      return httpd_resp_sendstr(req, "{\"status\":\"uploading\"}");
  }
  
@@ -3573,7 +3573,7 @@ index ba307700..53ef737a 100644
  static const httpd_uri_t uri_eqsl_creds = {
      .uri = "/api/eqsl_creds", .method = HTTP_POST, .handler = eqsl_creds_handler,
  };
-@@ -9226,6 +9292,8 @@ esp_err_t webserver_start(void)
+@@ -9397,6 +9463,8 @@ esp_err_t webserver_start(void)
      reg(&uri_help);
      reg(&uri_manual);
      reg(&uri_eqsl_creds);
@@ -3583,10 +3583,10 @@ index ba307700..53ef737a 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 298d8e3b..7962d927 100644
+index da1fe2e9..bbb735e0 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1564,6 +1564,7 @@
+@@ -1608,6 +1608,7 @@
          <a href="#" class="screen-to" data-screen="ft4" style="color:#00B4FF" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
          <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
          <a href="#" class="screen-to" data-screen="wspr" style="color:#3D8C40" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
@@ -3594,7 +3594,7 @@ index 298d8e3b..7962d927 100644
          <a href="#" id="memory-btn" title="Your 32 memory channels - click one to tune to it">Memory channels</a>
          <a href="#" id="pause-btn" title="Stops the Tab5 talking to the radio, so its own menus and the Band Configuration terminal app behave normally. Nothing is decoded until you hand it back">Let me use the QMX menus</a>
          <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
-@@ -7606,6 +7607,39 @@ function paintPaused(on) {
+@@ -7650,6 +7651,39 @@ function paintPaused(on) {
      bar.remove();
    }
  }
@@ -3634,7 +3634,7 @@ index 298d8e3b..7962d927 100644
  document.getElementById("pause-btn").addEventListener("click", async () => {
    await sendCmd({ action: pausedNow ? "resume" : "pause" });
    paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
-@@ -7910,6 +7944,7 @@ async function tick() {
+@@ -7954,6 +7988,7 @@ async function tick() {
       * one poll has had time to return carrying it. That window is the debounce
       * plus a round trip; anything shorter and the last snap-back still shows. */
      radioFreqHz = s.freq_hz || 0;      /* always - see its declaration */

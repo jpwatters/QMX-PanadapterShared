@@ -1,7 +1,7 @@
-From b13ed5263c355c86a74c6fff982f7c4d543bebc1 Mon Sep 17 00:00:00 2001
+From 218f4982fc5297a27cb15cb6ff1744664e63b211 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
-Subject: [PATCH 40/41] Ethernet through the M5Stack W5500 PoE base, alongside
+Subject: [PATCH 40/42] Ethernet through the M5Stack W5500 PoE base, alongside
  Wi-Fi
 
 net/eth_w5500.c looks for a W5500 on the Tab5's M5-Bus at boot (MOSI G18,
@@ -37,8 +37,8 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  main/main.c                |   5 +
  main/net/band_conditions.c |   3 +-
  main/net/dxcluster.c       |   3 +-
- main/net/eth_w5500.c       | 225 +++++++++++++++++++++++++++++++++++++
- main/net/eth_w5500.h       |  50 +++++++++
+ main/net/eth_w5500.c       | 226 +++++++++++++++++++++++++++++++++++++
+ main/net/eth_w5500.h       |  50 ++++++++
  main/net/ota_update.c      |   3 +-
  main/net/psk_rx.c          |   3 +-
  main/net/pskr_self.c       |   3 +-
@@ -55,16 +55,16 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  main/ui/sched_modal.c      |   3 +-
  main/util/diag_log.c       |   4 +
  main/util/status.c         |  11 ++
- main/wifi/wifi.c           |  59 ++++++----
- main/wifi/wifi.h           |   5 +
+ main/wifi/wifi.c           |  65 +++++++----
+ main/wifi/wifi.h           |   7 ++
  sdkconfig                  |   2 +-
  sdkconfig.defaults         |   4 +
- 27 files changed, 433 insertions(+), 54 deletions(-)
+ 27 files changed, 442 insertions(+), 54 deletions(-)
  create mode 100644 main/net/eth_w5500.c
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index 07be6b9d..51d1efca 100644
+index 585563bb..c444ee2e 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -75,9 +75,9 @@ index 07be6b9d..51d1efca 100644
 +7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +8. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.0; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
+ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’s own checks and host tests give the same results as plain v1.23.1). v1.23.1-NAS was flashed and marked tested on the Tab5 on 2026-10-31, including Find NAS with the relay’s discovery fix.
  
-@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
@@ -201,10 +201,10 @@ index 95bc2944..219aa57b 100644
          }
 diff --git a/main/net/eth_w5500.c b/main/net/eth_w5500.c
 new file mode 100644
-index 00000000..b105c9b0
+index 00000000..878399c5
 --- /dev/null
 +++ b/main/net/eth_w5500.c
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,226 @@
 +// See eth_w5500.h.
 +
 +#include "eth_w5500.h"
@@ -315,6 +315,7 @@ index 00000000..b105c9b0
 +        ESP_LOGE(TAG, "esp_netif_init: %s - no Ethernet", esp_err_to_name(e));
 +        vTaskDelete(NULL);
 +    }
++    wifi_tcpip_stack_mark_up();     /* the tcpip thread exists now - see wifi.h */
 +    e = esp_event_loop_create_default();
 +    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
 +        ESP_LOGE(TAG, "event loop: %s - no Ethernet", esp_err_to_name(e));
@@ -682,10 +683,10 @@ index 0a6b51dd..0bee174e 100644
  
          /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index c85d95f7..67dc265f 100644
+index 43c834d5..fecf5e6a 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -92,6 +92,7 @@
+@@ -94,6 +94,7 @@
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
  #include "radio_relay.h"       // network radio source (QMX on a NAS)
@@ -693,7 +694,7 @@ index c85d95f7..67dc265f 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -725,6 +726,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -727,6 +728,18 @@ static esp_err_t status_handler(httpd_req_t *req)
      // checking from another room as it is looking at the Tab5 itself.
      cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
  
@@ -743,10 +744,10 @@ index a25a653f..7ce5a480 100644
      }
  }
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index d14008b1..05c50a34 100644
+index 93e9c70a..d606cf2c 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -8795,11 +8795,13 @@ async function tick() {
+@@ -8877,11 +8877,13 @@ async function tick() {
        }
      }
  
@@ -942,7 +943,7 @@ index 3ab6bd7a..519ede69 100644
  #if BENCH_WIFI_BAR
          // Bench hook (see BENCH_WIFI_BAR at the top of this file): fakes a
 diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
-index 17c404e2..1139aa0c 100644
+index 8fb7f910..c324d345 100644
 --- a/main/wifi/wifi.c
 +++ b/main/wifi/wifi.c
 @@ -899,6 +899,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,
@@ -1018,10 +1019,23 @@ index 17c404e2..1139aa0c 100644
      }
  }
  
-@@ -1149,7 +1157,12 @@ static void wifi_task(void *arg)
+@@ -1137,6 +1145,12 @@ static volatile bool s_tcpip_up = false;
  
-     // ESP-IDF core init (event loop, default STA netif).
-     ESP_ERROR_CHECK(esp_netif_init());
+ bool wifi_tcpip_stack_up(void) { return s_tcpip_up; }
+ 
++/* net/eth_w5500.c runs esp_netif_init() itself, in parallel with wifi_task(),
++ * so on a boot where the C6 never comes up the stack can still be up - started
++ * by the Ethernet task. Without this, the guard above would keep saying "no
++ * stack" on a Tab5 that is online over the W5500 PoE base. */
++void wifi_tcpip_stack_mark_up(void) { s_tcpip_up = true; }
++
+ static void wifi_task(void *arg)
+ {
+     ESP_LOGI(TAG, "calling esp_hosted_init() explicitly (constructor not running)");
+@@ -1162,7 +1176,12 @@ static void wifi_task(void *arg)
+      * anywhere in the firmware can be made without aborting the board. See
+      * wifi_tcpip_stack_up() in wifi.h for the measurement. */
+     s_tcpip_up = true;
 -    ESP_ERROR_CHECK(esp_event_loop_create_default());
 +    /* net/eth_w5500.c may have created the default loop first (it starts in
 +     * parallel and needs it for its own events) - that is not an error. */
@@ -1033,11 +1047,16 @@ index 17c404e2..1139aa0c 100644
      wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
      ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
 diff --git a/main/wifi/wifi.h b/main/wifi/wifi.h
-index 07f00bd7..d7236cb0 100644
+index 3a15794c..067b3c6c 100644
 --- a/main/wifi/wifi.h
 +++ b/main/wifi/wifi.h
-@@ -44,6 +44,11 @@ void panadapter_wifi_apply_preferred(void);
- // Returns true once the station has an IP address.
+@@ -60,9 +60,16 @@ void panadapter_wifi_apply_preferred(void);
+  * while offline, and rigctld only starts from the got-IP path. A periodic
+  * diagnostic has no such gate of its own and needs this one. */
+ bool wifi_tcpip_stack_up(void);
++// Called by net/eth_w5500.c once its own esp_netif_init() has returned.
++void wifi_tcpip_stack_mark_up(void);
+ 
  bool wifi_is_connected(void);
  
 +/* Start the services that need an address on some link (qmx.local, SNTP, the

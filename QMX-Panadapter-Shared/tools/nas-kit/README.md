@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (41 patches). It applies to upstream **v1.23.0** as it
+* `patches/` - the NAS series (42 patches). It applies to upstream **v1.23.1** as it
   is (ported 2026-10-31; compile-checked, not yet flashed or tested on the Tab5). v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
   which is in git history and in Shared's kit. `SERIES_BASE` in the script names
@@ -27,6 +27,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     patch 0005;
   * (v1.22.0) upstream's new Scheduled events pane (spots.c, sched_modal.c)
     asks for any network, Ethernet or Wi-Fi - patch 0040;
+  * (v1.23.1) upstream's new tcpip-stack guard (wifi_tcpip_stack_up(), for
+    socket calls on a boot where Wi-Fi never starts) is also set by the
+    Ethernet task, which starts the stack itself - patch 0040;
   * the web page's Radio menu keeps upstream's new five "Switch to ..." entries
     (Panadapter, FT8, FT4, JS8, WSPR) and adds the "Radio source" entry under
     them - patch 0001;
@@ -39,9 +42,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     (patch 0015); the "TX locked" refusal sits after upstream's band guard (T48)
     (patch 0029); CMakeLists.txt keeps both upstream's configure-on-commit block
     and the -NAS version block.
-  On v1.23.0 the host harnesses (`tools/run_harnesses.py`) give 59 passed, 3
+  On v1.23.1 the host harnesses (`tools/run_harnesses.py`) give 59 passed, 3
   failed (js8_submode, js8_wav, sb_tune), 1 skipped - the same as pristine
-  upstream v1.23.0; check_tx_guard, check_unattended_tx, check_dirty_bits,
+  upstream v1.23.1; check_tx_guard, check_unattended_tx, check_dirty_bits,
   check_web, check_webui and check_docs are clean.
   Later patches: **0021** the version fallback, **0022** the front-page README
   (version, features, build steps), **0023-0024** the one project PDF,
@@ -49,7 +52,7 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   **0027** the Mac TCI bridge for WS / WSJT-X / JTDX and the relay's I/Q copy on TCP 7357,
   **0028** one transmitter at a time (the Tab5 is kept off while a TCI program is connected),
   **0029** the Tab5 shows "TX locked: Another Device has the transmitter" and refuses to key,
-  **0030** the front-page README's feature list, **0031** the project PDF for v1.23.0-NAS,
+  **0030** the front-page README's feature list, **0031** the project PDF for v1.23.1-NAS,
   **0032** the README section on how the relay is found, the Mac's Python serial port and how TCI connects,
   **0033** the README title "QMX/QMX+ Panadapter Shared over the network",
   **0034** the setup picture on the README (docs/nas/qmx-nas-setup.png),
@@ -60,7 +63,8 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   **0039** a frequency the radio refuses (e.g. 60 m on a QMX+ with 1_03_002) puts the display back and says so,
   **0040** wired Ethernet through the M5Stack W5500 PoE base on the M5-Bus, alongside Wi-Fi
   (net/eth_w5500.c; CONFIG_ETH_SPI_ETHERNET_W5500=y in sdkconfig and sdkconfig.defaults),
-  **0041** the README appendix "Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter".
+  **0041** the README appendix "Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter",
+  **0042** the relay answers Find NAS from the address the query arrived on (a VPN client on the NAS no longer hides it).
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.
@@ -99,7 +103,7 @@ Other options: `--ref vX.Y.Z` (a specific tag, branch or commit),
 * Each tree holds `.qmx-nas-build` (release, upstream commit, patch-series
   checksum, build time) and, once tested, `.qmx-nas-tested`. Both are excluded
   from `git status`.
-* Builds report the upstream release plus `-NAS`, e.g. `v1.23.0-NAS`.
+* Builds report the upstream release plus `-NAS`, e.g. `v1.23.1-NAS`.
 
 Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on the current release
 produced a tree identical to QMX-Panadapter-NAS (same git tree hash); a rebuild

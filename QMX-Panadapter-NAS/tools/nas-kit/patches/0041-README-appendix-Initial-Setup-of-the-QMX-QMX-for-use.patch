@@ -1,7 +1,7 @@
-From cb1230586da78c480ff6556a6a3714b3cbf7e1e4 Mon Sep 17 00:00:00 2001
+From 358cbbe058ce8120a9601b204d3c86e75e101c63 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
-Subject: [PATCH 41/41] README: appendix "Initial Setup of the QMX/QMX+ for use
+Subject: [PATCH 41/42] README: appendix "Initial Setup of the QMX/QMX+ for use
  with the Tab5-Panadapter"
 
 Firmware version, the radio settings the Tab5 needs (IQ mode, USB serial
@@ -17,10 +17,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 93 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 51d1efca..16e0b47b 100644
+index c444ee2e..65a343c7 100644
 --- a/README.md
 +++ b/README.md
-@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  

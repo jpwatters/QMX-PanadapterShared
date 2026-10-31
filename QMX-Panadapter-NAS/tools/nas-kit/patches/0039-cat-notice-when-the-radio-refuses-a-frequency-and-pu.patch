@@ -1,7 +1,7 @@
-From 40ad2d25b374d38d5eff09674b2ab3a3cfc19656 Mon Sep 17 00:00:00 2001
+From 47d5ebf1ef523de42b94e767b8898714b175a2b5 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
-Subject: [PATCH 39/41] cat: notice when the radio refuses a frequency, and put
+Subject: [PATCH 39/42] cat: notice when the radio refuses a frequency, and put
  the display back
 
 Reported: selecting 60 m on the Tab5 or the web page "sets 40 m or 60 m".

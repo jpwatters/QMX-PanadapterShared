@@ -108,6 +108,7 @@ static void eth_task(void *arg)
         ESP_LOGE(TAG, "esp_netif_init: %s - no Ethernet", esp_err_to_name(e));
         vTaskDelete(NULL);
     }
+    wifi_tcpip_stack_mark_up();     /* the tcpip thread exists now - see wifi.h */
     e = esp_event_loop_create_default();
     if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "event loop: %s - no Ethernet", esp_err_to_name(e));

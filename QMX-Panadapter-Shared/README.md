@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.23.0-NAS** — upstream QMX-Panadapter **v1.23.0** plus the NAS patch series 0001-0041 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.23.1-NAS** — upstream QMX-Panadapter **v1.23.1** plus the NAS patch series 0001-0042 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -20,7 +20,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 8. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.0; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
+The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.1; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -50,7 +50,32 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
 * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
 * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
 
-**Wired Ethernet (M5Stack W5500 PoE base)**
+**QMX/QMX+ Initial Setup**
+
+The QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks. The same steps are also in the [Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](https://github.com/jpwatters/QMX-PanadapterShared#appendix-initial-setup-of-the-qmxqmx-for-use-with-the-tab5-panadapter) at the end of this README.
+
+1. Check the firmware version. It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
+   * v1.03.002 to v1.04.010 works.
+   * v1.04 versions also give you AM mode and the Antenna Tune button.
+   * v1.04.011 is not recommended yet. Steffen’s docs report no transmit output when keyed over CAT from the Tab5, and the QMX’s own Tune SWR and Hardware Test screens freezing. Go back to v1.04.010 if you’re on it.
+2. Check these settings on the radio (or through the Tab5’s Radio menus):
+   * System config → IQ Mode: enabled. The Tab5 switches it on at each connection, and this keeps it on. If it’s missing, signals look shifted or mirrored and slide across the whole spectrum when you tune.
+   * System config → GPS & Ser. ports → USB serial ports = 3.
+   * Port 1 carries CAT for the Tab5.
+   * Port 2 is for the Tab5’s Radio menus (the QMX menu terminal on the Tab5 screen).
+   * Port 3 is for PC software through the NAS relay (TCP 7356).
+   * Band config: enable every band you want to use. The Tab5 builds its band list from this table. A band the radio doesn’t have enabled is ignored when the Tab5 asks for it. That’s the 60 m problem you saw: the QMX stayed put, and the Tab5 now tells you so.
+3. Connect and power up in order.
+   * With the QMX+ on the Synology, the relay picks the radio up again after it restarts, so you don’t need to do anything there.
+   * If the QMX is plugged into the Tab5 directly: start the Tab5 first and wait for the spectrum and Wi-Fi to come up, then switch the QMX on. Steffen warns that turning the radio on while the Tab5 is still starting up can leave it short of memory.
+4. Check it from the Tab5.
+   * The top bar shows Band, Mode and BW, and the spectrum is live.
+   * Pick a few bands, including 60 m, and confirm the radio follows.
+   * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
+5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
+6. If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
+
+**TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
 
 The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
 
@@ -80,14 +105,48 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
 
 *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
 
-**Mac tools**
+**MacOS Client for TCI and Serial Connection**
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
+
+TCI Setup in the client programs:
+
+choose TCI Client as the radio, with server 127.0.0.1:40001.
+
+The TCI Client program only ever talks to the locally to the bridge software on your Mac (part of the MACOS Serial and TCI Client), and the bridge is what connects to the relay software on the Raspberry PI or the Synlogy.
+
+* Receive audio:
+   * The bridge opens the relay’s TCP 7357 and introduces itself as `QMXR/1 tci-mac tx=1`.
+   * It gets the same 48 kHz I/Q stream the Tab5 gets, on its own connection, so the Tab5’s spectrum isn’t affected.
+   * It turns the I/Q into upper-sideband audio from the dial frequency up to 3.2 kHz above it, and streams that to the program as TCI audio.
+* Control:
+   * Frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (`FA`, `MD`, `TX;`/`RX;`).
+   * These go over the relay’s TCP 7356, which is the QMX’s third serial port. The Tab5 never uses that port.
+   * The bridge reads the frequency and mode back every second, so a change made on the Tab5 or on the radio shows up in the program.
+* Transmit:
+   * The program sends its transmit audio as TCI.
+   * The bridge measures each tone in it and sends the QMX `TA<Hz>;` commands on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its timing. A bench test measured 160 ms ± 1 ms.
+   * This works for FT8, FT4, JS8 and WSPR, which are single tones. Voice doesn’t work, because the QMX has no way to take transmit audio over the network.
+* One transmitter at a time:
+   * The `tx=1` in the bridge’s greeting tells the relay that a program which can transmit is connected.
+   * While it is, the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter”. While the Tab5 is transmitting, the Mac is kept off.
+   * The bridge only holds port 3 and the I/Q stream while a TCI program is connected.
+* Finding the relay: the bridge looks for the relay itself with the same broadcast the Tab5’s Find NAS uses (UDP 7355). It searches again if the remembered address stops answering, so it follows the NAS if its address changes.
+
+Requirements:
+
+* The Mac and the NAS must be on the same network, because the broadcast doesn’t cross routers.
+* If DSM’s firewall is on, UDP 7355 and TCP 7355–7357 must be allowed.
+* On the radio, set USB serial ports = 3.
+
+The relay has bench-tested the bridge against a simulated radio, but nobody has used it on the air with WS yet.
+
+There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that creates a fake serial port at `~/cu.QMX-NAS` for CAT-only programs. WS and WSJT-X on macOS wouldn’t open that kind of port, which is why TCI is now the default.
 
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.23.0-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.23.1-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 ________________________________________________________________________________________________________________________________________________
@@ -123,7 +182,7 @@ Other options:
 * `--ref v1.20.5`: builds a specific release instead of the newest.
 * `--force`: rebuilds even when there’s nothing new.
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.23.0-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.23.1-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -155,7 +214,6 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  
 **Documentation**
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
-* Appendix: [Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](#appendix-qmx-setup), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
 
 ---
 
@@ -169,13 +227,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v1.23.0.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
+> **Release — v1.23.1.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.23.0.pdf).
+Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.23.1.pdf).
 
 <!-- USERGUIDE:START -->
 

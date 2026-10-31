@@ -1,7 +1,7 @@
-From fec8a6227e76b575e0095a19639a655fe61a279a Mon Sep 17 00:00:00 2001
+From 621eba48f6cd1c101e5862c3136d310514f5b2fb Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
-Subject: [PATCH 38/41] web: Radio source window with Find NAS, like the Tab5's
+Subject: [PATCH 38/42] web: Radio source window with Find NAS, like the Tab5's
  drawer
 
 The web page's "Radio source" entry only offered a prompt for typing the
@@ -30,10 +30,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  3 files changed, 174 insertions(+), 15 deletions(-)
 
 diff --git a/README.md b/README.md
-index e77ed701..07be6b9d 100644
+index 78a9d3c4..585563bb 100644
 --- a/README.md
 +++ b/README.md
-@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
  
  **On the Tab5**
  * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
@@ -43,10 +43,10 @@ index e77ed701..07be6b9d 100644
  * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
  * Live spectrum on the web page. Tested.
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 08c27b18..c85d95f7 100644
+index 8f5b477b..43c834d5 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -5291,6 +5291,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
+@@ -5462,6 +5462,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
      return relay_get_handler(req);
  }
  
@@ -126,7 +126,7 @@ index 08c27b18..c85d95f7 100644
  static const httpd_uri_t uri_relay_get = {
      .uri = "/api/relay", .method = HTTP_GET, .handler = relay_get_handler,
  };
-@@ -9301,6 +9374,8 @@ esp_err_t webserver_start(void)
+@@ -9472,6 +9545,8 @@ esp_err_t webserver_start(void)
      reg(&uri_eqsl_creds);
      reg(&uri_relay_get);    // network radio (QMX on a NAS)
      reg(&uri_relay_post);
@@ -136,10 +136,10 @@ index 08c27b18..c85d95f7 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 96f14eb2..d14008b1 100644
+index 79861dd7..93e9c70a 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1806,6 +1806,33 @@
+@@ -1850,6 +1850,33 @@
      </div>
    </div>
  
@@ -173,7 +173,7 @@ index 96f14eb2..d14008b1 100644
    <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
      <!-- max-height + an inner scroll box: with 32 slots the card ran off the
           bottom of the window and the last rows could not be reached at all. -->
-@@ -7703,27 +7730,84 @@ function paintPaused(on) {
+@@ -7747,27 +7774,84 @@ function paintPaused(on) {
  }
  /* Network radio - the QMX plugged into a NAS, reached over TCP through
     tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */

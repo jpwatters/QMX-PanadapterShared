@@ -2200,7 +2200,8 @@ DISCOVERY_REPLY = b"QMXR!"
 
 def local_ip_for(peer_ip: str) -> str:
     """The address of THIS host on the interface that reaches peer_ip (a NAS can
-    have several). A connected UDP socket sends nothing; it only picks a route."""
+    have several). A connected UDP socket sends nothing; it only picks a route.
+    Only a fallback now - see discovery_responder()."""
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         u.connect((peer_ip, 9))
@@ -2211,7 +2212,63 @@ def local_ip_for(peer_ip: str) -> str:
         u.close()
 
 
+# Linux's IP_PKTINFO (Python 3.8 on DSM may not name it). With it on, every
+# received datagram says which local address it arrived on, and a reply can
+# be sent FROM that address.
+IP_PKTINFO = getattr(socket, "IP_PKTINFO", 8)
+
+
+def _iface_ipv4(ifindex: int) -> str:
+    """The IPv4 address of the interface with this index, or ""."""
+    try:
+        import fcntl
+        name = socket.if_indextoname(ifindex)
+        t = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            r = fcntl.ioctl(t.fileno(), 0x8915,                 # SIOCGIFADDR
+                            struct.pack("256s", name.encode()[:15]))
+        finally:
+            t.close()
+        return socket.inet_ntoa(r[20:24])
+    except (OSError, ValueError, ImportError):
+        return ""
+
+
+def _arrived_on(ancdata):
+    """(local address, interface index) a datagram arrived on, or ("", 0).
+
+    For a datagram sent to one of our addresses that address is the answer.
+    For a BROADCAST it is the address of the interface it came in on - NOT
+    in_pktinfo.ipi_spec_dst: Linux fills that from a route lookup back to the
+    sender, and on the DS416j with the VPN client up that lookup goes into the
+    tunnel (10.0.0.0/24 via tun0 beats the LAN's own 10.0.0.0/22), so it said
+    192.168.113.5 for a query that came in on eth0 (2026-10-31)."""
+    for level, ctype, cdata in ancdata:
+        if level == socket.IPPROTO_IP and ctype == IP_PKTINFO and len(cdata) >= 12:
+            ifindex, spec_dst, dst = struct.unpack("=I4s4s", cdata[:12])
+            d = socket.inet_ntoa(dst)
+            if dst[0] < 224 and d != "0.0.0.0" and not d.endswith(".255"):
+                return d, ifindex                               # sent to us directly
+            ip = _iface_ipv4(ifindex)
+            if ip:
+                return ip, ifindex
+            ip = socket.inet_ntoa(spec_dst)
+            return (ip, 0) if ip != "0.0.0.0" else ("", 0)
+    return "", 0
+
+
 def discovery_responder(listen: str, udp_port: int, tcp_port: int):
+    """Answer "QMXR?" with the address the question ARRIVED ON, sent from that
+    address.
+
+    Until 2026-10-31 the answer named, and was sent by, whatever interface the
+    main routing table picks for the asker. On a NAS with a VPN client
+    connected (DSM: Network -> Network Interface -> VPN) that pushes a route for
+    the LAN's own range, that is the VPN: the relay answered a Tab5 at
+    10.0.0.28 with "QMXR! 192.168.113.5 7355", sent into the tunnel, and the Tab5
+    never heard it - while TCP to 10.0.0.137 kept working, because DSM routes
+    replies from the LAN address back out of the LAN. Answering from the
+    address the query arrived on gets the same treatment."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2219,21 +2276,48 @@ def discovery_responder(listen: str, udp_port: int, tcp_port: int):
     except OSError as e:
         log.warning("discovery disabled - cannot listen on UDP %d: %s", udp_port, e)
         return
+    pktinfo = True
+    try:
+        s.setsockopt(socket.IPPROTO_IP, IP_PKTINFO, 1)
+    except OSError as e:
+        pktinfo = False
+        log.info("discovery: no IP_PKTINFO (%s) - answering by the routing table", e)
     log.info("discovery: answering QMXR? on UDP %s:%d", listen, udp_port)
     last_logged: dict = {}
     while True:
         try:
-            data, peer = s.recvfrom(256)
+            if pktinfo:
+                data, anc, _flags, peer = s.recvmsg(256, socket.CMSG_SPACE(12))
+                ip, ifindex = _arrived_on(anc)
+            else:
+                data, peer = s.recvfrom(256)
+                ip, ifindex = "", 0
             if not data.startswith(DISCOVERY_QUERY):
                 continue
-            ip = local_ip_for(peer[0])
+            how = "arrived on"
+            if not ip:
+                ip, how = local_ip_for(peer[0]), "route to asker"
             if ip == "0.0.0.0":
                 continue
-            s.sendto(b"%s %s %d" % (DISCOVERY_REPLY, ip.encode(), tcp_port), peer)
+            reply = b"%s %s %d" % (DISCOVERY_REPLY, ip.encode(), tcp_port)
+            sent = False
+            if pktinfo and how == "arrived on":
+                try:                                            # send FROM that address
+                    s.sendmsg([reply], [(socket.IPPROTO_IP, IP_PKTINFO,
+                                         struct.pack("=I4s4s", ifindex, socket.inet_aton(ip), b"\0" * 4))],
+                               0, peer)
+                    sent = True
+                except OSError as e:
+                    log.debug("discovery: sendmsg from %s failed (%s) - plain sendto", ip, e)
+            if not sent:
+                s.sendto(reply, peer)
             now = time.monotonic()
             if now - last_logged.get(peer[0], -1e9) > 60:      # a search sends 3 queries
                 last_logged[peer[0]] = now
-                log.info("discovery: %s asked, answered %s:%d", peer[0], ip, tcp_port)
+                routed = local_ip_for(peer[0])
+                note = "" if routed in (ip, "0.0.0.0") else \
+                    " (the routing table would have used %s - a VPN or second network?)" % routed
+                log.info("discovery: %s asked, answered %s:%d (%s)%s", peer[0], ip, tcp_port, how, note)
         except Exception as e:                                  # never take the relay down
             log.warning("discovery: %s", e)
             time.sleep(1)

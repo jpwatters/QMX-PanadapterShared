@@ -149,7 +149,7 @@ It uses the ESP-IDF in `~/esp/esp-idf` (v5.4.4) and an installed PowerShell
 own Python out of ESP-IDF's way, applies and checks all patches, builds, and
 does a normal flash (settings kept). Logs go to `build/mac-build-flash.log`.
 The firmware reports itself as the release it is based on plus `-NAS`, e.g.
-`v1.23.0-NAS`.
+`v1.23.1-NAS`.
 
 ## 3. PC software on QMX port 3 (optional)
 
@@ -213,6 +213,15 @@ Notes:
   must be on the same one; if DSM's firewall is on, allow UDP 7355 as well as
   TCP 7355/7356. `--discovery-port N` moves it, `--discovery-port 0` turns it
   off. `nettest.py` checks it (`discovery to 127.0.0.1`).
+  The answer names the address of the interface the question arrived on and
+  is sent from that address and interface, so a NAS with a VPN client connected (DSM **Control Panel →
+  Network → Network Interface → VPN**) still answers on the LAN. Before
+  2026-10-31 the relay answered by the routing table: with a VPN that routes
+  the LAN's own range, it answered `QMXR! 192.168.113.5 7355` into the tunnel
+  and Find NAS found nothing, while the Tab5 could still connect by typing
+  the NAS's address. The log line `discovery: <asker> asked, answered
+  <address>` says which address was used, and notes when the routing table
+  would have picked a different one.
 * Tested: switching NAS → USB → NAS from the drawer, and powering the QMX off
   and on (power lead pulled) while the Tab5 stays connected - the stream
   resumes by itself.
