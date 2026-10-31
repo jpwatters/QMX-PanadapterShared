@@ -1,0 +1,102 @@
+From 40ad2d25b374d38d5eff09674b2ab3a3cfc19656 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 17:00:00 -0500
+Subject: [PATCH 39/41] cat: notice when the radio refuses a frequency, and put
+ the display back
+
+Reported: selecting 60 m on the Tab5 or the web page "sets 40 m or 60 m".
+Reproduced 2026-10-25 over the NAS on a QMX+ with firmware 1_03_002: the
+Tab5 sent FA00005360810; (the remembered 60 m frequency), and raw writes of
+5.357000, 5.360810 and 5.354000 MHz the same way - the radio stayed on
+7.074 MHz every time and sent nothing back. 40 m and 80m tuned normally.
+
+The band change moves the display at once, and only an FA reply that
+differs from the previous one ever moves it again. A refused write leaves
+the reply unchanged, so the Tab5 drew 60 m while the radio, the band label
+and the web page said 40 m.
+
+Now each frequency write records where the radio was. If 2.5 s later the
+radio still reports that frequency, the write was refused: the display is
+put back on the radio's real frequency, the log says so, and a toast says
+"The QMX did not tune to <f> MHz - it is still on <f> MHz. Check that band
+in the radio's Band config." A write the radio accepts (its FA moves, to the
+target or near it) clears the check.
+
+The refusal itself is the radio's: the band list it reports has 60 m at
+5.357 MHz, but it will not tune there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ main/cat/cat.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/main/cat/cat.c b/main/cat/cat.c
+index d1c41a18..46a30d6c 100644
+--- a/main/cat/cat.c
++++ b/main/cat/cat.c
+@@ -178,6 +178,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
+ static uint64_t s_wspr_pa_check_us = 0; // last non-blocking WSPR PA-guard check
+ 
+ static uint32_t s_last_freq_hz = 0;
++/* A frequency write waiting for the radio to confirm it (see the FA reply
++ * handler): the target, where the radio was when it was sent, and when. */
++static volatile uint32_t s_fa_expect_hz = 0;
++static volatile uint32_t s_fa_expect_from_hz = 0;
++static volatile int64_t  s_fa_expect_us = 0;
+ static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
+ static int  s_cw_offset_hz = 700;   // CW LO offset read from QMX at connect, default 700
+ // Which VFO the radio RECEIVES on, from "FR;": 0 = VFO A, 1 = VFO B, 2 = Split.
+@@ -1077,6 +1082,36 @@ static void process_cat_message(const char *msg, size_t len)
+             }
+             freq_hz = freq_hz * 10 + (d - '0');
+         }
++        /* ⛔ DID THE RADIO ACTUALLY GO THERE? A band button and the web page
++         * move the display to the new frequency at once (optimistically), and
++         * only an FA reply that DIFFERS from the last one ever moves it again.
++         * When the QMX refuses a frequency - seen 2026-10-25 with every 60 m
++         * frequency on a QMX+ running 1_03_002: FA00005360810; was sent, the
++         * radio stayed on 7.074 MHz and said nothing - the reply never
++         * changes, so the Tab5 went on drawing 60 m while the radio, the band
++         * label and the web page's band said 40 m. That read as "selecting
++         * 60 m sets 40 m or 60 m". So: if 2.5 s after a write the radio still
++         * reports the frequency it was on before, it refused. Put the display
++         * back on the radio's real frequency and say so, once. */
++        if (s_fa_expect_hz) {
++            int64_t age = esp_timer_get_time() - s_fa_expect_us;
++            if (freq_hz != s_fa_expect_from_hz || freq_hz == s_fa_expect_hz) {
++                s_fa_expect_hz = 0;                     /* it moved: accepted */
++            } else if (age > 2500000) {
++                uint32_t want = s_fa_expect_hz;
++                s_fa_expect_hz = 0;
++                ESP_LOGW(TAG, "the QMX did not tune to %lu Hz - it is still on %lu Hz "
++                              "(is that band enabled in the radio's Band config.?)",
++                         (unsigned long)want, (unsigned long)freq_hz);
++                char t[160];
++                snprintf(t, sizeof(t), "The QMX did not tune to %lu.%06lu MHz - it is still on "
++                         "%lu.%06lu MHz. Check that band in the radio's Band config.",
++                         (unsigned long)(want / 1000000), (unsigned long)(want % 1000000),
++                         (unsigned long)(freq_hz / 1000000), (unsigned long)(freq_hz % 1000000));
++                ui_toast_ms(t, 8000);
++                ui_update_frequency(freq_hz);           /* the display follows the radio again */
++            }
++        }
+         if (freq_hz != s_last_freq_hz) {
+             s_last_freq_hz = freq_hz;
+             ESP_LOGI(TAG, "Freq = %lu Hz (%lu.%03lu MHz)",
+@@ -3351,6 +3386,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
+         return err;
+     }
+     ESP_LOGI(TAG, "Sent: %s (target %lu Hz)", cmd, (unsigned long)freq_hz);
++    // Expect the radio's next FA replies to show it moved (see the FA handler).
++    if (freq_hz != s_last_freq_hz && s_last_freq_hz != 0) {
++        s_fa_expect_from_hz = s_last_freq_hz;
++        s_fa_expect_us      = (int64_t)now;
++        s_fa_expect_hz      = freq_hz;
++    }
+ 
+     // RETUNING CLEARS RIT. It is per-caller by nature (Roy KI0ER engages it for
+     // one station and drops it for the next), and RIT left set across a retune is
+-- 
+2.43.0
+

@@ -44,6 +44,11 @@ void panadapter_wifi_apply_preferred(void);
 // Returns true once the station has an IP address.
 bool wifi_is_connected(void);
 
+/* Start the services that need an address on some link (qmx.local, SNTP, the
+ * web server, rigctld). Idempotent; called from the Wi-Fi and the Ethernet
+ * got-IP paths. */
+void wifi_net_services_start(void);
+
 // Is WiFi even meant to be running? False after the operator turned it off (the
 // drawer switch / POTA use). Lets callers tell "WiFi is broken" apart from "WiFi
 // is off on purpose" - the context-help triage must not flag the second as a fault.

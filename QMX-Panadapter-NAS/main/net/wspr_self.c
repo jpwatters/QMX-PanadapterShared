@@ -52,6 +52,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <ctype.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "wspr_self";
 
@@ -274,7 +275,7 @@ static void fetch_once(const char *mycall)
 static void wspr_self_task(void *arg)
 {
     (void)arg;
-    while (!wifi_is_connected()) {
+    while (!net_is_up()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     /* ⛔ QUERY FIRST, THEN WAIT. The delay used to come first, so nothing
@@ -299,7 +300,7 @@ static void wspr_self_task(void *arg)
 
         qmx_settings_t s;
         settings_load_all(&s);
-        if (!s.my_callsign[0] || !wifi_is_connected()) continue;
+        if (!s.my_callsign[0] || !net_is_up()) continue;
         fetch_once(s.my_callsign);
     }
 }

@@ -1,7 +1,7 @@
-From cbc9dd61333cae00da194e1883869581bc9cea52 Mon Sep 17 00:00:00 2001
+From e9336f122a8ab8ba03f75cd0fa4e82422e146b93 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 06:06:18 -0500
-Subject: [PATCH 24/37] One project PDF: M5StackTab5QMX+SharedOverNetwork.pdf
+Subject: [PATCH 24/41] One project PDF: M5StackTab5QMX+SharedOverNetwork.pdf
 
 QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf and the Mac
 serial bridge's SharedNAS-USB-Readme.pdf are removed; everything they held
@@ -15555,7 +15555,7 @@ z^2z#hvpqXJeeKJinb`kx@z1}P?S220%YQD;&HjA<<ovhoef(c|w)6kMXLwit53I~T
 x=%2+u)rIeW;eXJzzyDi0|HuCCvrL}<=kq;<-~T?|B<R1!=ATTaH|_uPe*u)TmQVly
 
 diff --git a/README.md b/README.md
-index f626a31b..e05e256e 100644
+index b1c4458c..8a3ae769 100644
 --- a/README.md
 +++ b/README.md
 @@ -69,8 +69,7 @@ If you’ve customised the drawer’s Basic/Advanced menus: check where Radio so

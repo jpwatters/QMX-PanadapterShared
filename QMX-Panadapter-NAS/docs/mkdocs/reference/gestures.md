@@ -13,7 +13,7 @@ The entire app is controlled via **one-finger swipes from screen edges** and **t
 
 | Gesture | From | Effect |
 |---|---|---|
-| Swipe → | **Left edge** | Cycle Panadapter -> FT8/FT4/JS8 -> WSPR |
+| Swipe → | **Left edge** | Open the **page picker** - tap Panadapter, FT8, FT4, JS8 or WSPR |
 | Swipe ← | **Right edge** | Open settings drawer |
 | Swipe ↑ | **Bottom edge** | Open memory channel picker |
 
@@ -36,8 +36,9 @@ Tap any item on the top bar to open its selector:
 |---|---|---|
 | Tap | **S-meter**, top bar | Open the audio panel |
 
-New in v1.20.5. The panel holds **Mute**, the **Tab5 speaker** volume and the
-**radio's AF gain**, and closes on a tap anywhere outside it. It is on the
+New in v1.20.5, and extended in v1.21.0. The panel holds **Mute**, the **Tab5
+speaker** volume, the **radio's AF gain**, the **radio's RF gain** and an **AGC
+Fast / Slow / Off** row, and closes on a tap anywhere outside it. It is on the
 S-meter because that is the one thing in the top bar already about what you are
 hearing. Mute is instant and is not remembered across a reboot.
 
@@ -46,8 +47,9 @@ hearing. Mute is instant and is not remembered across a reboot.
 | **Frequency** | Numeric keypad (MHz format) |
 | **Mode** | USB / LSB / CW / DiGi buttons |
 | **Bandwidth** | Filter width (SSB) or CW passband |
+| **Bandwidth**, long press | **CW-Tune** — put the dial on the nearest CW signal within ±400 Hz (see [Settings](../guide/settings.md)) |
 | **Band** | Band list (160 m – 10 m + custom) |
-| **S-meter** | Peak-hold toggle |
+| **S-meter** | [Audio panel](../guide/audio.md#the-audio-panel-one-tap-on-the-s-meter) |
 | **Zoom** | x1 / x2 / x4 / x8 / x16 / x24 presets; pinch for anything between |
 
 ## Spectrum / Waterfall
@@ -55,9 +57,11 @@ hearing. Mute is instant and is not remembered across a reboot.
 | Gesture | Effect |
 |---|---|
 | **Tap** | Tune to that frequency |
-| **Drag (1 finger)** | Pan left/right |
+| **Drag (1 finger)** | Pan left/right. The passband marker **dims to about a third while you drag** rather than disappearing, so you keep something to aim at, and returns to full when you let go. It does this in every mode |
 | **Hold ~250 ms, then drag** | Precise tune: a cyan cursor appears and snaps grid-to-grid as you move, and the radio follows when you lift. The hold is what separates it from a pan - a quick drag pans, a held drag tunes |
 | **Pinch (2 fingers)** | Zoom in/out |
+| **Right-drag** (BLE mouse) | **Pan the window** without moving the dial — the same gesture as the browser, and the same direction: drag right to bring lower frequencies into view. The picture slides under the pointer while the button is down and the pan is applied when you let go. Left-drag is unchanged |
+| **Wheel** (BLE mouse) | Tune in steps, using your **Tune snap** setting — as in the browser |
 | **Tap a spot callsign** | Tune to that station **and** set the mode — see [Live Spots](../guide/spots.md) |
 | **Tap an off-screen count** (`<3` / `5>`) | Jump to the nearest spot outside the window, on this band |
 
@@ -70,7 +74,7 @@ The thin coloured strip just above the bottom status bar shows where you are wit
 | Gesture | Effect |
 |---|---|
 | **Tap** the strip | Jump to that frequency in the band |
-| **Drag** the visible-span block sideways | Move the window along the band. Block, VFO marker and passband travel together and stay where you let go; the radio follows |
+| **Drag** the visible-span block sideways | Move the window along the band. Block, VFO marker and passband travel together and stay where you let go; the radio follows. The passband block **dims while you drag** instead of vanishing |
 | **Touch just above the strip** | Counts as the strip — about 8 mm of the waterfall above it is a grab area, so the handle is catchable first time |
 | **Drag from the bottom bar** (sideways) | Same band scrub, grabbed on/under the slider handle *anywhere along the bottom status bar* — a taller, easier target |
 | **Swipe ↑** from the bottom bar | Still opens the memory picker (vertical = memory, sideways = band-plan — the two share the row) |
@@ -196,12 +200,36 @@ Appears when you tap a text field:
 
 ## Web UI (Browser)
 
-- **Click spectrum** -> tune to that frequency
-- **Scroll or pinch** -> zoom
-- **Number fields** -> click to edit, press Enter
-- **Buttons** -> click to toggle settings
+**Left moves the radio, right moves the view.** That is the whole rule for the
+spectrum and waterfall.
 
-All web controls mirror the Tab5 display.
+| Gesture | Effect |
+|---|---|
+| **Left-click**, or press-drag-release | Tune to where you release. A cursor line follows the pointer while the button is down |
+| **Right-drag** | **Pan the window** along the band. The dial does **not** move |
+| **Scroll wheel** | Tune in steps, using your **Tune snap** setting |
+| **Click a spot callsign** | Tune to that station, frequency **and** mode |
+| **Drag the band-plan strip** | Move the window across the whole band. This one *does* retune |
+| **Number fields** | Click to edit, press Enter |
+
+**About the right-drag.** It moves the window inside what the radio is already
+receiving, so the frequency stays exactly where it was and the passband marker
+slides across the screen instead of sitting still. Drag right and you pull the
+spectrum right with you, bringing lower frequencies into view - the way a map
+drags. The passband stays visible throughout, in every mode.
+
+The browser's own context menu is suppressed over the spectrum and waterfall so
+the drag can happen; it still works everywhere else on the page.
+
+It needs the **still display** to be on, which is the default. With it off the
+spectrum follows the dial, so there is no separate window to move and the
+gesture is declined with that reason.
+
+The band-plan strip drags the opposite way on purpose: there your hand is on the
+window **marker** rather than on the picture, so the marker travels with your
+hand and the frequency rises as you drag right.
+
+All other web controls mirror the Tab5 display.
 
 ---
 

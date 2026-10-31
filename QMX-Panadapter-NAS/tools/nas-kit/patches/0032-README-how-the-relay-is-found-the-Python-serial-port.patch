@@ -1,7 +1,7 @@
-From d2af99bdf2c878afe064fd35d1f05e15bea5b942 Mon Sep 17 00:00:00 2001
+From 68d41424aa25d070e7bc367b49cb876bc4645b0b Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 10:00:00 -0500
-Subject: [PATCH 32/37] README: how the relay is found, the Python serial port,
+Subject: [PATCH 32/41] README: how the relay is found, the Python serial port,
  and how TCI connects
 
 A new section on the front page explains discovery (QMXR? / QMXR! on UDP
@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+)
 
 diff --git a/README.md b/README.md
-index 8221c919..b12e9f89 100644
+index 951a8bdd..636adf72 100644
 --- a/README.md
 +++ b/README.md
 @@ -75,6 +75,31 @@ Flash with nothing plugged into the Tab5’s USB-A port, then power it off and o

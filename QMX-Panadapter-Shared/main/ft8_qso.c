@@ -2895,8 +2895,49 @@ void ft8_qso_advance(int64_t slot_sec)
  * `target` is the partner, read under the lock by the caller. */
 static void finish_wait_done(const char *target)
 {
+        /* ⭐ WHY THE FAILING BRANCH IS LOGGED, AND WHY IT IS RATE-LIMITED.
+         *
+         * Randy N4OPI has now reported three times that the web UI says he is
+         * busy with a station he has finished working, and sent a diag every
+         * time: "They RR73, I 73, Exchange is logged and noted on screen as
+         * complete ... I single click a new caller and WebUI indicates that I
+         * am still in an exchange."
+         *
+         * WAIT_DONE is a busy state (ft8_qso_is_busy() admits everything but
+         * IDLE/DONE/TIMEOUT), and the ONLY way out of it is this function
+         * seeing TX idle. Until now the test failed in COMPLETE SILENCE, so a
+         * machine wedged in WAIT_DONE wrote nothing at all - which is why
+         * three separate 300 KB captures of the exact window contain no
+         * ft8_qso line whatsoever and could never have held the answer. His
+         * 2026-10-26 diag has 1031 ft8_test and 886 ft8_screen lines and not
+         * one from this file.
+         *
+         * ⚠ ON CHANGE ONLY. ft8_test.c polls this every slot with >1.2 s to
+         * spare, so logging unconditionally would be four lines a minute for
+         * as long as the wedge lasts and would push the window that matters
+         * out of the 128 KB persist cap - the same reason web_result_logged
+         * exists in ft8_screen_view.c. One line per target per stuck spell.
+         *
+         * ⛔ This is an INSTRUMENT, not a fix. It says which of the two
+         * candidates is real - a TX that never returns to idle, or a state
+         * that never reaches WAIT_DONE at all - and the fix waits for that
+         * answer rather than guessing between them. */
+        /* Reset when TX goes idle, so a wedge that recurs with the same
+         * partner reports again instead of being silent after the first. */
+        static char s_stuck_said[FT8_CALL_MAX_LEN];
+        ft8_tx_state_t txs = ft8_tx_get_status(NULL, 0, NULL);
+        if (txs != FT8_TX_IDLE) {
+            const char *who = target ? target : "?";
+            if (strcmp(s_stuck_said, who) != 0) {
+                snprintf(s_stuck_said, sizeof(s_stuck_said), "%s", who);
+                ESP_LOGW(TAG, "WAIT_DONE cannot close for %s: TX is not idle (status %d) - "
+                              "the exchange stays BUSY and new picks are refused", who, (int)txs);
+            }
+        } else {
+            s_stuck_said[0] = '\0';
+        }
         // Final (73/RR73) armed or fired; once it leaves the air we're done.
-        if (ft8_tx_get_status(NULL, 0, NULL) == FT8_TX_IDLE) {
+        if (txs == FT8_TX_IDLE) {
             /* ⭐ HOW LONG THE WRAP-UP ACTUALLY TAKES - Gyula HA3HZ, 2026-09-25:
              * "You have to wait for the save to be made to the LOG and this is
              * where the controller becomes slow, because the save process is
@@ -3434,6 +3475,19 @@ static void ft8_qso_advance_body(int64_t slot_sec)
         } else {
             s_state    = FT8_QSO_IDLE;
             s_have_cur = false;
+            /* ⛔ CLEAR THE PARTNER, exactly as the resume branch above does.
+             * It was left standing here, so after every pounce QSO the engine
+             * sat IDLE with s_target still naming the station just worked -
+             * and nothing on this path ever cleared it, so it survived until
+             * an abort. ft8_qso_is_busy() handed that stale call out to every
+             * caller, and the web reply handler read it as a live exchange:
+             * "Busy: working VE3ABU" on every click, forever (Randy N4OPI,
+             * 2026-10-28).
+             *
+             * It matches the shape of his report exactly. The robot was fine
+             * because the robot has a saved CQ, so it takes the resume branch,
+             * which clears it. */
+            s_target[0] = '\0';
         }
         unlock();
         if (resume) {
@@ -4427,15 +4481,49 @@ bool ft8_qso_set_tx_tone_hz(int hz, char *err, size_t err_len)
     return true;
 }
 
+/* A state number in a log line is unreadable six months later, and "busy when
+ * it isn't" (Randy N4OPI, 2026-10-25) is exactly the fault where the state is
+ * the whole answer: WAIT_DONE clears itself within a slot or two, a stuck
+ * WAIT_RPT never does, and both print as "Busy: working X" on the browser's
+ * banner. Public rather than a static helper in ft8_screen_view.c because
+ * every caller of ft8_qso_is_busy() that logs a refusal wants the same word. */
+const char *ft8_qso_state_name(ft8_qso_state_t st)
+{
+    switch (st) {
+    case FT8_QSO_IDLE:       return "IDLE";
+    case FT8_QSO_CQ:         return "CQ";
+    case FT8_QSO_WAIT_RPT:   return "WAIT_RPT";
+    case FT8_QSO_WAIT_ROGER: return "WAIT_ROGER";
+    case FT8_QSO_WAIT_RR73:  return "WAIT_RR73";
+    case FT8_QSO_WAIT_DONE:  return "WAIT_DONE";
+    case FT8_QSO_DONE:       return "DONE";
+    case FT8_QSO_TIMEOUT:    return "TIMEOUT";
+    }
+    return "?";
+}
+
 bool ft8_qso_is_busy(char *target_buf, size_t len)
 {
     lock();
     ft8_qso_state_t st = s_state;
+    bool busy = st != FT8_QSO_IDLE && st != FT8_QSO_DONE && st != FT8_QSO_TIMEOUT;
     // snprintf, not strncpy: it always terminates, and the strncpy form made GCC
     // warn about a truncated copy that the following assignment already handled.
-    if (target_buf && len) snprintf(target_buf, len, "%s", s_target);
+    /* ⛔ THE TARGET IS WRITTEN ONLY WHEN WE ARE ACTUALLY BUSY. s_target is NOT
+     * cleared when a QSO reaches DONE or TIMEOUT - the final watch still wants
+     * it - so this used to hand back the last partner's call alongside a
+     * `false` return. A caller that kept the buffer across the call and then
+     * tested it ("busy_target[0] || ...") read that as a live exchange.
+     *
+     * Randy N4OPI, 2026-10-28, and it is in his own capture twice: a reply
+     * request at [qso=DONE] answered "Busy: working VE3ABU", and one at
+     * [qso=TIMEOUT] answered "Busy: working W4SWA". Both stations were
+     * finished with. It cleared itself ~20 s later, when the post-QSO hold
+     * dropped the state to IDLE and emptied s_target - which is why it reads
+     * as "stuck, and killing the browser does not help". */
+    if (target_buf && len) snprintf(target_buf, len, "%s", busy ? s_target : "");
     unlock();
-    return st != FT8_QSO_IDLE && st != FT8_QSO_DONE && st != FT8_QSO_TIMEOUT;
+    return busy;
 }
 
 void ft8_qso_get_cur_extra(char *buf, size_t len)

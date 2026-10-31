@@ -1,7 +1,7 @@
-From 112933d7bce04a03853514d50e3e7ac09e5b026c Mon Sep 17 00:00:00 2001
+From ecf88be653b5c48783ff91d86ebf942bd0d474ed Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 23:43:24 +0000
-Subject: [PATCH 12/30] patches: apply_fatfs_dma_aligned_alloc.ps1 matches on
+Subject: [PATCH 12/41] patches: apply_fatfs_dma_aligned_alloc.ps1 matches on
  macOS/Linux too
 
 Upstream v1.16.12's new FatFs patch script normalises ffsystem.c to LF

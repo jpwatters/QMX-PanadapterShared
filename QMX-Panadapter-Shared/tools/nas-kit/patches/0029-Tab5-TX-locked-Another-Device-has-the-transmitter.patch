@@ -1,7 +1,7 @@
-From 7302e2e3cc441cf38cb3d5aa4c7bc21cb4309f66 Mon Sep 17 00:00:00 2001
+From e5543fe9de1caf63193fa850c80a9063e07b9c31 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
-Subject: [PATCH 29/30] Tab5: "TX locked: Another Device has the transmitter"
+Subject: [PATCH 29/41] Tab5: "TX locked: Another Device has the transmitter"
 
 The relay now tells the Tab5 when another device has the transmitter, so the
 Tab5 can say so instead of "transmitting" bursts the relay drops. A new
@@ -9660,7 +9660,7 @@ z{XhQSfB#ndGJ)Uq9|hg>UccjC`tkL@(fMEO-@zIEs8oJDU%TM-&w+jX0nrdAs2>Q@
 IR9ip(2XbZAtN;K2
 
 diff --git a/README.md b/README.md
-index b9d814af..fc021b2a 100644
+index 851d61d1..9a4ebb21 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -9845,10 +9845,10 @@ index 1ea06f03..90cdd46f 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 3e47f244..a3ad8dac 100644
+index 53ef737a..08c27b18 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -474,6 +474,11 @@ static void add_ft8_tx_status(cJSON *root)
+@@ -506,6 +506,11 @@ static void add_ft8_tx_status(cJSON *root)
          st = "swr_fault";
          snprintf(b, sizeof(b), "SWR %.1f:1 - TX STOPPED - check antenna - tap to clear",
                   (double)trip_swr);
@@ -9860,7 +9860,7 @@ index 3e47f244..a3ad8dac 100644
      } else if (tx_st == FT8_TX_ACTIVE) {
          st = "active";
          // Shorter on purpose (operator, 2026-09-05) - one less word to fit
-@@ -627,6 +632,8 @@ static bool web_tune_start(void)
+@@ -659,6 +664,8 @@ static bool web_tune_start(void)
      // Never while the operator has released the radio: Tune keys a carrier, and
      // the mode write it needs would go into a menu they are standing in front of.
      if (cat_user_pause_active()) return false;
@@ -9870,10 +9870,10 @@ index 3e47f244..a3ad8dac 100644
       * the Tab5's: nobody is standing in front of the radio. Tune keys a
       * carrier on the DIAL in MD8 - no audio offset. */
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index fe829460..fbf9c976 100644
+index 48f750ff..96f14eb2 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -846,6 +846,9 @@
+@@ -859,6 +859,9 @@
       same "TAP TO CLEAR" the Tab5's own prompt uses (Randy N4OPI). */
    #ft8-tx.st-swr_fault { color: #ff2020; border-color: #ff2020; cursor: pointer;
                           background-image: linear-gradient(rgba(255,32,32,.14), rgba(255,32,32,.14)); }
@@ -9884,7 +9884,7 @@ index fe829460..fbf9c976 100644
    /* ---- Bottom status row ---- */
    #bot {
 diff --git a/main/ui/ft8_screen_view.c b/main/ui/ft8_screen_view.c
-index d7f4c0f3..d39e4e94 100644
+index be1ceea0..f7c9029b 100644
 --- a/main/ui/ft8_screen_view.c
 +++ b/main/ui/ft8_screen_view.c
 @@ -40,6 +40,7 @@
@@ -9895,7 +9895,7 @@ index d7f4c0f3..d39e4e94 100644
  #include "ft8_test.h"   // ft8_op_mode_set() - FT8/FT4 sub-mode flag
  #include "ft8_greylist.h"
  #include "js8_page.h"
-@@ -2380,6 +2381,12 @@ static void t_clock_cb(lv_timer_t *t)
+@@ -2472,6 +2473,12 @@ static void t_clock_cb(lv_timer_t *t)
                       (double)trip_swr);
              lv_label_set_text(s_lbl_tx, b);
              lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_RED), 0);

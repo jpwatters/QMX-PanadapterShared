@@ -178,6 +178,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
 static uint64_t s_wspr_pa_check_us = 0; // last non-blocking WSPR PA-guard check
 
 static uint32_t s_last_freq_hz = 0;
+/* A frequency write waiting for the radio to confirm it (see the FA reply
+ * handler): the target, where the radio was when it was sent, and when. */
+static volatile uint32_t s_fa_expect_hz = 0;
+static volatile uint32_t s_fa_expect_from_hz = 0;
+static volatile int64_t  s_fa_expect_us = 0;
 static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
 static int  s_cw_offset_hz = 700;   // CW LO offset read from QMX at connect, default 700
 // Which VFO the radio RECEIVES on, from "FR;": 0 = VFO A, 1 = VFO B, 2 = Split.
@@ -676,7 +681,7 @@ esp_err_t cat_send_raw_cmd(const char *fmt, ...)
  */
 esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
 {
-    if (err && err_len) err[0] = ' ';
+    if (err && err_len) err[0] = '\0';
     if (!cmd || !cmd[0]) return ESP_ERR_INVALID_ARG;
     if (!CAT_LINK_UP()) return ESP_ERR_INVALID_STATE;
 
@@ -1076,6 +1081,36 @@ static void process_cat_message(const char *msg, size_t len)
                 return;
             }
             freq_hz = freq_hz * 10 + (d - '0');
+        }
+        /* ⛔ DID THE RADIO ACTUALLY GO THERE? A band button and the web page
+         * move the display to the new frequency at once (optimistically), and
+         * only an FA reply that DIFFERS from the last one ever moves it again.
+         * When the QMX refuses a frequency - seen 2026-10-25 with every 60 m
+         * frequency on a QMX+ running 1_03_002: FA00005360810; was sent, the
+         * radio stayed on 7.074 MHz and said nothing - the reply never
+         * changes, so the Tab5 went on drawing 60 m while the radio, the band
+         * label and the web page's band said 40 m. That read as "selecting
+         * 60 m sets 40 m or 60 m". So: if 2.5 s after a write the radio still
+         * reports the frequency it was on before, it refused. Put the display
+         * back on the radio's real frequency and say so, once. */
+        if (s_fa_expect_hz) {
+            int64_t age = esp_timer_get_time() - s_fa_expect_us;
+            if (freq_hz != s_fa_expect_from_hz || freq_hz == s_fa_expect_hz) {
+                s_fa_expect_hz = 0;                     /* it moved: accepted */
+            } else if (age > 2500000) {
+                uint32_t want = s_fa_expect_hz;
+                s_fa_expect_hz = 0;
+                ESP_LOGW(TAG, "the QMX did not tune to %lu Hz - it is still on %lu Hz "
+                              "(is that band enabled in the radio's Band config.?)",
+                         (unsigned long)want, (unsigned long)freq_hz);
+                char t[160];
+                snprintf(t, sizeof(t), "The QMX did not tune to %lu.%06lu MHz - it is still on "
+                         "%lu.%06lu MHz. Check that band in the radio's Band config.",
+                         (unsigned long)(want / 1000000), (unsigned long)(want % 1000000),
+                         (unsigned long)(freq_hz / 1000000), (unsigned long)(freq_hz % 1000000));
+                ui_toast_ms(t, 8000);
+                ui_update_frequency(freq_hz);           /* the display follows the radio again */
+            }
         }
         if (freq_hz != s_last_freq_hz) {
             s_last_freq_hz = freq_hz;
@@ -3235,11 +3270,60 @@ static void link_task(void *arg)
 
 
 
+/* The frequency the radio will actually hold for any value you ask for. The
+ * QMX's encoder steps 10 Hz, so every dial write is rounded to that grid - see
+ * the long note in cat_set_frequency(). Call this before comparing a readback
+ * against a target you computed, and before withdrawing a deferred write. */
+uint32_t cat_quantise_dial_hz(uint32_t freq_hz)
+{
+    return ((freq_hz + 5) / 10) * 10;
+}
+
 esp_err_t cat_set_frequency(uint32_t freq_hz)
 {
     if (!CAT_LINK_UP()) {
         return ESP_ERR_INVALID_STATE;  // QMX not connected
     }
+
+    /* ⛔⛔ EVERY DIAL WRITE IS QUANTISED TO 10 Hz, AND IT IS DONE HERE BECAUSE
+     * THERE ARE TWELVE CALLERS IN ui.c ALONE.
+     *
+     * The QMX accepts an arbitrary Hz over CAT but its own encoder steps 10 Hz,
+     * so a write of 7020003 leaves a units digit the operator CANNOT CLEAR from
+     * the radio - turning the knob moves in tens and carries the 3 along for
+     * ever. Samuel W7STF, 2026-10-26: "You seem to have done something to force
+     * the VFO to have some non-zero Hz component that can't be tuned out,
+     * unless one goes back to direct frequency entry ... Please quantize all
+     * tuning to the 10Hz capability of the QMX/+."
+     *
+     * The grid at the UI end was fixed in the same change (tune snap Off meant
+     * a 1 Hz grid, not 10), but a per-site fix cannot hold: twelve sites today,
+     * and the two that deliberately wrote un-rounded values - CW-Tune's
+     * interpolated peak and the mouse wheel - each had their own comment saying
+     * why rounding was wrong. It is not wrong, it is free: the radio rounds
+     * anyway, so the only thing an un-rounded write changes is that the dial
+     * keeps a digit nobody asked for. At most 5 Hz of the estimate is lost,
+     * which no ear resolves on a CW note.
+     *
+     * ⚠ RIT is NOT affected: it is its own command with its own resolution, and
+     * tap-to-RIT depends on that - see the note at the tap handler in ui.c.
+     *
+     * ⛔⛔ THE ROUNDING IS A SHARED FUNCTION, NOT AN EXPRESSION HERE, BECAUSE A
+     * CALLER THAT CANNOT NAME THE VALUE THE RADIO WILL HOLD IS BROKEN BY IT.
+     * It was one line here, and that silently broke every caller that writes a
+     * computed target and then waits for the readback to match: the write is
+     * rounded, the comparison is not, and the two can never agree.
+     *
+     * Steve KX7R on v1.22.0, 2026-10-29: "the frequency changes automatically
+     * by +0.03 Hz every ~3 seconds ... I reflashed V1.20.5 and there is no
+     * drift." Reproduced on the bench the same day with spur suppression on:
+     * spur_map's 25 Hz dither went out as +30, tune_and_confirm() waited the
+     * full 3 s for a frequency the radio could never report, and the restore
+     * then refused the dial as "someone else's tune" - so the radio WALKED UP
+     * THE BAND 30 Hz every ~7 s and never came back. Three sites in that one
+     * file compared against the un-rounded value; cat_cancel_pending_freq_if()
+     * was a fourth, because s_pending_freq_hz is stored rounded below. */
+    freq_hz = cat_quantise_dial_hz(freq_hz);
 
     /* ⛔ SOMETHING ELSE MAY OWN THE PIPE, AND THIS USED TO WRITE ANYWAY.
      *
@@ -3302,6 +3386,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
         return err;
     }
     ESP_LOGI(TAG, "Sent: %s (target %lu Hz)", cmd, (unsigned long)freq_hz);
+    // Expect the radio's next FA replies to show it moved (see the FA handler).
+    if (freq_hz != s_last_freq_hz && s_last_freq_hz != 0) {
+        s_fa_expect_from_hz = s_last_freq_hz;
+        s_fa_expect_us      = (int64_t)now;
+        s_fa_expect_hz      = freq_hz;
+    }
 
     // RETUNING CLEARS RIT. It is per-caller by nature (Roy KI0ER engages it for
     // one station and drops it for the next), and RIT left set across a retune is

@@ -27,6 +27,8 @@ idf_component_register(
         "ui/ft8_cq_modal.c"
         "ui/ft8_filter_modal.c"
         "ui/js8_text_modal.c"
+        "ui/manual_log_modal.c"
+        "ui/sched_modal.c"
         "ui/ft8_time_modal.c"
         "ui/date_confirm_modal.c"
         "ui/ft8_tone_modal.c"
@@ -89,6 +91,7 @@ idf_component_register(
         "audio/rx_audio.c"
         "audio/line_in.c"
         "dsp/dsp.c"
+    "dsp/sb_tune.c"
         "dsp/iq_balance.c"
         "dsp/spur_map.c"
         "render/render.c"
@@ -108,6 +111,7 @@ idf_component_register(
         "usb_hid_mouse.c"
         "net/rigctld_server.c"
         "net/radio_relay.c"
+        "net/eth_w5500.c"
         "net/reader_net.c"
         "net/manual_embed.c"
         "net/update_check.c"
@@ -116,6 +120,7 @@ idf_component_register(
         "ft8_test.c"
         "js8_chat.c"
         "js8_submode.c"
+        "js8_alt.c"
         "js8_ftx.c"
         "js8_target.c"
         "ft8_tx.c"
@@ -202,6 +207,7 @@ idf_component_register(
         nvs_flash
         esp_wifi
         esp_netif
+        esp_eth       # net/eth_w5500.c - the W5500 PoE base
         esp_event
         lwip
         esp_http_server

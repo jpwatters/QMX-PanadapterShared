@@ -1,0 +1,25 @@
+From 79469c37af1fcfad8c93aa2419262c1de31c262e Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 11:00:00 -0500
+Subject: [PATCH 33/41] README: title "QMX/QMX+ Panadapter Shared over the
+ network"
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/README.md b/README.md
+index 636adf72..0cca4a4f 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# QMX+ Panadapter
++# QMX/QMX+ Panadapter Shared over the network
+ 
+ *By Steffen Lav (OZ1LAV).* Shared over the Network Updated by JP Watters
+ 
+-- 
+2.43.0
+

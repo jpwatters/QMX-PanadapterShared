@@ -371,7 +371,14 @@ typedef struct {
     char  wifi_gw[16];     // e.g. "192.168.1.1"
     char  wifi_dns[16];    // e.g. "192.168.1.1"; empty falls back to the gateway
     uint32_t last_vfo_hz; // last QMX VFO frequency in Hz (0 = unknown)
-    uint32_t ft8_freq_hz; // last FT8/FT4 preset frequency in Hz (persisted so FT8 mode doesn't inherit the panadapter's VFO; default 14074000)
+    uint32_t ft8_freq_hz; // last FT8 preset frequency in Hz (persisted so FT8 mode doesn't inherit the panadapter's VFO; default 14074000)
+    /* T89: FT4 and JS8 keep their OWN last frequency. One shared slot meant
+     * leaving JS8 on 14.078 and coming back to FT8 landed on 14.078 - the
+     * three sub-modes have different calling frequencies on every band, so one
+     * slot cannot describe where you were. Read and written through
+     * settings_get_ftx_freq_hz()/_set_, never field by field. */
+    uint32_t ft4_freq_hz; // last FT4 preset frequency in Hz, default 14080000
+    uint32_t js8_freq_hz; // last JS8 preset frequency in Hz, default 14078000
     uint16_t cw_pitch_hz;  // CW sidetone offset in Hz (default 700)
     uint8_t  colormap_idx; // waterfall colour map: 0=Thermal 1=Viridis 2=Turbo 3=Grayscale
     char     my_callsign[16];  // operator callsign for FT8 (15 chars + NUL)
@@ -382,6 +389,11 @@ typedef struct {
      * alone. Randy N4OPI asked for exactly this field. */
     char     my_state[4];
     int16_t  cw_cal_hz;        // CW LO trim (Hz), default -60, range +/-100
+    /* T90: the far station's own low-cut, in Hz, subtracted from the SSB
+     * edge estimate to reach their suppressed carrier. A trim and not a
+     * constant because the filter belongs to THEIR rig - 300 is common, some
+     * run 200, some 100 - and one on-air station is not a calibration. */
+    uint16_t sb_lowcut_hz;     // SSB auto-tune low-cut trim (Hz), default 300, range 0..600
     float    zoom_factor;      // spectrum/waterfall zoom, 1.0=full, max 24.0
     uint8_t  brightness_pct;   // LCD backlight brightness, 0..100, default 100
     /* Last UI mode: 0=Panadapter, 1=FT8, 3=WSPR (default 0). All three are
@@ -456,6 +468,18 @@ typedef struct {
      * drawer comment that already made that call once.
      * NVS migrates the old key automatically (settings.c, KEY_WF_SPEED). */
     uint8_t  wf_rows_per_s;
+    /* Spectrum peak hold, in SECONDS of window; 0 = off (default).
+     * A sliding window, not a latch: what is drawn is the highest this column
+     * reached in the last N seconds, so a peak falls on its own once the
+     * signal that made it is older than that. The operator asked for it that
+     * way - "maybe it should not be an absolute peak-hold, but kind of skip
+     * peaks older than xx seconds" (2026-10-23). Sam W7STF's A4. */
+    uint8_t  spec_peak_s;
+    /* CW audio peak filter width in Hz at -3 dB; 0 = off (default).
+     * A narrow peak ON the CW pitch in the Tab5's own audio, after the mode
+     * filter and before the AGC. NOT a second IF filter - see rx_audio.h.
+     * Sam W7STF's A4, third of three. */
+    uint16_t cw_peak_hz;
     bool     display_flip;    // landscape flipped 180 deg for upside-down mounting (default false)
     // QMX AF gain in DECIBELS - the same number the radio shows on its own LCD
     // (see cat.h's CAT_AF_GAIN_MAX comment). Stored only as a fallback slider
@@ -485,6 +509,12 @@ typedef struct {
      * spacing and sync arrays all change - so this is not a quality knob and
      * two stations must agree on it before they can hear each other at all. */
     uint8_t  js8_submode;
+    /* T132: an ALTERNATE JS8 submode decoded as well as the primary, on a
+     * duty cycle, out of the audio the primary slot already captured.
+     * Same NSUBMODE numbering, plus 255 = off, which is the default.
+     * ⛔ It is RECEIVE ONLY - see js8_alt.h. Appended, so an old NVS blob
+     * reads back 0; settings_set_js8_alt_submode() clamps 0 to off. */
+    uint8_t  js8_alt_submode;
     /* RX audio, persisted so a level set by ear is not lost at the next boot -
      * these were live RAM-only values tuned over /api/cmd during development,
      * which is not something a user can reach. Scaled integers, same idiom as
@@ -547,6 +577,15 @@ typedef struct {
        gives about 66 px of waterfall back. It is the WRAP modulus inside
        cw_decode.c, not a draw count - see cw_decode_set_rows(). */
     uint8_t  cw_decode_rows;
+    /* The ADIF log window's Today/All choice, remembered (T113, Bruce N9JCV:
+       "it should be sticky until changed"). It reopened on Today every time,
+       which is right for an activation and wrong for everyone looking at the
+       whole log. false = Today, the default, because the 10-QSO activation
+       count is what the window was built for.
+       ⛔ Only a TAP on the toggle stores this. The window's own fallback -
+       Today came out empty, so show All - must not rewrite the operator's
+       choice; see adif_view_modal.c. */
+    bool     log_view_all;
     bool     distance_in_miles; // FT8 decode list: show distance in miles instead of km (default false)
     uint8_t  freq_sep_style;    // #302: 0 = 14.074.000 (default), 1 = 14,074,000 (Don N2VGU)
     bool     rit_pill_show;     // show the RIT pill in the panadapter top bar (default TRUE)
@@ -953,6 +992,11 @@ void settings_set_wifi_pass(const char *pass);
 void settings_set_last_vfo(uint32_t hz);
 // Save last FT8/FT4 preset frequency (debounced flush).
 void settings_set_ft8_freq_hz(uint32_t hz);
+/* T89: the per-sub-mode preset frequency. `op_mode` is an ft8_op_mode_t
+ * (0=FT8 1=FT4 2=JS8) passed as uint8_t so settings.h stays free of ft8_test.h.
+ * An unknown value falls back to the FT8 slot rather than inventing one. */
+uint32_t settings_get_ftx_freq_hz(uint8_t op_mode);
+void     settings_set_ftx_freq_hz(uint8_t op_mode, uint32_t hz);
 // Save CW sidetone pitch in Hz (debounced flush).
 void settings_set_cw_pitch_hz(uint16_t hz);
 // Save waterfall colour-map index (debounced flush).
@@ -1009,6 +1053,10 @@ void settings_set_wf_contrast_db(float db);
 void settings_set_wf_floor_blend(uint8_t pct);
 void settings_set_wf_window(uint8_t idx);
 void settings_set_wf_rows_per_s(uint8_t rows);
+/* Spectrum peak-hold window in seconds, 0..60; 0 = off. */
+void settings_set_spec_peak_s(uint8_t secs);
+/* CW audio peak filter width in Hz, 0 = off, else 40..1000. */
+void settings_set_cw_peak_hz(uint16_t hz);
 
 // Display 180-degree flip for upside-down mounting (debounced flush).
 void settings_set_display_flip(bool v);
@@ -1029,6 +1077,14 @@ uint8_t settings_get_wspr_rx_cycles(void);
  * the httpd task on /api/settings, and a qmx_settings_t on that stack is the
  * fault this header warns about four times over. */
 uint8_t settings_get_wf_rows_per_s(void);
+/* Narrow read, same reason as the rows/s one above it. */
+uint8_t settings_get_spec_peak_s(void);
+/* The spectrum EMA coefficient, 0..1. Narrow for the same reason again:
+ * ui_sync_smoothing_controls() runs on httpd. ⚠ This is the COEFFICIENT, not
+ * the smoothing percentage the drawer and the web form show - those invert it
+ * (100 - alpha*100) on the surface only. */
+float settings_get_ema_alpha(void);
+uint16_t settings_get_cw_peak_hz(void);
 uint8_t settings_get_wspr_tx_cycles(void);
 uint16_t settings_get_wspr_pa_saved_x10(void); // outstanding PA-guard restore, 0 = none
 /* Static-IP fields ONLY, 64 bytes of caller-supplied buffers. Any argument may
@@ -1072,6 +1128,8 @@ uint8_t settings_get_swr_limit_x10(void);
  * something nobody can decode. */
 void    settings_set_js8_submode(uint8_t v);
 uint8_t settings_get_js8_submode(void);
+void    settings_set_js8_alt_submode(uint8_t v);
+uint8_t settings_get_js8_alt_submode(void);
 
 /* RX audio level and panoramic-split shape. Stored scaled; the Resource
  * Management sliders are the only writers. Ranges are clamped to what
@@ -1106,6 +1164,9 @@ bool    settings_get_hp_mute_en(void);
 // mistake boot-looped the device via sys_evt in #307, and it has now been made
 // four times. Reads the staged copy, so it reflects a change immediately.
 bool settings_get_cw_decode_en(void);
+/* The ADIF log window's remembered Today/All choice. false = Today. */
+bool settings_get_log_view_all(void);
+void settings_set_log_view_all(bool v);
 void settings_set_cw_decode_en(bool v);
 /* Rows of decoded CW to draw, 2 or 4. The setter also applies it to
    cw_decode.c, which WIPES the line - see cw_decode_set_rows(). */
@@ -1219,9 +1280,16 @@ void settings_set_bandplan_region(uint8_t v);
 // ARRL Field Day exchange mode (debounced flush). When enabled, FT8 QSOs
 // exchange class+section (fd_class/fd_section) instead of grid/signal report.
 void settings_set_field_day_en(bool v);
-// Activation session (POTA/SOTA). type: 0 none, 1 POTA, 2 SOTA. Setting a type
-// with an empty reference is treated as "none" - an activation with no
-// reference credits nothing and would only put a meaningless MY_SIG in the log.
+/* Narrow read of the Field Day flag. Exists so a 1 Hz UI poll does not have to
+   put a whole qmx_settings_t on taskLVGL's stack - see ft8_screen_view.c's CQ
+   button label refresh. */
+bool settings_get_field_day_en(void);
+// Activation session. type: 0 none, then one of the programmes in k_act[]
+// (settings.c) - 1 POTA, 2 SOTA, 3 WWFF, 4 IOTA, 5 GMA, 6 WCA, 7 WWBOTA.
+// ⛔ Those ids are persisted in NVS: append to the table, never renumber.
+// Setting a type with an empty reference is treated as "none" - an activation
+// with no reference credits nothing and would only put a meaningless MY_SIG
+// in the log.
 void settings_set_activation(uint8_t type, const char *ref);
 uint8_t settings_get_activation_type(void);
 // Copies the reference into out (always NUL-terminated). Returns false when no
@@ -1229,6 +1297,23 @@ uint8_t settings_get_activation_type(void);
 bool settings_get_activation_ref(char *out, size_t out_sz);
 // "POTA" / "SOTA" / NULL. The exact strings ADIF's MY_SIG expects.
 const char *settings_activation_sig_name(void);
+// How many programmes the table holds, including index 0 ("not activating").
+uint8_t settings_activation_type_count(void);
+// "POTA"/"SOTA"/"WWFF"/"IOTA"/"GMA"/"WCA"/"WWBOTA" for a type id, else NULL.
+const char *settings_activation_sig_name_for(uint8_t type);
+// An example reference for that programme, for the entry field's placeholder.
+const char *settings_activation_ref_hint(uint8_t type);
+// One line saying what the programme is, for the Activation window. The
+// operator picking WCA for the first time should not have to leave the
+// radio to find out what it covers.
+const char *settings_activation_desc(uint8_t type);
+// The dedicated ADIF field for the RUNNING programme ("MY_POTA_REF",
+// "MY_SOTA_REF", "MY_WWFF_REF", "MY_IOTA"), or NULL where the programme has
+// none and travels as MY_SIG/MY_SIG_INFO alone.
+const char *settings_activation_adif_field(void);
+// Contacts needed for a valid activation of the RUNNING programme: POTA 10,
+// SOTA 4, WWFF 44. 0 where the programme publishes no single number.
+uint8_t settings_activation_target(void);
 
 void settings_set_fd_class(const char *cls);
 void settings_set_fd_section(const char *section);
@@ -1438,6 +1523,8 @@ void settings_get_spots_lane(uint8_t *region, bool *mode_filter,
 // the +12 kHz IF injection; this trim corrects what users see on the spectrum/
 // waterfall. Clamped to +/-200 Hz, persisted to NVS (debounced flush).
 void settings_set_cw_cal_hz(int16_t hz);
+uint16_t settings_get_sb_lowcut_hz(void);
+void     settings_set_sb_lowcut_hz(uint16_t hz);
 void settings_set_zoom_factor(float v);
 
 // LCD backlight brightness, 0..100 (debounced flush).

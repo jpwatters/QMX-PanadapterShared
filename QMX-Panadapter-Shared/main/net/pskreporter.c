@@ -34,6 +34,7 @@
 #include "freertos/semphr.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "pskrep";
 
@@ -299,7 +300,7 @@ static void psk_task(void *arg)
         settings_load_all(&s);
         if (!s.pskreporter_en || s.sim_mode_en) continue;
         if (!s.my_callsign[0] || !s.my_grid[0]) continue;   // receiver record needs both
-        if (!wifi_is_connected()) continue;
+        if (!net_is_up()) continue;
 
         // Snapshot + clear the batch.
         spot_t local[BATCH_MAX];

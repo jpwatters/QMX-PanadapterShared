@@ -1,7 +1,7 @@
-From fdb987e76b9a82e4f38090c1eaab432ec3730b1a Mon Sep 17 00:00:00 2001
+From 3e7db7b73e883be2c36f62137b2398facdf45622 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 23:36:08 -0500
-Subject: [PATCH 21/37] Port to upstream v1.19.0: version fallback and examples
+Subject: [PATCH 21/41] Port to upstream v1.19.0: version fallback and examples
 
 The NAS series applied to v1.19.0 with three hand-resolved conflicts:
 - settings.c: upstream took dirty bits 140 (JS8_SUBMODE) and 141 (RXA_AMBW),
@@ -44,7 +44,7 @@ index 2da15b80..9298857a 100644
  set(PROJECT_VER "${QMX_BASE_TAG}-NAS")
  
 diff --git a/README.md b/README.md
-index 056190b4..6ac1a19e 100644
+index f9c8a457..229004a3 100644
 --- a/README.md
 +++ b/README.md
 @@ -34,7 +34,7 @@ Mac tools

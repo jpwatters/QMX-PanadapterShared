@@ -44,7 +44,15 @@ its LCD when you click its volume knob. Read back from the radio when you open t
 drawer, so it agrees with the rig even if you last changed it there.
 
 **QMX RF gain** — the per-band RF gain from the radio's Band Configuration, 0–99 dB
-(the QMX default is 54). Because it is **per band**, the Tab5 reads it from the radio
+(the QMX default is 54). ⚠ **Measured 2026-10-27: changing it does not move the
+spectrum or the audio** — 54 dB out shifted the noise floor 0.06 dB. The radio
+accepts the value and reads it back, but it does not reach the I/Q stream the Tab5
+receives, and everything the Tab5 shows or plays comes from that stream. Stan KC7XE
+(QRP Labs) confirmed the mechanism on 2026-10-28: I/Q mode carries the raw 48 kHz
+PCM1804 samples, taken before the radio's own DSP. **The control still works on the
+QMX's own headphones and speaker**, which is why it is kept and labelled that way
+rather than removed. See
+[Audio Features](audio.md#4-know-which-volume-control-does-what). Because it is **per band**, the Tab5 reads it from the radio
 rather than remembering a number that would belong to whichever band you were on last;
 it shows "reading…" until the radio answers, and **"radio not connected"** if the radio
 is not there at all. Until v1.8.3 it could stick on "reading…" for a whole session:
@@ -374,6 +382,95 @@ teal. You can always see what is being touched.
 
 ## Panadapter & Zoom
 
+**Server mode** *(Device group, off by default; also in the browser menu)* — the
+Tab5 stops drawing its screen and stops its own audio, and keeps serving the web
+page. For running the radio from another room.
+
+Measured with a browser on the page the whole time: **core 0 idle 10–13 % → 67 %,
+core 1 idle 42–56 % → 72 %**. The drawing is what costs — serving the page is
+about 1 % between the WebSocket push and the HTTP server.
+
+The browser is unaffected: its spectrum and waterfall come from the DSP directly,
+not from the Tab5's canvases. If you are listening to the audio in the browser,
+that keeps working too — a web listener overrides the suspend.
+
+**Touch the Tab5 to come back**, or switch it off from the browser. It is not
+remembered across a reboot, deliberately: a unit that boots with a dark screen
+and no explanation looks broken.
+
+**CW-Tune** *(a long press on the bandwidth in the top bar - not a drawer setting)*
+- puts the dial on the nearest CW signal, searching **±400 Hz** either side of where
+you are.
+
+A keyed carrier is absent as often as it is present, so a single spectrum frame would
+decide the answer by luck. It uses a **per-bin maximum over the last 4 seconds**
+instead - the same history the waterfall is drawn from - keeps listening for up to
+8 seconds on a quiet band, and accepts a peak at **+3 dB over the median** of the
+search window.
+
+⛔ **It moves the dial once, when you ask it to, and never by itself.** An aid that
+retuned on its own could not be told apart from a fault.
+
+The gesture is a long press because the top-bar zones open their own selectors on a
+short click, so the two cannot collide. There is no CW-Tune on the spectrum itself: a
+double-tap there already resets zoom and pan, and a long press on that surface is
+tripped by a slow pan.
+
+**CW peak filter** *(drawer: Radio > CW, under CW centre; off by default)* — a
+narrow audio peak **on** the CW pitch: **250, 150 or 100 Hz** wide at -3 dB. It
+sits in the Tab5's own audio, after the mode filter and **before the AGC**, so
+the AGC rides the wanted note instead of the hiss either side of it — which is
+most of what makes a peak filter feel like it works.
+
+⚠ **It is not a second IF filter.** The radio's own CW filter still decides what
+reaches the Tab5, so a strong signal 300 Hz away still works the QMX's AGC even
+when you cannot hear it. What this does is pull the wanted note forward out of
+the band noise.
+
+Measured against the design at a 700 Hz pitch: the 100 Hz setting is 91 Hz wide
+and 32 dB down 500 Hz away; 150 Hz is 137 Hz and -25 dB; 250 Hz is 227 Hz and
+-18 dB. Peak gain is 0 dB, so switching it on does not also change the volume.
+
+The same setting is in the browser as `rxaudio.cw_peak_hz`, where any width from
+40 to 1000 Hz is accepted.
+
+**Smoothing** *(Smoothing & peak hold; 60% by default)* — a running average on
+the spectrum trace. **0 is off and higher is smoother.** The Tab5 slider and the
+browser's `display.smooth_pct` are the same setting, and the browser draws its
+own trace with it too.
+
+The label also prints the time constant, because the scale is linear in the
+underlying coefficient rather than in time: 50% is 0.14 s, 80% is 0.45 s, 90%
+is 0.95 s and 95% is 1.95 s. Most of the change you can see is in the top fifth
+of the travel.
+
+!!! note "It used to run the other way"
+    This was labelled **Alpha** and carried the coefficient itself until
+    2026-10-24, so moving it right made the trace *less* smooth. The stored value is
+    unchanged — `display.ema_pct` is still the coefficient × 100 and still
+    accepted, so an older config file still means what it meant.
+
+**Peak hold** *(Smoothing & peak hold; off by default)* — draws a second line over
+the spectrum showing the highest each point of the band reached in the last
+**1, 2, 3 or 5 seconds**. The browser has the same control and the two screens
+run the same arithmetic. It is dim green on the Tab5 and cyan in the browser:
+the line is context for the live trace and must not out-shout it, and the two
+screens have different backgrounds to sit against.
+
+It is a sliding window, not a latch. A latched maximum keeps the loudest thing
+that ever happened and never lets it go, so after a few minutes the line is a
+record of the past rather than a picture of the band. Here a peak falls on its
+own once it is older than the window, which is what makes an intermittent
+signal — an FT8 station that transmits every 15 seconds, a CW operator between
+overs — visible as a peak that is still there seconds after the trace itself
+has dropped back into the noise.
+
+A retune, a zoom or a pan clears the hold: every column then means a different
+frequency, and a peak carried across would be a peak on the wrong one.
+
+Cost: about 25 KB of PSRAM while it is on, and nothing at all while it is off —
+the buffers are not allocated until you switch it on.
+
 **Still spectrum** *(Radio & display, on by default)* — the spectrum and waterfall hold
 still and the VFO marker moves across them, so a signal stays where you last saw it while
 you tune towards it. Switch it off and the display re-centres on the dial at every step
@@ -580,7 +677,7 @@ only place RBN skimmers more precisely.
 
 **Field Day Mode** — ARRL Field Day mode (on/off, class, section).
 
-**Simulation Mode** — Practice QSOs with six phantom stations — no QMX needed at all, radio never keyed (red breathing border on screen). See [FT8 Transmit](ft8-tx.md#4-ft8-simulation-mode-practice-qsos).
+**Simulation Mode** — Practice QSOs with six phantom stations — no QMX needed at all, radio never keyed (red breathing border on screen). The same setting appears in the WSPR drawer as **Test station (simulation)** and in the web UI as **Simulation mode (practice)**; all three are one flag and move together. See [FT8 Transmit](ft8-tx.md#4-ft8-simulation-mode-practice-qsos).
 
 **Fast pounce (early decode)** — On by default. Decodes surface ~1.8 s *before* the slot boundary (WSJT-X style), so a fresh CQ can be answered in the very next slot and mid-QSO replies land on the beat. Trade-off: the capture window closes early, so a station transmitting late in the slot can occasionally be missed. ⚠️ *Not yet A/B-verified on a live band — if your decodes-per-slot drop with it on, turn it off and please report your numbers.*
 
@@ -802,20 +899,44 @@ it takes you to notice.
 To use it, copy `qso.prev.adi` off the card (**Files ▲ -> SD Files** in the
 browser, or a card reader) and restore it with **ADIF restore ↑**.
 
-## Activation (POTA / SOTA)
+## Activation (POTA / SOTA / WWFF and four more)
 
-When you are activating a park or a summit, every contact you make has to be
-logged as belonging to **that reference** — it is what POTA and SOTA read to
-credit the activation, for you and for the people who worked you.
+When you are activating a park, a summit, a nature reserve or a castle, every
+contact you make has to be logged as belonging to **that reference** — it is
+what the programme reads to credit the activation, for you and for the people
+who worked you.
 
-Open **Activation (POTA/SOTA)** in the settings drawer, pick the scheme, type the
-reference, and tap **Start activation**. From then on every logged QSO carries it
-automatically. There is nothing to remember per contact.
+Open **Activation** in the settings drawer, pick the programme, type the
+reference, and tap **Start activation**. From then on every logged QSO carries
+it automatically. There is nothing to remember per contact.
 
-The screen shows your **contact count against the threshold** — ten for POTA,
-four for SOTA — and turns green when you reach it. That number is read from the
-log itself, so it survives a reboot and can never disagree with what was actually
-written.
+**Seven programmes are supported**, each with its own reference style and its
+own qualifying count:
+
+| Programme | What it is | Example reference | Target |
+|---|---|---|---|
+| **POTA** | Parks on the Air — national, state and regional parks | `DL-0123` | 10 |
+| **SOTA** | Summits on the Air — mountain tops, scored by height | `OZ/SJ-001` | 4 |
+| **WWFF** | World Wide Flora & Fauna — nature reserves and protected land | `DLFF-0123` | 44 |
+| **IOTA** | Islands on the Air — islands and island groups, run by the RSGB | `EU-005` | — |
+| **GMA** | Global Mountain Activity — summits, huts and castles worldwide | `DL/BE-001` | — |
+| **WCA** | World Castles Award — castles and fortifications | `DL-00123` | — |
+| **WWBOTA** | World Wide Bunkers on the Air | `DL-00123` | — |
+
+A dash means that programme has no single qualifying number, so the counter
+just counts.
+
+**The right ADIF field goes in, not just a generic one.** Every record carries
+`MY_SIG` and `MY_SIG_INFO`, and POTA, SOTA, WWFF and IOTA additionally get the
+dedicated field their uploader actually reads — `MY_POTA_REF`, `MY_SOTA_REF`,
+`MY_WWFF_REF`, `MY_IOTA`. Without it an upload can be accepted and still not
+count.
+
+The screen shows your **contact count against that programme's target** and
+turns green when you reach it. That number is read from the log itself, so it
+survives a reboot and can never disagree with what was actually written. The
+same count appears on the Activation button, as `OZ-0001  3/10`, so you can see
+it without opening anything.
 
 **Stopping matters as much as starting.** While a session is running the main
 button is a red **Stop activation**, and the drawer button itself shows the live
@@ -823,9 +944,30 @@ reference rather than a generic label. The failure that actually happens is
 driving home with it still switched on, quietly stamping every later contact with
 a park you have left.
 
+**Stopping also writes that activation's own ADIF file.** When you stop, the
+contacts made during the session are exported to the microSD card on their own,
+named for the reference and the date — `OZFF-0001-20261028.adi`. That is the
+file you submit, without having to cut it out of your whole log afterwards.
+Stopping from the web UI does exactly the same thing as stopping on the Tab5.
+
 The session persists across a restart on purpose — a battery change in the field
 should not lose it — but it is deliberately **not** included in a config backup,
 so restoring an old backup can never re-activate a park you are nowhere near.
+
+### Scheduled events — what is on
+
+The Activation window carries a **Scheduled events** button (keyboard shortcut
+**27**, and **Scheduled** in the web menu). It puts the contest calendar and
+announced POTA/SOTA activations on **one timeline**, soonest first, with what
+is on the air now above what is coming.
+
+Filter to **Contests** or **Activations** when you have already decided what
+kind of evening it is.
+
+It is fetched **on demand, at most every 15 minutes** — never a standing poll,
+because the radio's link and the spot feeds matter more. **Refresh** asks for
+it now. The source being down is not an error: the last list stays up and the
+age line tells you how old it is.
 
 **Chasing** works without any setup: if you work a station the panadapter has
 seen spotted at a park or summit, that reference is written into your log entry
@@ -905,6 +1047,40 @@ Reporter requests.
 
 ## ADIF & Logging
 
+### Log a contact by hand (CW and SSB)
+
+FT8, FT4 and JS8 log themselves — every field is exchanged, so there is nothing
+to type. **CW and phone are not like that**, and until now there was no way to
+get them into the log at all *(Gyula HA3HZ, Brian KB9WFS)*.
+
+Open the settings drawer and tap **Log a contact (CW/SSB)**, or use keyboard
+shortcut **26**. In the browser it is **Log a contact** in the menu.
+
+You type **the callsign and the two reports. Nothing else.** The frequency,
+mode, band, date, time, your own callsign and grid, and the running activation
+reference all come from the radio and the device.
+
+- The reports arrive **filled in**. The one you *send* comes from the mode —
+  `599` for CW, `59` for phone — because that is your judgement of a signal
+  this device cannot hear. From v1.23.0 the **S digit of the report you
+  received is measured**, off the S-meter's own 10-second peak hold, instead of
+  being a `9` every time *(Gyula HA3HZ)*. R and T stay at the mode default: no
+  measurement here answers readability, and every synthesised rig on the air is
+  T9. With no reading to hand it falls back to the mode default rather than
+  offering S0 — an absent measurement is not a weak signal.
+- Clearing a report logs the contact *without* it rather than with a wrong one.
+- The window **stays open** after Log, with the callsign cleared and the
+  reports kept. A run of contacts is not one dialog at a time.
+- **Tapping a spot** in the spots lane opens this window with that callsign
+  already filled in.
+- It is **refused when the radio is not connected**, because the record would
+  have no frequency — and a QSO with no frequency is not a QSO.
+
+The record lands in the same log as everything else, so the ADIF download, the
+activation count and the uploaders all see it immediately.
+
+### Viewing the log
+
 **ADIF Log** — View the QSO log on-device. The viewer shows a proper column table:
 
 | Column | Content |
@@ -939,9 +1115,9 @@ Tapping the field brings up the keyboard, and the window moves up and shortens
 so the matches stay visible while you type. Clear the field to see the whole log
 again; the search also clears itself each time you open the window.
 
-**Today/All filter** — the viewer opens on **Today** (falling back to All when nothing was logged today). The toggle button shows the view you *switch to* by pressing it; the title shows the current view with counts.
+**Today/All filter** — the toggle button shows the view you *switch to* by pressing it; the title shows the current view with counts. **Your choice is remembered**, including across a restart, so the viewer reopens on whichever of the two you last picked *(Bruce N9JCV)*. Out of the box that is **Today**, which is what the activation counter below is for. The fallback is unchanged and is not a choice: if Today comes out empty while there are records, the viewer switches to All for that visit without changing what it reopens on next time.
 
-**POTA activation counter** — in the Today view the title reads "Today: N (M total)" and turns **green** once today reaches 10 QSOs — a valid POTA activation.
+**Activation counter** — in the Today view the title reads "Today: N (M total)" and turns **green** once today reaches the running programme's target: 10 for POTA, 4 for SOTA, 44 for WWFF. With no activation running it counts without a target.
 
 **Delete a single record** — **long-press** a QSO row: the row highlights red and list scrolling locks. Drag up/down to move the highlight, then release — a Delete/Cancel bar appears at the bottom. **Delete** removes just that one record (useful for duplicates).
 

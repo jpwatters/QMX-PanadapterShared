@@ -34,7 +34,7 @@ lose the top and bottom bar controls entirely with no way to reach them.
 
 The web UI provides full remote control:
 
-- **Frequency** — tap the VFO to open the numeric keypad (drag it by its title bar to reposition; toggle between a 10-key and a phone-style digit layout), or click the spectrum to tune
+- **Frequency** — tap the VFO to open the numeric keypad (drag it by its title bar to reposition; toggle between a 10-key and a phone-style digit layout), or click the spectrum to tune (right-drag it to pan instead — see below)
 - **Mode** — buttons for USB, LSB, CW, DiGi
 - **Bandwidth** — selectors for SSB filter width or CW passband
 - **Band** — jump between configured bands
@@ -51,6 +51,14 @@ Everything mirrors the Tab5 display with sub-second latency.
 The waterfall is **live-streamed** from the Tab5 every ~100 ms. You see the same real-time signal activity as on the device itself.
 
 Click anywhere on the spectrum to tune to that frequency. The waterfall updates continuously — no refresh needed.
+
+**Right-drag to pan.** Hold the **right** mouse button on the spectrum or waterfall and drag sideways to move the window along the band. Left-drag still tunes — it puts the dial where you release — so the two gestures do not collide: **left moves the radio, right moves the view.**
+
+A pan never moves the dial. It moves the window inside what the radio is already receiving, so the frequency stays exactly where it was and the passband marker slides across the screen instead of sitting still. Drag right and you pull the spectrum right with you, bringing lower frequencies into view — the way a map drags. The passband stays visible throughout, in every mode.
+
+It needs the **still display** to be on, which is the default. With it off the spectrum follows the dial, so there is no separate window to move and the gesture is declined with that reason. The browser's own context menu is suppressed over those two panels so the drag can happen; it still works everywhere else on the page.
+
+The band-plan strip below drags the *opposite* way, on purpose: there your hand is on the window **marker** rather than on the picture, so the marker travels with your hand and the frequency rises as you drag right. That one does retune.
 
 **Whole-band plan strip.** Along the bottom of the view (above the status bar) is a colour-coded CW/Digi/Phone strip spanning the entire current band, mirroring the one on the Tab5. A draggable "visible window" marks the slice currently on screen — drag it, or tap anywhere on the strip, to retune — and a marker shows the VFO position.
 
@@ -530,11 +538,13 @@ The bottom bar groups its actions into four popup menus, plus a battery indicato
 
 **Radio ▲** — the things that reach the radio itself:
 
-- **Switch to FT8/FT4** / **Switch to Panadapter** — changes the Tab5's own screen from the browser. The label always says where you are going, and it follows the Tab5 if you switch there instead
+- **Switch to Panadapter / FT8 / FT4 / JS8 / WSPR** — changes the Tab5’s own screen from the browser. The **Radio** menu lists all five pages, so each one is a single click; it no longer steps through them in sequence. Choosing a page is what enables it, and the menu follows the Tab5 if you switch there instead
 - **Memory channels** — your 32 channels: click one to tune to it, drag one onto another slot to move it, or onto the bin to clear it
 - **Let me use the QMX menus** — stops the Tab5 talking to the QMX so you can use the radio's own menus or its Band Configuration terminal. A bar appears until you hand it back. See [Settings](settings.md#radio)
 - **Antenna Tune** — QMX 1.04+ only; keys a steady carrier with live power and SWR, and stops itself after 60 seconds
 - **Activation** — start or stop a POTA/SOTA session from the browser. While one is running a badge appears in the top bar with the reference and the contact count, so it cannot be forgotten on the drive home
+- **Log a contact** — log a CW or SSB contact you worked by hand. You type the callsign and the two reports; the frequency, mode, band, date, time, your own callsign and grid and the running activation all come from the radio. The report you send arrives filled in from the mode — 599 for CW, 59 for phone — and from v1.23.0 the S digit of the report you received is measured off the S-meter instead of being a 9 every time *(Gyula HA3HZ)*. Clearing one logs the contact without a report rather than with a wrong one. It **stays open** after Log, with the callsign cleared and the reports kept, because a run of contacts is not one dialog at a time. It is refused if the radio is not connected, since the record would have no frequency *(Gyula HA3HZ, Brian KB9WFS)*
+- **Scheduled events** — the contest calendar and announced POTA/SOTA activations on one timeline, soonest first, with what is on the air now below what is coming. Filter to Contests or ?OTA when you have already decided which kind of evening it is. The list is fetched at most every 15 minutes; Refresh asks for it now. The source being down is normal — the last list stays up and the age line says how old it is
 - **Radio menus** — the QMX's own 80×24 menu system, in the browser. Arrow keys, Enter and Back on screen, and your real keyboard works too. Needs the radio's second USB serial port switched on first. See [Radio Menus](radio-menus.md)
 
 **Miscellaneous ▲**:
@@ -585,7 +595,25 @@ the radio attached always leaves the QMX needing a manual power cycle. That one
 step is what otherwise keeps a remote station from being upgradeable from
 another room — or another country.
 
-![Schematic: M5Stack Tab5 power switch for QRP Labs QMX(+) — a 4-pin Grove plug on the Tab5's EXT socket feeds a 100 ohm resistor into a PC817C optoisolator, whose output drives a 3.5 mm stereo jack on the module, reaching a 2.5 mm TRS jack wired to PWR_ON and GND inside the radio through a patch lead](../img/relay-schematic-n4opi.png)
+!!! warning "Use G53, not G54 — the drawing below is REV 1.0, corrected"
+    The schematic reproduced here is Randy's **REV 1.0** (2026-09-07) and draws
+    the Grove plug's **`G54`** going to R1. **Wire it to `G53` instead.** The
+    copy below is marked up with that correction — the ring on the P1 pin and
+    the red band along the bottom are added here, not part of his drawing.
+
+    `G54` is the same pin the **M5Stack Unit GPS v1.1** receives on, and both
+    are on PORT.A — the one 4-pin socket. A relay interface on `G54` therefore
+    sits across the GPS's transmitter, and there is no setting that gets you
+    out of it: "Relay: drive only the selected pin" protects the pin you did
+    **not** select. See
+    [Settings ▸ Sharing PORT.A](settings.md#port-mode-porta).
+
+    Nothing else in the drawing changes — same two components, same jack, same
+    patch lead. Randy has issued a revised drawing; look in the
+    [QRPLabs groups.io **Files** area](https://groups.io/g/QRPLabs/files) for
+    his current version, which will carry the change in the artwork itself.
+
+![Schematic: M5Stack Tab5 power switch for QRP Labs QMX(+), REV 1.0 with a correction marked on it — wire G53, not the G54 the drawing shows — a 4-pin Grove plug on the Tab5's EXT socket feeds a 100 ohm resistor into a PC817C optoisolator, whose output drives a 3.5 mm stereo jack on the module, reaching a 2.5 mm TRS jack wired to PWR_ON and GND inside the radio through a patch lead](../img/relay-schematic-n4opi.png)
 
 #### Parts
 
@@ -603,9 +631,11 @@ another room — or another country.
    and wire it internally: **tip to `PWR_ON`, sleeve to `GND`**. This is the
    only irreversible part of the job, and the only part that involves opening
    the QMX. Randy brought his out on the rear panel beside the ATU RF input.
-2. **The interface.** The Tab5 pin you choose — **G53 or G54** — goes through
+2. **The interface.** **`G53`** goes through
    **R1** into the PC817C's LED, with the Grove plug's `GND` completing that
-   side. The PC817C's phototransistor goes across **J1**, the module's 3.5 mm jack, tip and sleeve, so
+   side. (`G54` works electrically and the firmware will pulse it, but it is
+   the Unit GPS's receive pin on the same socket — use `G53` unless you are
+   certain no GPS will ever be fitted.) The PC817C's phototransistor goes across **J1**, the module's 3.5 mm jack, tip and sleeve, so
    a pulse from the Tab5 briefly connects `PWR_ON` to `GND`. **The
    phototransistor side is polarity-sensitive — follow the schematic**, and note
    that the `EXT 5V` pin is not used at all.
@@ -617,10 +647,14 @@ another room — or another country.
 
 #### Settings that work
 
-In **Miscellaneous ▸ Power-cycle relay**: the pin you actually wired (**G53** or
-**G54**), active level **High**, and **2000 ms** — *"I've found 2000ms to be
+In **Miscellaneous ▸ Power-cycle relay**: the pin you actually wired (**G53**),
+active level **High**, and **2000 ms** — *"I've found 2000ms to be
 sufficient"*. The firmware's own default is 1000 ms, so this is one to set and
 save; it is remembered from v1.10.9 on.
+
+If a Unit GPS shares the socket, also tick **Relay: drive only the selected
+pin** (v1.20.2) so relay mode stops holding `G54` as a driven output against
+the GPS's transmitter.
 
 !!! note "Why the bottom-edge Dupont pins are not offered"
     A neater cable run would leave the Tab5's bottom edge rather than the side,

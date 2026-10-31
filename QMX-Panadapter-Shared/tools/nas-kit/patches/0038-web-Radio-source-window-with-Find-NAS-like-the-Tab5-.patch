@@ -1,0 +1,277 @@
+From fec8a6227e76b575e0095a19639a655fe61a279a Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 16:00:00 -0500
+Subject: [PATCH 38/41] web: Radio source window with Find NAS, like the Tab5's
+ drawer
+
+The web page's "Radio source" entry only offered a prompt for typing the
+NAS address; the Tab5's drawer section also has Find NAS. Now the Radio
+menu entry opens a small window with the current source and its state,
+Find NAS (lists every relay that answers, each with a Use button), a
+typed address with Use NAS, and Use USB.
+
+The search is the Tab5's own radio_relay_discover() (QMXR? on UDP 7355).
+It blocks for ~1.5 s and the web server answers every request from one
+task, so POST /api/relay/find starts it on a short-lived task and the page
+polls GET /api/relay/find:
+  {"searching":false,"result":2,"found":[{"ip":"10.0.0.137","port":7355},...]}
+(result -1: WiFi down; 0: no relay answered.)
+
+Tested in a browser against a mock Tab5 (find, pick, typed address with
+port, back to USB); webserver.c compile-checked; check_web and check_webui
+clean.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md               |   2 +-
+ main/net/webserver.c    |  75 +++++++++++++++++++++++++++
+ main/net/www/index.html | 112 +++++++++++++++++++++++++++++++++++-----
+ 3 files changed, 174 insertions(+), 15 deletions(-)
+
+diff --git a/README.md b/README.md
+index e77ed701..07be6b9d 100644
+--- a/README.md
++++ b/README.md
+@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+ 
+ **On the Tab5**
+ * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
+-* Radio source on the web page: the same setting, also available to other programs at /api/relay. Tested.
++* Radio source on the web page (Radio menu): the same window as on the Tab5 - Find NAS, Use NAS with a typed address, Use USB - also available to other programs at /api/relay and /api/relay/find. Setting the address tested; Find NAS on the web page added 2026-10-25, not yet tested on the Tab5.
+ * Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus and GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
+ * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
+ * Live spectrum on the web page. Tested.
+diff --git a/main/net/webserver.c b/main/net/webserver.c
+index 08c27b18..c85d95f7 100644
+--- a/main/net/webserver.c
++++ b/main/net/webserver.c
+@@ -5291,6 +5291,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
+     return relay_get_handler(req);
+ }
+ 
++/* ---- Find NAS from the web page ---------------------------------------------
++ * The same search as the Tab5's Find NAS button: radio_relay_discover()
++ * broadcasts QMXR? on UDP 7355 and collects the relays that answer. It blocks
++ * for ~1.5 s, and the web server answers every request from ONE task, so it
++ * runs on a short-lived task of its own: POST /api/relay/find starts it, and
++ * the page polls GET /api/relay/find until "searching" is false.
++ *   {"searching":false,"result":2,"found":[{"ip":"10.0.0.137","port":7355},...]}
++ * result: -2 no search yet, -1 WiFi down / no socket, >= 0 relays found. */
++#define WEB_RELAY_FIND_MAX 4
++static radio_relay_found_t s_web_relay_found[WEB_RELAY_FIND_MAX];
++static volatile int        s_web_relay_find_n = -2;
++static volatile bool       s_web_relay_finding = false;
++
++static void web_relay_find_task(void *arg)
++{
++    (void)arg;
++    int n = radio_relay_discover(s_web_relay_found, WEB_RELAY_FIND_MAX, 1500);
++    s_web_relay_find_n = n;
++    s_web_relay_finding = false;
++    ESP_LOGI(TAG, "web Find NAS: %d relay(s) answered", n);
++    vTaskDelete(NULL);
++}
++
++static esp_err_t relay_find_reply(httpd_req_t *req)
++{
++    cJSON *root = cJSON_CreateObject();
++    if (!root) return httpd_resp_send_500(req);
++    bool searching = s_web_relay_finding;
++    int n = s_web_relay_find_n;
++    cJSON_AddBoolToObject(root, "searching", searching);
++    cJSON_AddNumberToObject(root, "result", searching ? -2 : n);
++    cJSON *arr = cJSON_AddArrayToObject(root, "found");
++    for (int i = 0; !searching && arr && i < n && i < WEB_RELAY_FIND_MAX; i++) {
++        cJSON *o = cJSON_CreateObject();
++        if (!o) break;
++        cJSON_AddStringToObject(o, "ip", s_web_relay_found[i].ip);
++        cJSON_AddNumberToObject(o, "port", s_web_relay_found[i].port);
++        cJSON_AddItemToArray(arr, o);
++    }
++    char *out = cJSON_PrintUnformatted(root);
++    cJSON_Delete(root);
++    if (!out) return httpd_resp_send_500(req);
++    httpd_resp_set_type(req, "application/json");
++    esp_err_t err = httpd_resp_sendstr(req, out);
++    cJSON_free(out);
++    return err;
++}
++
++static esp_err_t relay_find_get_handler(httpd_req_t *req)
++{
++    return relay_find_reply(req);
++}
++
++static esp_err_t relay_find_post_handler(httpd_req_t *req)
++{
++    if (!s_web_relay_finding) {
++        s_web_relay_finding = true;
++        s_web_relay_find_n = -2;
++        if (xTaskCreate(web_relay_find_task, "web_nas_find", 4096, NULL, 4, NULL) != pdPASS) {
++            s_web_relay_finding = false;
++            s_web_relay_find_n = -1;
++        }
++    }
++    return relay_find_reply(req);
++}
++
++static const httpd_uri_t uri_relay_find_get = {
++    .uri = "/api/relay/find", .method = HTTP_GET, .handler = relay_find_get_handler,
++};
++static const httpd_uri_t uri_relay_find_post = {
++    .uri = "/api/relay/find", .method = HTTP_POST, .handler = relay_find_post_handler,
++};
++
+ static const httpd_uri_t uri_relay_get = {
+     .uri = "/api/relay", .method = HTTP_GET, .handler = relay_get_handler,
+ };
+@@ -9301,6 +9374,8 @@ esp_err_t webserver_start(void)
+     reg(&uri_eqsl_creds);
+     reg(&uri_relay_get);    // network radio (QMX on a NAS)
+     reg(&uri_relay_post);
++    reg(&uri_relay_find_get);
++    reg(&uri_relay_find_post);
+     reg(&uri_qrz_lookup_creds);
+     reg(&uri_eqsl_upload);
+     reg(&uri_cloudlog_creds);
+diff --git a/main/net/www/index.html b/main/net/www/index.html
+index 96f14eb2..d14008b1 100644
+--- a/main/net/www/index.html
++++ b/main/net/www/index.html
+@@ -1806,6 +1806,33 @@
+     </div>
+   </div>
+ 
++  <!-- Radio source: the QMX on the Tab5's USB port, or one on a NAS reached
++       over the network - the same choices as the Tab5's drawer section,
++       Find NAS included (POST/GET /api/relay/find). -->
++  <div id="relay-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
++    <div style="max-width:520px; margin:10vh auto; background:#161616; border:1px solid #494949; border-radius:10px;
++                padding:16px 20px; color:#ddd; font-size:14px;">
++      <div style="display:flex; align-items:center; margin-bottom:10px;">
++        <strong style="color:#ffa040; font-size:17px;">Radio source</strong>
++        <div style="flex:1"></div>
++        <button id="relay-close" class="btn-neutral">Close</button>
++      </div>
++      <div id="relay-cur" style="margin-bottom:12px">Reading the Tab5...</div>
++      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
++        <button id="relay-find" class="btn-neutral" title="Ask the network for a NAS or Raspberry Pi running the QMX relay (QMXR? on UDP 7355)">Find NAS</button>
++        <button id="relay-usb" class="btn-neutral" title="Use the QMX plugged into the Tab5's own USB port">Use USB</button>
++      </div>
++      <div id="relay-found" style="margin-bottom:10px; color:var(--dim)"></div>
++      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
++        <input id="relay-host" type="text" placeholder="NAS address, e.g. 10.0.0.137 or 10.0.0.137:7355"
++               style="flex:1; min-width:200px; padding:6px 8px; background:#0e0e0e; color:#ddd; border:1px solid #494949; border-radius:6px">
++        <button id="relay-use" class="btn-neutral">Use NAS</button>
++      </div>
++      <div style="color:var(--dim); font-size:12px; margin-top:10px">
++        The search only reaches relays on the same network as the Tab5. The choice is saved and applied at once.
++      </div>
++    </div>
++  </div>
+   <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
+     <!-- max-height + an inner scroll box: with 32 slots the card ran off the
+          bottom of the window and the last rows could not be reached at all. -->
+@@ -7703,27 +7730,84 @@ function paintPaused(on) {
+ }
+ /* Network radio - the QMX plugged into a NAS, reached over TCP through
+    tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */
+-document.getElementById("relay-link").addEventListener("click", async (e) => {
++document.getElementById("relay-link").addEventListener("click", (e) => {
+   e.preventDefault();
+-  let cur = { host: "", port: 7355, last_error: "" };
+-  try { cur = await (await fetch("/api/relay", { cache: "no-store" })).json(); } catch (_) {}
+-  const shown = cur.host ? (cur.port && cur.port !== 7355 ? cur.host + ":" + cur.port : cur.host) : "";
+-  const msg = "Radio source: QMX on a NAS (network).\n\n" +
+-              "Enter the NAS IP address (optionally IP:port, default port 7355),\n" +
+-              "or leave blank to use the QMX plugged into the Tab5's USB port.\n\n" +
+-              "Current: " + (cur.host ? shown + "  (" + (cur.connected ? "connected" : (cur.last_error || "not connected")) + ")" : "USB");
+-  const v = prompt(msg, shown);
+-  if (v === null) return;
+-  let host = v.trim(), port = 7355;
+-  const m = host.match(/^(.*):(\d{1,5})$/);
+-  if (m) { host = m[1].trim(); port = parseInt(m[2], 10); }
+-  if (port < 1 || port > 65535) { alert("Bad port"); return; }
++  relayOpen();
++});
++
++const relayEsc = (t) => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
++
++async function relayRefresh() {
++  const cur = document.getElementById("relay-cur");
++  let d = null;
++  try { d = await (await fetch("/api/relay", { cache: "no-store" })).json(); } catch (_) {}
++  if (!d) { cur.textContent = "Could not read the Tab5."; return; }
++  if (!d.host) {
++    cur.innerHTML = "Now: <b>USB</b> (the QMX on the Tab5's own USB port)" + (d.transport === "usb" ? " - connected" : " - not connected");
++  } else {
++    const where = d.port && d.port !== 7355 ? d.host + ":" + d.port : d.host;
++    cur.innerHTML = "Now: <b>NAS " + relayEsc(where) + "</b> - " +
++      (d.connected ? '<span style="color:#40c060">connected</span>' : relayEsc(d.last_error || "not connected"));
++    document.getElementById("relay-host").value = where;
++  }
++}
++
++async function relaySet(host, port) {
+   try {
+     const r = await fetch("/api/relay", { method: "POST", body: JSON.stringify({ host, port }) });
+     if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
+   } catch (err) {
+     alert("Setting the radio source failed: " + err);
++    return;
+   }
++  document.getElementById("relay-cur").textContent = host ? "Connecting to " + host + " ..." : "Switching to USB ...";
++  setTimeout(relayRefresh, 2500);
++}
++
++async function relayFind() {
++  const btn = document.getElementById("relay-find"), out = document.getElementById("relay-found");
++  btn.disabled = true; btn.textContent = "Searching...";
++  out.textContent = "Asking the network for a NAS running the QMX relay...";
++  let d = null;
++  try {
++    d = await (await fetch("/api/relay/find", { method: "POST" })).json();
++    for (let i = 0; i < 20 && d && d.searching; i++) {
++      await new Promise(r => setTimeout(r, 300));
++      d = await (await fetch("/api/relay/find", { cache: "no-store" })).json();
++    }
++  } catch (_) { d = null; }
++  btn.disabled = false; btn.textContent = "Find NAS";
++  if (!d || d.searching) { out.textContent = "No answer from the Tab5 - try again."; return; }
++  if (d.result < 0) { out.textContent = "The Tab5's WiFi is not connected - cannot search. Type the address instead."; return; }
++  if (!d.found.length) { out.textContent = "No NAS answered. Is the relay running, and on the same network as the Tab5?"; return; }
++  out.innerHTML = "Found: " + d.found.map(f => {
++    const where = f.port && f.port !== 7355 ? f.ip + ":" + f.port : f.ip;
++    return '<button class="btn-neutral relay-pick" data-ip="' + relayEsc(f.ip) + '" data-port="' + (f.port || 7355) +
++           '" title="Use this NAS">Use ' + relayEsc(where) + '</button>';
++  }).join(" ");
++  document.getElementById("relay-host").value = d.found[0].port && d.found[0].port !== 7355
++    ? d.found[0].ip + ":" + d.found[0].port : d.found[0].ip;
++  out.querySelectorAll(".relay-pick").forEach(b => b.addEventListener("click", () =>
++    relaySet(b.dataset.ip, parseInt(b.dataset.port, 10) || 7355)));
++}
++
++function relayOpen() {
++  document.getElementById("relay-modal").style.display = "";
++  document.getElementById("relay-found").textContent = "";
++  relayRefresh();
++}
++function relayClose() { document.getElementById("relay-modal").style.display = "none"; }
++document.getElementById("relay-close").addEventListener("click", relayClose);
++document.getElementById("relay-modal").addEventListener("click", (e) => { if (e.target.id === "relay-modal") relayClose(); });
++document.getElementById("relay-find").addEventListener("click", relayFind);
++document.getElementById("relay-usb").addEventListener("click", () => relaySet("", 7355));
++document.getElementById("relay-use").addEventListener("click", () => {
++  let host = document.getElementById("relay-host").value.trim(), port = 7355;
++  const m = host.match(/^(.*):(\d{1,5})$/);
++  if (m) { host = m[1].trim(); port = parseInt(m[2], 10); }
++  if (!host) { alert("Type the NAS address, or use Find NAS."); return; }
++  if (port < 1 || port > 65535) { alert("Bad port"); return; }
++  relaySet(host, port);
+ });
+ 
+ function updateRelayLink(link) {
+-- 
+2.43.0
+

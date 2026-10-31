@@ -11,7 +11,7 @@ actually catch people out. Work down the list; each step says where the control 
 type: flow
 title: From the radio to your ears, and where each control acts
 node: QMX / QMX+ - receiving, set to DiGi / IQ mode
-branch: QMX RF gain - per band, 0-99 dB. Acts before anything else
+branch: QMX RF gain - per band, 0-99 dB. Measured: does NOT reach the I/Q, so it moves neither the spectrum nor the audio
 branch: QMX volume - the radio's own AF gain. Reaches everything downstream, the browser stream included
 node: USB - 48 000 I/Q pairs per second, one cable
 node: Tab5 DSP - 48 kHz. The same I/Q feeds the spectrum and the demodulator
@@ -22,8 +22,9 @@ branch: a browser - 12 kHz mono mu-law over the WebSocket, 3 s buffer. Your comp
 note: dim | one listener at a time, deliberately: while a browser holds the stream the Tab5 mutes its own speaker, and hands it back when you stop
 ```
 
-**Four controls act at four different places**, which is why "turn it up" is not one
-question.
+**Three controls act at three different places**, which is why "turn it up" is not one
+question. The RF gain is a fourth, and the measurement below is why it is not in that
+list.
 
 ### 1. Check the mode
 
@@ -69,6 +70,21 @@ New in v1.20.5, after Samuel W7STF counted four gestures to change the volume.
   back from the radio when the panel opens, so it shows what the radio is
   actually set to, including a change you made on its own knob. A `--` means
   the radio has not answered yet.
+- **Radio RF gain** - 0-99 dB, the same control as
+  Drawer -> Radio. The QMX stores it **per band**, so it is written when you
+  let go of the slider rather than on every tick of a drag. ⚠ It has **no
+  effect on the spectrum or on the audio** - see the warning below.
+- **AGC Fast / Slow / Off** - the three settings worth
+  having in one tap. **Fast** is a 1 ms attack and a 30 ms release, for CW;
+  **Slow** is 5 ms and 400 ms; **Off** pins the gain at the
+  [AGC Ceiling](#the-agc-controls) rather than running a very slow AGC. The
+  row shows which one is in force, and the drawer's own sliders still hold
+  anything in between.
+
+Both gain figures used to sit at `--`. They were never lost: the panel asked
+the radio and painted once, while the answer arrives on the CAT poll a moment
+later with nothing left running to draw it. It now keeps looking for about ten
+seconds and re-asks if the first query was lost to a busy CAT link.
 
 A tap anywhere outside closes it.
 
@@ -90,9 +106,32 @@ There are three, and they act in different places — see
 | **RX Volume** | Drawer → Audio Settings | The **Tab5's** speaker and headphone level only. Does not affect the browser stream |
 | Your browser's own volume | The browser or the operating system | The browser stream only |
 
-A fourth control sets the level before any of these: **QMX RF gain** (Drawer → Radio),
-per band, 0–99 dB, QMX default 54. If signals look weak on the waterfall as well as
-sounding weak, this is the one to look at — not the volume.
+**QMX RF gain** (Drawer → Radio, or the audio panel) is per band, 0–99 dB, QMX
+default 54. It looks like a fourth control in this chain. It is not:
+
+!!! warning "RF gain does not change what the Tab5 shows or plays"
+    Measured 2026-10-27: taking the RF gain from 54 to 0 moved the spectrum
+    noise floor by **0.06 dB** over 81 frames. The radio accepts the command
+    and reads the new value back, so it is a real setting in the QMX - it just
+    does not reach the I/Q the Tab5 receives. The spectrum, the waterfall, the
+    decoders and the Tab5's own audio are all derived from that one stream, so
+    none of them can respond to it. If signals sound weak, the control that
+    acts is the [AGC ceiling](#the-agc-controls). Reported by Samuel W7STF,
+    who was right; announced in v1.21.0 as a way to change what reaches your
+    ears, which was wrong.
+
+    **Why, from QRP Labs.** Stan KC7XE, 2026-10-28: I/Q mode delivers the raw
+    48 kHz sampled stream from the PCM1804 converter, and every adjustment
+    and all the DSP happen further down the radio's own processing chain. So
+    the control is real and it works - on the QMX's own headphone and speaker
+    output. It is kept for that reason rather than removed.
+
+    It is deliberately **not** faked by scaling the samples on the Tab5.
+    Multiplying every sample by the same number scales the signal and the
+    noise together, so the signal-to-noise ratio does not change and nothing
+    becomes audible that was not already there - it would only move the trace
+    up and down the dB scale, which the floor and ceiling controls already do.
+
 
 !!! note "Full volume and still quiet?"
 

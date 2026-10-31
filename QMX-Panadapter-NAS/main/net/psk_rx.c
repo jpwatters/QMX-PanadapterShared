@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "psk_rx";
 
@@ -330,7 +331,7 @@ static void psk_rx_task(void *arg)
 
         qmx_settings_t s;
         settings_load_all(&s);
-        if (!s.psk_rx_en || !s.my_callsign[0] || !wifi_is_connected()) continue;
+        if (!s.psk_rx_en || !s.my_callsign[0] || !net_is_up()) continue;
         // net_quiet: this query's response cap is 64 KB and it comes over TLS -
         // by far the largest periodic allocation on the device. Not during an
         // update, where internal free has been measured at 5 KB. See net_quiet.h.

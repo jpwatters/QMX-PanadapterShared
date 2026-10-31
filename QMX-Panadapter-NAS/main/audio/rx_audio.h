@@ -147,6 +147,48 @@ void rx_audio_set_agc_off(bool off);
  * the audio path never hears until the next reboot. */
 void rx_audio_apply_settings(void);
 
+/* ---- CW peak filter (A4 step 3, Sam W7STF) --------------------------------
+ *
+ * A narrow audio peak ON the CW pitch, after the mode filter and BEFORE the
+ * AGC, so the AGC rides the wanted tone instead of the hiss either side of
+ * it. Width in Hz at -3 dB: 0 = off, else about 80..400.
+ *
+ * ⛔ IT IS NOT A SECOND IF FILTER AND MUST NOT BE SOLD AS ONE. The radio's
+ * own CW filter decides what reaches this chain; this shapes what is left,
+ * in the audio, where it costs two biquads and can be switched per ear
+ * instantly. A 100 Hz audio peak behind a 300 Hz IF filter does not give
+ * 100 Hz of IF selectivity - a strong signal 150 Hz away still drives the
+ * AGC in the radio. What it does give is the thing operators ask for: the
+ * wanted note pulled forward out of the band noise.
+ *
+ * Two cascaded identical biquads, not one: a single section wide enough not
+ * to ring has skirts too shallow to hear as a filter. The per-section Q is
+ * derived so the PAIR lands on the requested width - see cw_peak_rebuild().
+ *
+ * CW/CW-R only. Persisted, because it is a listening preference rather than
+ * a bench knob. */
+/* ⭐ SUSPEND THE WHOLE CHAIN, RAM ONLY (T19 server mode).
+ *
+ * ⛔ NOT rx_audio_set_enabled(false): that one is PERSISTED, and a stored
+ * "off" means the codec is not opened at the next boot, which cannot be
+ * undone without another restart. This is a session-only gate - the task
+ * sleeps on the same indefinite block it already uses when nobody is
+ * listening, and resuming wakes it with the same notification.
+ *
+ * ⛔ A WEB LISTENER OVERRIDES IT. The chain runs for `s_web_en` whatever this
+ * says, because audio in the browser is exactly the thing server mode exists
+ * to serve: "ONLY what the web needs" (operator, 2026-10-23). What it stops
+ * is the demodulator running for a speaker nobody is in the room to hear -
+ * measured at 17-20 %% of core 1.
+ *
+ * Muting is not a substitute: a muted chain still filters, demodulates, runs
+ * the AGC and writes the codec. It costs the same and produces silence. */
+void     rx_audio_suspend(bool on);
+bool     rx_audio_is_suspended(void);
+
+void     rx_audio_set_cw_peak_hz(uint16_t bw_hz);
+uint16_t rx_audio_get_cw_peak_hz(void);
+
 void rx_audio_set_binaural_enabled(bool en);
 bool rx_audio_get_binaural_enabled(void);
 
@@ -223,6 +265,8 @@ typedef struct {
     int32_t  resample_ppm_min;  /* lowest and highest seen since the last call, */
     int32_t  resample_ppm_max;  /* so a wander between two samples cannot hide */
     uint32_t resample_railed;   /* times the +/-2% clamp was hit, cumulative */
+    uint32_t rate_win_refused;  /* T80: rate windows thrown out as starvation, cumulative */
+    uint32_t rate_relocked;     /* T80: forced re-seeds of the rate target, cumulative */
 } rx_audio_diag_t;
 
 void rx_audio_take_diag(rx_audio_diag_t *out);

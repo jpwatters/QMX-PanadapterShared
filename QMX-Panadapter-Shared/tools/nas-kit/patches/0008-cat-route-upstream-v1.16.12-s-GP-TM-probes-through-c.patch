@@ -1,7 +1,7 @@
-From 71a7e49e740e5307ae1c8bf72de753044149c68a Mon Sep 17 00:00:00 2001
+From cfaeff27d38edcdcb79ae098895cb1e7d7e46c74 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 15:12:24 +0000
-Subject: [PATCH 08/30] cat: route upstream v1.16.12's GP/TM probes through
+Subject: [PATCH 08/41] cat: route upstream v1.16.12's GP/TM probes through
  cat_tx, so they work on a network radio
 
 cat_gps_gp_sync() and the GP/TM probe (new in v1.16.12) wrote straight to the
@@ -16,10 +16,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
  1 file changed, 2 insertions(+), 2 deletions(-)
 
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index e93e6513..ac0509cc 100644
+index a4e17794..d1c41a18 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
-@@ -3664,7 +3664,7 @@ bool cat_qmx_gps_position(double *lat, double *lon)
+@@ -3713,7 +3713,7 @@ bool cat_qmx_gps_position(double *lat, double *lon)
  esp_err_t cat_gps_gp_sync(int *out_y, int *out_mo, int *out_d,
                            int *out_h, int *out_mi, int *out_s, int64_t *out_flip_us)
  {
@@ -28,7 +28,7 @@ index e93e6513..ac0509cc 100644
      /* GP arrived in 1.04_004. Older radios answer with an error, and asking
       * them repeatedly in a 1.3 s loop is not free. */
      if (!cat_qmx_fw_at_least(1, 4, 4)) return ESP_ERR_NOT_SUPPORTED;
-@@ -3781,7 +3781,7 @@ esp_err_t cat_gps_gp_probe(int secs, int gap_ms, bool use_tm, cat_gp_probe_t *ou
+@@ -3830,7 +3830,7 @@ esp_err_t cat_gps_gp_probe(int secs, int gap_ms, bool use_tm, cat_gp_probe_t *ou
  {
      if (!out) return ESP_ERR_INVALID_ARG;
      out->n = 0; out->polls = 0; out->nflip = 0;

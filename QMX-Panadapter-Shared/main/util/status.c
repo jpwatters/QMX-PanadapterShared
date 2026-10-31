@@ -28,6 +28,7 @@
 #include "hid_cursor.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "eth_w5500.h"      // the bottom bar names Ethernet when the PoE base is in use
 
 static const char *TAG = "status";
 
@@ -643,6 +644,16 @@ static void status_task(void *arg)
         int rssi = wifi_get_rssi_dbm();
         const char *ip = wifi_get_ip();
         bool connected = wifi_is_connected() && ssid[0];
+        /* On the W5500 PoE base with an address, the wired link is the one in
+         * use (it is the preferred route), so the bar names it and its
+         * address instead of the Wi-Fi network. The fan reads full: a cable
+         * has no signal strength to show. */
+        if (eth_is_connected()) {
+            ssid = "Ethernet";
+            ip = eth_get_ip();
+            rssi = -40;
+            connected = true;
+        }
 
 #if BENCH_WIFI_BAR
         // Bench hook (see BENCH_WIFI_BAR at the top of this file): fakes a

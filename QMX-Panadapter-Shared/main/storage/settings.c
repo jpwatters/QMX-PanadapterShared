@@ -55,6 +55,9 @@ static const char *TAG = "settings";
 #define KEY_CW_PITCH   "cw_pitch"
 #define KEY_COLORMAP   "colormap"
 #define KEY_CW_CAL     "cw_cal"
+#define KEY_SB_LOWCUT  "sb_lowcut"
+#define KEY_FT4_FREQ   "ft4_freq"
+#define KEY_JS8_FREQ   "js8_freq"
 #define KEY_ZOOM       "zoom"
 #define KEY_BRIGHTNESS "brightness"
 #define KEY_LAST_MODE  "last_mode"
@@ -101,12 +104,15 @@ static const char *TAG = "settings";
 #define KEY_WF_WINDOW    "wf_window"
 #define KEY_WF_SPEED     "wf_speed"   /* LEGACY 1..4x multiplier - read once, then never written again */
 #define KEY_WF_ROWS      "wf_rows"    /* waterfall rows per second, 1..40 */
+#define KEY_SPEC_PEAK    "spec_peak"  /* spectrum peak-hold window, seconds, 0 = off */
+#define KEY_CW_PEAK      "cw_peak"    /* CW audio peak filter width, Hz, 0 = off */
 #define KEY_DISP_FLIP    "disp_flip"
 #define KEY_QMX_VOL      "qmx_vol_db"
 #define KEY_CW_TX_OFF    "cw_tx_off"
 #define KEY_CQ_LISTEN    "cq_listen"
 #define KEY_SWR_LIMIT    "swr_lim"
 #define KEY_JS8_SUBMODE  "js8_sub"
+#define KEY_JS8_ALT_SUB  "js8_altsub"
 #define KEY_RXA_GAIN     "rxa_gain"
 #define KEY_RXA_PWIDTH   "rxa_pw"
 #define KEY_RXA_PBLEND   "rxa_pb"
@@ -122,6 +128,7 @@ static const char *TAG = "settings";
 #define KEY_DISTANCE_MILES "dist_miles"
 #define KEY_FREQ_SEP       "freq_sep"
 #define KEY_CW_DECODE       "cw_dec_en"
+#define KEY_LOG_VIEW_ALL    "log_vw_all"  /* ADIF window: Today/All, sticky (T113) */
 #define KEY_CW_ROWS         "cw_dec_rows" /* rows of decoded CW drawn, 2 or 4 */
 #define KEY_RIT_PILL_SHOW  "rit_pill"
 #define KEY_STILL_VIEW     "still_vw"
@@ -217,6 +224,8 @@ static const char *TAG = "settings";
 #define DEF_WF_WINDOW     (0)
 #define DEF_CW_ROWS       (4)    /* four since 2026-10-15 (Sam W7STF); Bryan N0LUF may pick 2 */
 #define DEF_WF_ROWS       (10)   /* rows/s - the rate the waterfall has always run at */
+#define DEF_SPEC_PEAK     (0)    /* peak hold OFF until asked for - it costs 25 KB of PSRAM */
+#define DEF_CW_PEAK       (0)    /* CW peak filter OFF - it changes how the radio SOUNDS */
 #define DEF_CHARGE_LIM_EN  (false)
 #define DEF_CHARGE_LIM_PCT (80)
 #define DEF_RELAY_PIN      (53)
@@ -251,7 +260,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      5                        /* 160 bits; highest used 145, 14 spare */
+#define DIRTY_WORDS      5                        /* 160 bits; highest used 152, 7 spare */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -463,7 +472,14 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_ROWS         142  /* rows of decoded CW drawn */
 #define DIRTY_TXBAND_OFF      143  /* TX band guard disabled (T48) */
 #define DIRTY_MY_STATE        144  /* US state, for the directed-CQ filter */
-#define DIRTY_RELAY           145  /* network radio: relay_host + relay_port (142-144 are upstream's CW_ROWS/TXBAND_OFF/MY_STATE) */
+#define DIRTY_SPEC_PEAK       145  /* spectrum peak-hold window (A4) */
+#define DIRTY_CW_PEAK         146  /* CW audio peak filter width (A4) */
+#define DIRTY_LOG_VIEW_ALL    147  /* ADIF window Today/All, sticky (T113) */
+#define DIRTY_SB_LOWCUT       148  /* T90 SSB auto-tune low-cut trim */
+#define DIRTY_FT4_FREQ        149  /* T89 per-sub-mode preset frequency */
+#define DIRTY_JS8_FREQ        150  /* T89 per-sub-mode preset frequency */
+#define DIRTY_JS8_ALT_SUB     151  /* T132 duty-cycled alternate-submode decode */
+#define DIRTY_RELAY           152  /* network radio: relay_host + relay_port (142-151 are upstream's) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -511,6 +527,13 @@ static const uint8_t s_config_export_bits[] = {
      * A config file that silently moved a board back to the QMX would look
      * like the jack had stopped working. */
     DIRTY_RX_SOURCE, DIRTY_LINEIN_GAIN,
+    /* ⛔ DIRTY_LOG_VIEW_ALL is deliberately NOT here, and neither are
+     * DIRTY_CW_DECODE / DIRTY_CW_ROWS, although config_io_export() prints all
+     * three. They are one-tap view preferences, and an SD mirror write per tap
+     * is exactly the unnecessary SDMMC contention the note above is about. The
+     * exported file still carries the current value whenever a mirror happens
+     * for any other reason, so a backup is never wrong - only occasionally
+     * later than the tap. */
 };
 
 // ---- Module state ------------------------------------------------------
@@ -621,6 +644,9 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_FT8_FREQ))  nvs_set_u32(s_nvs, KEY_FT8_FREQ, snap.ft8_freq_hz);
         if (dirty_test(&dirty_local, DIRTY_CW_PITCH))  nvs_set_u16(s_nvs, KEY_CW_PITCH, snap.cw_pitch_hz);
         if (dirty_test(&dirty_local, DIRTY_CW_CAL))    nvs_set_i16(s_nvs, KEY_CW_CAL,   snap.cw_cal_hz);
+        if (dirty_test(&dirty_local, DIRTY_SB_LOWCUT)) nvs_set_u16(s_nvs, KEY_SB_LOWCUT, snap.sb_lowcut_hz);
+        if (dirty_test(&dirty_local, DIRTY_FT4_FREQ))  nvs_set_u32(s_nvs, KEY_FT4_FREQ,  snap.ft4_freq_hz);
+        if (dirty_test(&dirty_local, DIRTY_JS8_FREQ))  nvs_set_u32(s_nvs, KEY_JS8_FREQ,  snap.js8_freq_hz);
         if (dirty_test(&dirty_local, DIRTY_ZOOM)) {
             uint32_t bits; memcpy(&bits, &snap.zoom_factor, 4);
             nvs_set_u32(s_nvs, KEY_ZOOM, bits);
@@ -678,11 +704,14 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_WF_BLEND))    nvs_set_u8(s_nvs, KEY_WF_BLEND,  snap.wf_floor_blend);
         if (dirty_test(&dirty_local, DIRTY_WF_WINDOW))   nvs_set_u8(s_nvs, KEY_WF_WINDOW, snap.wf_window);
         if (dirty_test(&dirty_local, DIRTY_WF_SPEED))    nvs_set_u8(s_nvs, KEY_WF_ROWS,   snap.wf_rows_per_s);
+        if (dirty_test(&dirty_local, DIRTY_SPEC_PEAK))   nvs_set_u8(s_nvs, KEY_SPEC_PEAK, snap.spec_peak_s);
+        if (dirty_test(&dirty_local, DIRTY_CW_PEAK))     nvs_set_u16(s_nvs, KEY_CW_PEAK,  snap.cw_peak_hz);
         if (dirty_test(&dirty_local, DIRTY_DISP_FLIP))   nvs_set_u8(s_nvs, KEY_DISP_FLIP, snap.display_flip ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_QMX_VOL))     nvs_set_u8(s_nvs, KEY_QMX_VOL,   snap.qmx_vol_db);
         if (dirty_test(&dirty_local, DIRTY_CW_TX_OFFSET)) nvs_set_i16(s_nvs, KEY_CW_TX_OFF, snap.cw_tx_offset_hz);
         if (dirty_test(&dirty_local, DIRTY_SWR_LIMIT))    nvs_set_u8(s_nvs, KEY_SWR_LIMIT, snap.swr_limit_x10);
         if (dirty_test(&dirty_local, DIRTY_JS8_SUBMODE)) nvs_set_u8(s_nvs, KEY_JS8_SUBMODE, snap.js8_submode);
+        if (dirty_test(&dirty_local, DIRTY_JS8_ALT_SUB)) nvs_set_u8(s_nvs, KEY_JS8_ALT_SUB, snap.js8_alt_submode);
         if (dirty_test(&dirty_local, DIRTY_RXA_GAIN))     nvs_set_u8(s_nvs, KEY_RXA_GAIN,   snap.rxaud_gain_d10);
         if (dirty_test(&dirty_local, DIRTY_RXA_PWIDTH))   nvs_set_u8(s_nvs, KEY_RXA_PWIDTH, snap.rxaud_pan_width_x10);
         if (dirty_test(&dirty_local, DIRTY_RXA_PBLEND))   nvs_set_u8(s_nvs, KEY_RXA_PBLEND, snap.rxaud_pan_blend_x100);
@@ -700,6 +729,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_DISTANCE_MILES)) nvs_set_u8(s_nvs, KEY_DISTANCE_MILES, snap.distance_in_miles ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_FREQ_SEP))       nvs_set_u8(s_nvs, KEY_FREQ_SEP, snap.freq_sep_style);
         if (dirty_test(&dirty_local, DIRTY_CW_DECODE)) nvs_set_u8(s_nvs, KEY_CW_DECODE, snap.cw_decode_en ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_LOG_VIEW_ALL)) nvs_set_u8(s_nvs, KEY_LOG_VIEW_ALL, snap.log_view_all ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_ROWS))   nvs_set_u8(s_nvs, KEY_CW_ROWS,   snap.cw_decode_rows);
         if (dirty_test(&dirty_local, DIRTY_RIT_PILL_SHOW)) nvs_set_u8(s_nvs, KEY_RIT_PILL_SHOW, snap.rit_pill_show ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_STILL_VIEW))   nvs_set_u8(s_nvs, KEY_STILL_VIEW,   snap.still_view ? 1 : 0);
@@ -897,8 +927,11 @@ static void load_from_nvs(qmx_settings_t *out)
     out->flat_mode  = DEF_FLAT_MODE;
     out->last_vfo_hz = 0;
     out->ft8_freq_hz = 14074000;   // 20m FT8 — sane default so FT8 never opens on an inherited odd VFO
+    out->ft4_freq_hz = 14080000;   // 20m FT4 calling frequency (T89)
+    out->js8_freq_hz = 14078000;   // 20m JS8 calling frequency (T89)
     out->cw_pitch_hz = DEF_CW_PITCH;
     out->cw_cal_hz   = DEF_CW_CAL;
+    out->sb_lowcut_hz = 300;   /* T90: the common SSB transmit low cut */
     out->rit_pill_show = true;   // opt-OUT, so it must be set here and not left zeroed
     /* 500 Hz is today's SSB/digital grid, so an existing unit's behaviour does
        not change when this setting appears. Must be set here, not left zeroed -
@@ -907,6 +940,9 @@ static void load_from_nvs(qmx_settings_t *out)
     /* Decoded CW is ON by default - it is the point of the feature - so like
        rit_pill_show it is an opt-OUT and must be set here, not left zeroed. */
     out->cw_decode_en = true;
+    /* log_view_all stays false: the window opens on Today, which is what the
+       10-QSO activation count is for. Left zeroed on purpose and noted here
+       so the next reader does not take the absence for an oversight. */
     out->cw_decode_rows = DEF_CW_ROWS;
     /* #298: the still display is the DEFAULT. Anyone who prefers the old
      * dial-centred view turns it off in the drawer, and is told once that they
@@ -960,6 +996,8 @@ static void load_from_nvs(qmx_settings_t *out)
     out->wf_floor_blend = DEF_WF_BLEND;
     out->wf_window      = DEF_WF_WINDOW;
     out->wf_rows_per_s  = DEF_WF_ROWS;
+    out->spec_peak_s    = DEF_SPEC_PEAK;
+    out->cw_peak_hz     = DEF_CW_PEAK;
     out->display_flip   = false;
     out->qmx_vol_db     = 20;   // fallback slider position only - never sent at boot
     out->ft8_early_decode = true; // on by default (WSJT-X-style fast pounce timing)
@@ -1006,6 +1044,12 @@ static void load_from_nvs(qmx_settings_t *out)
     // on a merely mediocre match; the drawer can raise it or turn it off.
     out->swr_limit_x10 = 30;
     out->js8_submode   = 0;    /* Normal - what every station runs */
+    /* T132: the alternate submode to ALSO decode, on a duty cycle.
+     * 255 (JS8_ALT_OFF) = off, and it is off by default because Fast,
+     * Turbo and Slow have never been exchanged with a real JS8Call
+     * station - only our own encoder and decoder agree. It costs CPU on
+     * core 1 and it must earn that on air first. */
+    out->js8_alt_submode = 255;
     /* Defaults mirror rx_audio.h's documented ones (200 / 1.8 / 0.15 / 0.30),
      * which are the values tuned on the air 2026-09-20. */
     out->rxaud_gain_d10       = 20;
@@ -1086,8 +1130,11 @@ static void load_from_nvs(qmx_settings_t *out)
     if (nvs_get_u8(s_nvs, KEY_FLAT_MODE,  &u8v) == ESP_OK) out->flat_mode  = (u8v != 0);
     nvs_get_u32(s_nvs, KEY_LAST_VFO, &out->last_vfo_hz);
     nvs_get_u32(s_nvs, KEY_FT8_FREQ, &out->ft8_freq_hz);
+    nvs_get_u32(s_nvs, KEY_FT4_FREQ, &out->ft4_freq_hz);
+    nvs_get_u32(s_nvs, KEY_JS8_FREQ, &out->js8_freq_hz);
     nvs_get_u16(s_nvs, KEY_CW_PITCH, &out->cw_pitch_hz);
     nvs_get_i16(s_nvs, KEY_CW_CAL,   &out->cw_cal_hz);
+    nvs_get_u16(s_nvs, KEY_SB_LOWCUT, &out->sb_lowcut_hz);
     { uint32_t bits = 0; if (nvs_get_u32(s_nvs, KEY_ZOOM, &bits) == ESP_OK) memcpy(&out->zoom_factor, &bits, 4); }
     nvs_get_u8(s_nvs, KEY_COLORMAP, &out->colormap_idx);
     nvs_get_u8(s_nvs, KEY_BRIGHTNESS, &out->brightness_pct);
@@ -1128,6 +1175,7 @@ static void load_from_nvs(qmx_settings_t *out)
     nvs_get_u8(s_nvs, KEY_CQ_LISTEN, &out->cq_listen_every);
     nvs_get_u8(s_nvs, KEY_SWR_LIMIT, &out->swr_limit_x10);
     nvs_get_u8(s_nvs, KEY_JS8_SUBMODE, &out->js8_submode);
+    nvs_get_u8(s_nvs, KEY_JS8_ALT_SUB, &out->js8_alt_submode);
     nvs_get_u8(s_nvs, KEY_RXA_GAIN,   &out->rxaud_gain_d10);
     nvs_get_u8(s_nvs, KEY_RXA_PWIDTH, &out->rxaud_pan_width_x10);
     nvs_get_u8(s_nvs, KEY_RXA_PBLEND, &out->rxaud_pan_blend_x100);
@@ -1217,6 +1265,13 @@ static void load_from_nvs(qmx_settings_t *out)
      * a reboot - and the waterfall rate already has history there. Only a
      * value above the range is nonsense worth replacing. */
     if (out->wf_rows_per_s > 40) out->wf_rows_per_s = DEF_WF_ROWS;
+    if (nvs_get_u8(s_nvs, KEY_SPEC_PEAK, &out->spec_peak_s) != ESP_OK)
+        out->spec_peak_s = DEF_SPEC_PEAK;
+    if (out->spec_peak_s > 60) out->spec_peak_s = DEF_SPEC_PEAK;
+    if (nvs_get_u16(s_nvs, KEY_CW_PEAK, &out->cw_peak_hz) != ESP_OK)
+        out->cw_peak_hz = DEF_CW_PEAK;
+    if (out->cw_peak_hz && (out->cw_peak_hz < 40 || out->cw_peak_hz > 1000))
+        out->cw_peak_hz = DEF_CW_PEAK;
     if (nvs_get_u8(s_nvs, KEY_DISP_FLIP, &u8v) == ESP_OK) out->display_flip = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_QMX_VOL, &u8v) == ESP_OK) out->qmx_vol_db = (u8v <= 199) ? u8v : 199;
     {
@@ -1233,6 +1288,7 @@ static void load_from_nvs(qmx_settings_t *out)
        one rather than printing something nobody has seen. */
     if (nvs_get_u8(s_nvs, KEY_FREQ_SEP, &u8v) == ESP_OK) out->freq_sep_style = (u8v <= 1) ? u8v : 0;
     if (nvs_get_u8(s_nvs, KEY_CW_DECODE, &u8v) == ESP_OK) out->cw_decode_en = (u8v != 0);
+    if (nvs_get_u8(s_nvs, KEY_LOG_VIEW_ALL, &u8v) == ESP_OK) out->log_view_all = (u8v != 0);
     /* Only 2 or 4 are offered; anything else on flash is a value this build
        does not know, so it falls back to the default rather than being
        clamped into a shape the UI cannot show. */
@@ -1770,11 +1826,11 @@ void settings_set_my_state(const char *st)
 {
     if (!s_ready) return;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
-    s_pending.my_state[0] = ' ';
+    s_pending.my_state[0] = '\0';
     if (st && st[0] && st[1]) {
         s_pending.my_state[0] = (char)toupper((unsigned char)st[0]);
         s_pending.my_state[1] = (char)toupper((unsigned char)st[1]);
-        s_pending.my_state[2] = ' ';
+        s_pending.my_state[2] = '\0';
     }
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_MY_STATE);
@@ -1867,6 +1923,48 @@ void settings_set_cw_cal_hz(int16_t hz)
     }
     s_pending.cw_cal_hz = hz;
     mark_dirty(DIRTY_CW_CAL);
+}
+
+/* T89: one place that maps a sub-mode to its slot. Every caller goes through
+ * here, so the three cannot drift apart the way a switch at each call site
+ * would. 1 = FT4, 2 = JS8, anything else = FT8. */
+uint32_t settings_get_ftx_freq_hz(uint8_t op_mode)
+{
+    qmx_settings_t c; settings_load_all(&c);
+    switch (op_mode) {
+        case 1:  return c.ft4_freq_hz;
+        case 2:  return c.js8_freq_hz;
+        default: return c.ft8_freq_hz;
+    }
+}
+void settings_set_ftx_freq_hz(uint8_t op_mode, uint32_t hz)
+{
+    switch (op_mode) {
+        case 1:
+            if (s_pending.ft4_freq_hz == hz) return;
+            s_pending.ft4_freq_hz = hz; mark_dirty(DIRTY_FT4_FREQ); break;
+        case 2:
+            if (s_pending.js8_freq_hz == hz) return;
+            s_pending.js8_freq_hz = hz; mark_dirty(DIRTY_JS8_FREQ); break;
+        default:
+            settings_set_ft8_freq_hz(hz); break;
+    }
+}
+
+uint16_t settings_get_sb_lowcut_hz(void)
+{
+    if (!s_ready || !s_mutex) return 300;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t v = s_pending.sb_lowcut_hz;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+void settings_set_sb_lowcut_hz(uint16_t hz)
+{
+    if (hz > 600) hz = 600;
+    if (s_pending.sb_lowcut_hz == hz) return;
+    s_pending.sb_lowcut_hz = hz;
+    mark_dirty(DIRTY_SB_LOWCUT);
 }
 
 void settings_set_ft8_filters(const ft8_filters_t *f)
@@ -2388,6 +2486,59 @@ uint8_t settings_get_wf_rows_per_s(void)
     return v;
 }
 
+float settings_get_ema_alpha(void)
+{
+    if (!s_ready) return DEF_EMA_ALPHA;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    float v = s_pending.ema_alpha;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+uint8_t settings_get_spec_peak_s(void)
+{
+    if (!s_ready) return DEF_SPEC_PEAK;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint8_t v = s_pending.spec_peak_s;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+void settings_set_spec_peak_s(uint8_t secs)
+{
+    if (!s_ready) return;
+    /* Out of range falls back to OFF rather than to a window nobody asked
+     * for - the same rule the rows/s setter below states, and 0 is a valid
+     * value here too. */
+    if (secs > 60) secs = DEF_SPEC_PEAK;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.spec_peak_s == secs) { xSemaphoreGive(s_mutex); return; }
+    s_pending.spec_peak_s = secs;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_SPEC_PEAK);
+}
+
+uint16_t settings_get_cw_peak_hz(void)
+{
+    if (!s_ready) return DEF_CW_PEAK;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t v = s_pending.cw_peak_hz;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+void settings_set_cw_peak_hz(uint16_t hz)
+{
+    if (!s_ready) return;
+    if (hz && hz < 40) hz = 40;
+    if (hz > 1000)     hz = DEF_CW_PEAK;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.cw_peak_hz == hz) { xSemaphoreGive(s_mutex); return; }
+    s_pending.cw_peak_hz = hz;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_CW_PEAK);
+}
+
 void settings_set_wf_rows_per_s(uint8_t rows)
 {
     if (!s_ready) return;
@@ -2517,7 +2668,16 @@ void settings_set_activation(uint8_t type, const char *ref)
         while (n > 0 && clean[n - 1] == ' ') n--;
         clean[n] = '\0';
     }
-    if (type > 2 || !clean[0]) { type = 0; clean[0] = '\0'; }
+    /* ⛔ THE BOUND IS THE TABLE, NOT A LITERAL 2. This read `type > 2` and
+     * silently turned every programme past SOTA into "not activating", so
+     * WWFF, IOTA, GMA, WCA and WWBOTA built, drew their buttons and did
+     * nothing at all. Found by exercising the API after the build passed -
+     * the build could not see it, and neither could reading the UI code.
+     * settings_activation_type_count() rather than ACT_N because the table
+     * is defined further down this file. */
+    if (type >= settings_activation_type_count() || !clean[0]) {
+        type = 0; clean[0] = '\0';
+    }
 
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     bool same = (s_pending.act_type == type) && (strcmp(s_pending.act_ref, clean) == 0);
@@ -2561,13 +2721,84 @@ bool settings_get_activation_ref(char *out, size_t out_sz)
     return on;
 }
 
+/* ⭐ THE PROGRAMME TABLE. One place, because three things have to agree about
+ * every entry: the word that goes in ADIF MY_SIG, the dedicated ADIF field
+ * (where one exists), and how many contacts make the activation count.
+ *
+ * ⛔ THE DEDICATED FIELD IS NOT COSMETIC. ADIF 3.1.6 makes MY_SIG a free-text
+ * String with no enumeration, so any programme can be written there - but
+ * POTA, SOTA, WWFF and IOTA ALSO have their own fields (MY_POTA_REF,
+ * MY_SOTA_REF, MY_WWFF_REF, MY_IOTA), and those are what the SOTA, WWFF and
+ * IOTA uploaders read. MY_SIG alone is enough for POTA's own uploader and for
+ * nothing else, so both are written. GMA, WCA and WWBOTA have no ADIF field of
+ * their own and travel as MY_SIG/MY_SIG_INFO only, which is what their log
+ * checkers expect.
+ *
+ * ⚠ The targets are the programme's own rule, not ours: POTA 10, SOTA 4,
+ * WWFF 44. The rest publish no single number, and 0 means the panel shows the
+ * count without claiming a threshold - inventing one would tell an operator he
+ * can go home when the programme says otherwise.
+ *
+ * ⛔ IDS ARE PERSISTED IN NVS (act_type). Append only; never renumber. 1 and 2
+ * were POTA and SOTA before the others existed and must stay where they are,
+ * or a unit updated mid-activation changes programme under the operator. */
+static const struct {
+    const char *sig;      /* ADIF MY_SIG */
+    const char *field;    /* dedicated ADIF field, NULL when the programme has none */
+    const char *hint;     /* reference format, for the entry field's placeholder */
+    const char *desc;     /* what the programme is, one line for the Activation window */
+    uint8_t     target;   /* contacts for a valid activation, 0 = no published number */
+} k_act[] = {
+    { NULL,     NULL,          NULL,        NULL, 0 },   /* 0 = not activating */
+    { "POTA",   "MY_POTA_REF", "DL-0123",
+      "Parks on the Air - national, state and regional parks.", 10 },
+    { "SOTA",   "MY_SOTA_REF", "OZ/SJ-001",
+      "Summits on the Air - mountain tops, scored by height.", 4 },
+    { "WWFF",   "MY_WWFF_REF", "DLFF-0123",
+      "World Wide Flora & Fauna - nature reserves and protected land.", 44 },
+    { "IOTA",   "MY_IOTA",     "EU-005",
+      "Islands on the Air - islands and island groups, run by the RSGB.", 0 },
+    { "GMA",    NULL,          "DL/BE-001",
+      "Global Mountain Activity - summits, huts and castles worldwide.", 0 },
+    { "WCA",    NULL,          "DL-00123",
+      "World Castles Award - castles and fortifications.", 0 },
+    { "WWBOTA", NULL,          "DL-00123",
+      "Bunkers on the Air - military bunkers and defence works.", 0 },
+};
+#define ACT_N ((uint8_t)(sizeof(k_act) / sizeof(k_act[0])))
+
+uint8_t settings_activation_type_count(void) { return ACT_N; }
+
+const char *settings_activation_sig_name_for(uint8_t type)
+{
+    return (type > 0 && type < ACT_N) ? k_act[type].sig : NULL;
+}
+
+const char *settings_activation_ref_hint(uint8_t type)
+{
+    return (type > 0 && type < ACT_N) ? k_act[type].hint : NULL;
+}
+
+const char *settings_activation_desc(uint8_t type)
+{
+    return (type > 0 && type < ACT_N) ? k_act[type].desc : NULL;
+}
+
+const char *settings_activation_adif_field(void)
+{
+    uint8_t t = settings_get_activation_type();
+    return (t > 0 && t < ACT_N) ? k_act[t].field : NULL;
+}
+
+uint8_t settings_activation_target(void)
+{
+    uint8_t t = settings_get_activation_type();
+    return (t > 0 && t < ACT_N) ? k_act[t].target : 0;
+}
+
 const char *settings_activation_sig_name(void)
 {
-    switch (settings_get_activation_type()) {
-        case 1:  return "POTA";
-        case 2:  return "SOTA";
-        default: return NULL;
-    }
+    return settings_activation_sig_name_for(settings_get_activation_type());
 }
 
 void settings_set_swr_limit_x10(uint8_t v)
@@ -2605,6 +2836,36 @@ void settings_set_js8_submode(uint8_t v)
     s_pending.js8_submode = v;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_JS8_SUBMODE);
+}
+
+/* T132: the ALTERNATE submode to decode as well as the primary, on a duty
+ * cycle. Same NSUBMODE numbering as settings_set_js8_submode() above, plus
+ * 255 for off, and clamped here for exactly the same reason - NVS and an
+ * imported config file are writers this module cannot see.
+ *
+ * ⛔ AN UNKNOWN VALUE FALLS BACK TO OFF, not to Normal. "Normal" is a legal
+ * submode but a useless ALTERNATE (it is what we are already decoding), and
+ * silently turning a corrupted byte into extra CPU load on core 1 is worse
+ * than silently doing nothing. js8_alt_select() refuses it too; this is the
+ * outer of the two. */
+void settings_set_js8_alt_submode(uint8_t v)
+{
+    if (!s_ready) return;
+    if (v != 1 && v != 2 && v != 4) v = 255;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.js8_alt_submode == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.js8_alt_submode = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_JS8_ALT_SUB);
+}
+
+uint8_t settings_get_js8_alt_submode(void)
+{
+    if (!s_ready) return 255;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint8_t v = s_pending.js8_alt_submode;
+    xSemaphoreGive(s_mutex);
+    return v;
 }
 
 uint8_t settings_get_js8_submode(void)
@@ -3099,6 +3360,25 @@ void settings_set_cw_decode_en(bool v)
     mark_dirty(DIRTY_CW_DECODE);
 }
 
+bool settings_get_log_view_all(void)
+{
+    if (!s_ready || !s_mutex) return false;   // Today, until settings are up
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.log_view_all;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+void settings_set_log_view_all(bool v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.log_view_all == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.log_view_all = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_LOG_VIEW_ALL);
+}
+
 uint8_t settings_get_cw_decode_rows(void)
 {
     if (!s_ready || !s_mutex) return DEF_CW_ROWS;   // default until settings are up
@@ -3458,6 +3738,15 @@ void settings_set_field_day_en(bool v)
     s_pending.field_day_en = v;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_FIELD_DAY_EN);
+}
+
+bool settings_get_field_day_en(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.field_day_en;
+    xSemaphoreGive(s_mutex);
+    return v;
 }
 
 void settings_set_fd_class(const char *cls)

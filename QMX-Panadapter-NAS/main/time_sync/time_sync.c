@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "psram_task.h"
 #include "unit_gps/unit_gps.h"   // liveness wrapper + the module that owns freshness
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "time_sync";
 
@@ -145,7 +146,7 @@ time_sync_source_t time_sync_get_effective_source(void)
 {
     if (time_sync_unit_gps_is_live())                   return TIME_SOURCE_UNIT_GPS;  // Unit GPS on PORT.A
     if (gps_is_live())                                  return TIME_SOURCE_QMX;       // QMX+ GPS
-    if (wifi_is_connected() && wifi_time_is_valid())    return TIME_SOURCE_SNTP;
+    if (net_is_up() && wifi_time_is_valid())    return TIME_SOURCE_SNTP;
     return s_source;   // offline: FT8 / manual / RTC / naive-QMX
 }
 
@@ -583,7 +584,7 @@ bool time_sync_notify_unit_gps(int year, int mon, int mday,
     }
 
     // Log a disagreement with the internet, but apply the satellite anyway.
-    if (wifi_is_connected() && wifi_time_is_valid()) {
+    if (net_is_up() && wifi_time_is_valid()) {
         struct timeval sys;
         gettimeofday(&sys, NULL);
         int64_t sys_us = (int64_t)sys.tv_sec * 1000000LL + sys.tv_usec;
@@ -749,7 +750,7 @@ static bool rtc_date_is_trustworthy(time_t rtc_now)
 bool time_sync_date_verified(void)
 {
     if (s_dev_force_unverified) return s_date_verified;
-    return s_date_verified || (wifi_is_connected() && wifi_time_is_valid());
+    return s_date_verified || (net_is_up() && wifi_time_is_valid());
 }
 
 void time_sync_confirm_date(void)
@@ -817,7 +818,7 @@ bool time_sync_notify_qmx(int h, int m, int s)
     time_t  utc       = (time_t)(day_start + h * 3600 + m * 60 + s);
 
     int64_t now_ms    = esp_timer_get_time() / 1000;
-    bool wifi_sntp_ok = wifi_is_connected() && wifi_time_is_valid();
+    bool wifi_sntp_ok = net_is_up() && wifi_time_is_valid();
 #if TIMESYNC_FORCE_OFFLINE_TEST
     // TEMP: pretend we are offline so the POTA path can be exercised on a bench
     // that has WiFi. Disabling WiFi for real would persist to NVS and strand the
@@ -902,7 +903,7 @@ static int apply_ft8_correction(int delta_ms, bool leash, time_t *out_utc)
         // reference when the radio is unplugged, and suppressing the FT8
         // nudge on the strength of it would leave such a unit with NO
         // discipline at all.
-        bool ref_ok = (wifi_is_connected() && wifi_time_is_valid())
+        bool ref_ok = (net_is_up() && wifi_time_is_valid())
                       || gps_is_live()
                       || time_sync_unit_gps_is_live();
         if (ref_ok) {
@@ -1022,7 +1023,7 @@ static bool apply_gps_tick(int h, int m, int s, int64_t flip_us)
         return false;
     }
 
-    if (wifi_is_connected() && wifi_time_is_valid()) {
+    if (net_is_up() && wifi_time_is_valid()) {
         struct timeval sys;
         gettimeofday(&sys, NULL);
         int64_t sys_us = (int64_t)sys.tv_sec * 1000000LL + sys.tv_usec;
@@ -1238,7 +1239,7 @@ static void qmx_sync_once(void)
 {
     int h, m, s;
     int64_t flip_us;
-    bool sntp_up = wifi_is_connected() && wifi_time_is_valid();
+    bool sntp_up = net_is_up() && wifi_time_is_valid();
 
     /* ⭐ GP FIRST, FOR THE DATE AND THE GPS VERDICT - NOT FOR THE CLOCK.
      * It settles whether this radio has a GPS from the radio's own answer
@@ -1248,7 +1249,7 @@ static void qmx_sync_once(void)
     bool gp_answered = time_sync_try_qmx_gp();
     if (gp_answered) {
         s_qmx_detect_done = true;   // settled, and not by inference
-        sntp_up = wifi_is_connected() && wifi_time_is_valid();   // GP may have stepped the clock
+        sntp_up = net_is_up() && wifi_time_is_valid();   // GP may have stepped the clock
     }
 
     /* â­ A LOCKED RECEIVER OUTRANKS A CLAIMED ONE.

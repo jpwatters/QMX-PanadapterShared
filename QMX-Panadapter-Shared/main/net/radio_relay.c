@@ -16,6 +16,7 @@
 
 #include "audio.h"
 #include "wifi.h"           // wifi_is_connected(): no socket calls before the stack is up
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "relay";
 
@@ -304,7 +305,7 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
      * ("Invalid mbox") - a boot loop as soon as a NAS address is saved
      * (hardware-observed 2026-10-04, cat_link at 4.0 s uptime). Not connected
      * yet is an ordinary "try again": link_task retries every ~2 s. */
-    if (!wifi_is_connected()) {
+    if (!net_is_up()) {
         note_fail("waiting for WiFi", 0);
         return ESP_ERR_INVALID_STATE;
     }
@@ -495,7 +496,7 @@ void radio_relay_term_close(void)
 int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
 {
     if (!out || max <= 0) return 0;
-    if (!wifi_is_connected()) return -1;
+    if (!net_is_up()) return -1;
 
     int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s < 0) return -1;

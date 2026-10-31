@@ -15,6 +15,7 @@
 #include "storage/sd_archive.h"
 
 #include "esp_log.h"
+#include "eth_w5500.h"
 
 static const char *TAG = "help";
 
@@ -130,7 +131,7 @@ static bool cond_iq_bad(void)     { return ui_iq_mode_warning_active(); }
 // Only a fault if WiFi is supposed to be up. Someone operating POTA with WiFi
 // deliberately off must not be told their network is broken - the row stays in the
 // list as a normal question, it just is not flagged as happening now.
-static bool cond_no_wifi(void)    { return panadapter_wifi_is_enabled() && !wifi_is_connected(); }
+static bool cond_no_wifi(void)    { return panadapter_wifi_is_enabled() && !wifi_is_connected() && !eth_is_connected(); }
 static bool cond_no_decodes(void)
 {
     // Only meaningful in FT8/FT4, and only once the radio is actually there -

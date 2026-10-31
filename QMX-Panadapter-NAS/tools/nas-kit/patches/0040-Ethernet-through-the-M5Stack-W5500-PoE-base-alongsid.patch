@@ -1,0 +1,1078 @@
+From 69c8395aac66af0acf75c9a1db620b917890a161 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Wed, 28 Oct 2026 12:00:00 -0500
+Subject: [PATCH 40/41] Ethernet through the M5Stack W5500 PoE base, alongside
+ Wi-Fi
+
+net/eth_w5500.c looks for a W5500 on the Tab5's M5-Bus at boot (MOSI G18,
+MISO G19, SCK G5, CS G52, INT G51, RST G48; SPI3, because SPI2 is the SD
+card's). No base: one log line, nothing else changes. Base fitted: an
+Ethernet netif comes up next to the Wi-Fi station with a higher route
+priority (200 vs 100), so while it has a DHCP address it carries new
+traffic - the NAS relay, the web page, spots, SNTP, updates - and when the
+cable is pulled traffic falls back to Wi-Fi by itself. qmx.local is
+announced on both (mDNS predefined ETH_DEF interface).
+
+- wifi.c: the got-IP services (mDNS, SNTP, web server, rigctld) are now
+  wifi_net_services_start(), called from both links; the default event loop
+  may already exist (Ethernet starts in parallel).
+- net_is_up() (Ethernet OR Wi-Fi) replaces wifi_is_connected() wherever the
+  question is "can I reach the network": radio_relay (connect, discovery),
+  spots, rbn, dxcluster, psk_rx, pskreporter, pskr_self, wspr_self,
+  band_conditions, update_check, ota_update, time_sync's SNTP checks.
+- Bottom bar and web page show "Ethernet" and its address while it is the
+  link in use; /api/status has an "eth" object; the diag log a line.
+- PHY reset pin set to G48 explicitly: IDF's default is GPIO 5, our SCK.
+- sdkconfig / sdkconfig.defaults: CONFIG_ETH_SPI_ETHERNET_W5500=y.
+
+Full idf.py build (ESP-IDF v5.4.4, standing patches applied) succeeds;
+check_tx_guard, check_unattended_tx, check_dirty_bits, check_web,
+check_webui and check_docs clean. Not yet run with a base on a Tab5.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md                  |  33 +++++-
+ main/CMakeLists.txt        |   2 +
+ main/main.c                |   5 +
+ main/net/band_conditions.c |   3 +-
+ main/net/dxcluster.c       |   3 +-
+ main/net/eth_w5500.c       | 225 +++++++++++++++++++++++++++++++++++++
+ main/net/eth_w5500.h       |  50 +++++++++
+ main/net/ota_update.c      |   3 +-
+ main/net/psk_rx.c          |   3 +-
+ main/net/pskr_self.c       |   3 +-
+ main/net/pskreporter.c     |   3 +-
+ main/net/radio_relay.c     |   5 +-
+ main/net/rbn.c             |   5 +-
+ main/net/spots.c           |   5 +-
+ main/net/update_check.c    |   3 +-
+ main/net/webserver.c       |  13 +++
+ main/net/wspr_self.c       |   5 +-
+ main/net/www/index.html    |  10 +-
+ main/time_sync/time_sync.c |  17 +--
+ main/ui/help_topics.c      |   3 +-
+ main/ui/sched_modal.c      |   3 +-
+ main/util/diag_log.c       |   4 +
+ main/util/status.c         |  11 ++
+ main/wifi/wifi.c           |  59 ++++++----
+ main/wifi/wifi.h           |   5 +
+ sdkconfig                  |   2 +-
+ sdkconfig.defaults         |   4 +
+ 27 files changed, 433 insertions(+), 54 deletions(-)
+ create mode 100644 main/net/eth_w5500.c
+ create mode 100644 main/net/eth_w5500.h
+
+diff --git a/README.md b/README.md
+index 07be6b9d..9f0f7871 100644
+--- a/README.md
++++ b/README.md
+@@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+ 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
+ 5. M5Stack Tab5 discovery with the web browser at http://qmx.local
+ 6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
+-7. An update kit that rebuilds all of this on each new upstream release
++7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
++8. An update kit that rebuilds all of this on each new upstream release
+ 
+ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.0; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
+ 
+@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
+ * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
+ * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
+ 
++**Wired Ethernet (M5Stack W5500 PoE base)**
++
++The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
++
++*Installation*
++1. Power the Tab5 off. Plug the W5500 PoE base onto the M5-Bus on the back. No wiring or soldering: the bus carries the signals below. Leave Port B unplugged (G52 is also Port B's output).
++2. Connect the base's Ethernet port to your switch. PoE (IEEE 802.3af) powers the base itself; keep the Tab5 on its own USB-C power, because M5Stack documents the Tab5's M5-Bus 5 V as an output and it is not confirmed that the Tab5 can run from the base.
++3. Flash this firmware as usual (`bash tools/mac-build-flash.sh`) and power-cycle the Tab5. Nothing needs configuring: the firmware looks for the base at every boot.
++4. In your router, give the Tab5 a DHCP reservation for its **Ethernet** MAC address, which differs from the Wi-Fi one. The serial log and `/api/status` (`eth.mac`) show it.
++
++| W5500 signal | M5-Bus pin | Tab5 GPIO |
++|---|---|---|
++| MOSI | 7 | G18 |
++| MISO | 9 | G19 |
++| SCK | 11 | G5 |
++| CS | 10 | G52 |
++| INT | 26 | G51 |
++| RST | 22 | G48 |
++
++The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
++
++*Operation*
++* Startup: about a second after power-on the log says `W5500 PoE base found on the M5-Bus, MAC ...`, then `link up: 100 Mbit/s full duplex` and `address 192.168.x.y - Ethernet is now the preferred route`. The bottom bar shows **Ethernet** and that address in place of the Wi-Fi network; the web page's bottom bar shows `Ethernet 100 Mbit/s <address>`. qmx.local answers on both links, and Find NAS searches over Ethernet.
++* No base fitted: the log says `no W5500 PoE base on the M5-Bus - Wi-Fi only` once and everything is as before.
++* Cable pulled: the log says `link down`; the NAS relay link drops and reconnects over Wi-Fi within seconds, and the bottom bar goes back to the Wi-Fi network. Plugging the cable back in moves new connections back to Ethernet.
++* Shutdown: no procedure is needed; unplug USB-C and the Ethernet cable. Settings are saved as they change.
++* Status for scripts: `/api/status` has an `eth` object (`present`, `link`, `in_use`, `ip`, `mbps`, `full_duplex`, `mac`).
++
++*Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
++
+ **Mac tools**
+ * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
+ * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 57f37c3e..9527addd 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -111,6 +111,7 @@ idf_component_register(
+         "usb_hid_mouse.c"
+         "net/rigctld_server.c"
+         "net/radio_relay.c"
++        "net/eth_w5500.c"
+         "net/reader_net.c"
+         "net/manual_embed.c"
+         "net/update_check.c"
+@@ -206,6 +207,7 @@ idf_component_register(
+         nvs_flash
+         esp_wifi
+         esp_netif
++        esp_eth       # net/eth_w5500.c - the W5500 PoE base
+         esp_event
+         lwip
+         esp_http_server
+diff --git a/main/main.c b/main/main.c
+index 769d8a56..693fc075 100644
+--- a/main/main.c
++++ b/main/main.c
+@@ -84,6 +84,7 @@ static const char *TAG = "main";
+ /* The ledger macro moved to util/mem_ledger.h on 2026-10-04 - the marks
+  * that matter are now outside app_main. See that header for the why. */
+ #include "util/mem_ledger.h"
++#include "eth_w5500.h"
+ 
+ /* SETTLING MARKS (2026-10-04).
+  *
+@@ -703,6 +704,10 @@ void app_main(void)
+     #if BENCH_WIFI_ENABLED != 0
+     panadapter_wifi_start();
+     MEM_LEDGER("wifi_start (hosted/SDIO)");
++    // Wired Ethernet if the W5500 PoE base is on the M5-Bus (net/eth_w5500.c);
++    // probes on its own task and runs alongside Wi-Fi, preferred while it has
++    // an address. Nothing changes when no base is fitted.
++    eth_w5500_start();
+     // ⭐ REVERSED 2026-09-06, and the reason is measured rather than tidy.
+     //
+     // This used to wait for the SD mount BEFORE starting WiFi, on the strength
+diff --git a/main/net/band_conditions.c b/main/net/band_conditions.c
+index 0a7b4a8f..119476eb 100644
+--- a/main/net/band_conditions.c
++++ b/main/net/band_conditions.c
+@@ -27,6 +27,7 @@
+ #include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "band_cond";
+ static const char *SOLAR_URL = "https://www.hamqsl.com/solarxml.php";
+@@ -178,7 +179,7 @@ static void band_conditions_task(void *arg)
+         vTaskDelete(NULL);
+         return;
+     }
+-    while (!wifi_is_connected()) {
++    while (!net_is_up()) {
+         vTaskDelay(pdMS_TO_TICKS(500));
+     }
+     for (;;) {
+diff --git a/main/net/dxcluster.c b/main/net/dxcluster.c
+index 95bc2944..219aa57b 100644
+--- a/main/net/dxcluster.c
++++ b/main/net/dxcluster.c
+@@ -44,6 +44,7 @@
+ #include <ctype.h>
+ #include <errno.h>
+ #include <time.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "dxc";
+ 
+@@ -475,7 +476,7 @@ static void dxc_task(void *arg)
+         // audio is on (standing telnet session, one of the heavier feeds -
+         // 2026-09-20)
+         if (net_quiet_active() || bg_feed_gate_active() || rx_audio_any_listener()) continue;
+-        if (!cfg.cluster_en || !cfg.my_callsign[0] || !wifi_is_connected()) {
++        if (!cfg.cluster_en || !cfg.my_callsign[0] || !net_is_up()) {
+             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_CLUSTER, NULL, 0); s_pub_count = 0; }
+             continue;
+         }
+diff --git a/main/net/eth_w5500.c b/main/net/eth_w5500.c
+new file mode 100644
+index 00000000..b105c9b0
+--- /dev/null
++++ b/main/net/eth_w5500.c
+@@ -0,0 +1,225 @@
++// See eth_w5500.h.
++
++#include "eth_w5500.h"
++#include "wifi.h"
++
++#include <stdio.h>
++#include <string.h>
++
++#include "driver/gpio.h"
++#include "driver/spi_master.h"
++#include "esp_eth.h"
++#include "esp_eth_mac_spi.h"
++#include "esp_event.h"
++#include "esp_log.h"
++#include "esp_mac.h"
++#include "esp_netif.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
++
++static const char *TAG = "eth";
++
++#define ETH_SPI_HOST   SPI3_HOST     /* SPI2 is the SD card's */
++#define ETH_PIN_MOSI   18
++#define ETH_PIN_MISO   19
++#define ETH_PIN_SCK    5
++#define ETH_PIN_CS     52
++#define ETH_PIN_INT    51
++#define ETH_PIN_RST    48
++#define ETH_SPI_MHZ    20            /* W5500 is rated to 80; 20 is ample (the
++                                        NAS I/Q stream is ~1.6 Mbit/s) and kind
++                                        to the M5-Bus connector */
++/* Above the Wi-Fi station's 100, so Ethernet is the default route while it
++ * has an address and Wi-Fi takes over when it loses it. */
++#define ETH_ROUTE_PRIO 200
++
++static esp_eth_handle_t s_eth;
++static esp_netif_t     *s_netif;
++static volatile bool    s_present;
++static volatile bool    s_link;
++static volatile bool    s_got_ip;
++static volatile int     s_speed;
++static volatile bool    s_full;
++static char             s_ip[16] = "0.0.0.0";
++static char             s_mac[18] = "";
++
++static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *data)
++{
++    (void)arg; (void)base; (void)data;
++    switch (id) {
++    case ETHERNET_EVENT_CONNECTED: {
++        eth_speed_t sp = ETH_SPEED_10M;
++        eth_duplex_t dx = ETH_DUPLEX_HALF;
++        esp_eth_ioctl(s_eth, ETH_CMD_G_SPEED, &sp);
++        esp_eth_ioctl(s_eth, ETH_CMD_G_DUPLEX_MODE, &dx);
++        s_speed = sp == ETH_SPEED_100M ? 100 : 10;
++        s_full  = dx == ETH_DUPLEX_FULL;
++        s_link  = true;
++        ESP_LOGI(TAG, "link up: %d Mbit/s %s duplex", s_speed, s_full ? "full" : "half");
++        break;
++    }
++    case ETHERNET_EVENT_DISCONNECTED:
++        s_link = false;
++        s_got_ip = false;
++        s_speed = 0;
++        snprintf(s_ip, sizeof(s_ip), "0.0.0.0");
++        ESP_LOGW(TAG, "link down (cable out?) - Wi-Fi carries the traffic until it is back");
++        break;
++    case ETHERNET_EVENT_START:
++        ESP_LOGI(TAG, "started");
++        break;
++    case ETHERNET_EVENT_STOP:
++        s_link = false;
++        s_got_ip = false;
++        ESP_LOGI(TAG, "stopped");
++        break;
++    default:
++        break;
++    }
++}
++
++static void on_ip_event(void *arg, esp_event_base_t base, int32_t id, void *data)
++{
++    (void)arg; (void)base;
++    if (id == IP_EVENT_ETH_GOT_IP) {
++        const ip_event_got_ip_t *e = (const ip_event_got_ip_t *)data;
++        snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&e->ip_info.ip));
++        s_got_ip = true;
++        ESP_LOGI(TAG, "address %s (gateway " IPSTR ") - Ethernet is now the preferred route",
++                 s_ip, IP2STR(&e->ip_info.gw));
++        /* Same services the Wi-Fi got-IP path starts (all idempotent): the
++         * name qmx.local, SNTP, the web server and rigctld. A Tab5 whose Wi-Fi
++         * is switched off or never joins still gets all of them. */
++        wifi_net_services_start();
++    } else if (id == IP_EVENT_ETH_LOST_IP) {
++        s_got_ip = false;
++        snprintf(s_ip, sizeof(s_ip), "0.0.0.0");
++        ESP_LOGW(TAG, "address lost");
++    }
++}
++
++static void eth_task(void *arg)
++{
++    (void)arg;
++
++    /* Both may already exist (wifi.c creates them too); either order is fine. */
++    esp_err_t e = esp_netif_init();
++    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
++        ESP_LOGE(TAG, "esp_netif_init: %s - no Ethernet", esp_err_to_name(e));
++        vTaskDelete(NULL);
++    }
++    e = esp_event_loop_create_default();
++    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
++        ESP_LOGE(TAG, "event loop: %s - no Ethernet", esp_err_to_name(e));
++        vTaskDelete(NULL);
++    }
++    e = gpio_install_isr_service(0);
++    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
++        ESP_LOGE(TAG, "GPIO ISR service: %s - no Ethernet", esp_err_to_name(e));
++        vTaskDelete(NULL);
++    }
++
++    spi_bus_config_t bus = {
++        .mosi_io_num = ETH_PIN_MOSI,
++        .miso_io_num = ETH_PIN_MISO,
++        .sclk_io_num = ETH_PIN_SCK,
++        .quadwp_io_num = -1,
++        .quadhd_io_num = -1,
++    };
++    e = spi_bus_initialize(ETH_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
++    if (e != ESP_OK) {
++        ESP_LOGE(TAG, "SPI3 bus: %s - no Ethernet", esp_err_to_name(e));
++        vTaskDelete(NULL);
++    }
++
++    spi_device_interface_config_t dev = {
++        .mode = 0,
++        .clock_speed_hz = ETH_SPI_MHZ * 1000 * 1000,
++        .queue_size = 20,
++        .spics_io_num = ETH_PIN_CS,
++    };
++    eth_w5500_config_t wcfg = ETH_W5500_DEFAULT_CONFIG(ETH_SPI_HOST, &dev);
++    wcfg.int_gpio_num = ETH_PIN_INT;
++
++    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
++    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
++    phy_cfg.reset_gpio_num = ETH_PIN_RST;   /* ⛔ the default is GPIO 5 - our SCK */
++    phy_cfg.phy_addr = 1;
++
++    esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&wcfg, &mac_cfg);
++    esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phy_cfg);
++    if (!mac || !phy) {
++        ESP_LOGE(TAG, "W5500 driver could not be created");
++        goto absent;
++    }
++    esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(mac, phy);
++    /* The version-register check inside this call is the probe: with no base
++     * fitted nothing answers and it fails cleanly. */
++    e = esp_eth_driver_install(&cfg, &s_eth);
++    if (e != ESP_OK) {
++        ESP_LOGI(TAG, "no W5500 PoE base on the M5-Bus (%s) - Wi-Fi only", esp_err_to_name(e));
++        goto absent;
++    }
++    s_present = true;
++
++    /* The W5500 has no MAC address of its own: use the chip's Ethernet MAC,
++     * which is unique and different from the Wi-Fi one - so a DHCP
++     * reservation for the wired link needs THIS address. */
++    uint8_t m[6];
++    if (esp_read_mac(m, ESP_MAC_ETH) == ESP_OK) {
++        esp_eth_ioctl(s_eth, ETH_CMD_S_MAC_ADDR, m);
++        snprintf(s_mac, sizeof(s_mac), "%02x:%02x:%02x:%02x:%02x:%02x",
++                 m[0], m[1], m[2], m[3], m[4], m[5]);
++    }
++
++    esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
++    base.route_prio = ETH_ROUTE_PRIO;
++    esp_netif_config_t ncfg = { .base = &base, .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH };
++    s_netif = esp_netif_new(&ncfg);
++    if (!s_netif) {
++        ESP_LOGE(TAG, "netif could not be created");
++        vTaskDelete(NULL);
++    }
++    esp_netif_attach(s_netif, esp_eth_new_netif_glue(s_eth));
++
++    esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, on_eth_event, NULL);
++    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, on_ip_event, NULL);
++    esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_LOST_IP, on_ip_event, NULL);
++
++    e = esp_eth_start(s_eth);
++    ESP_LOGI(TAG, "W5500 PoE base found on the M5-Bus, MAC %s - %s", s_mac,
++             e == ESP_OK ? "waiting for the link and DHCP" : esp_err_to_name(e));
++    vTaskDelete(NULL);
++
++absent:
++    if (mac) mac->del(mac);
++    if (phy) phy->del(phy);
++    spi_bus_free(ETH_SPI_HOST);
++    vTaskDelete(NULL);
++}
++
++void eth_w5500_start(void)
++{
++    static bool started;
++    if (started) return;
++    started = true;
++    xTaskCreate(eth_task, "eth_probe", 4096, NULL, 5, NULL);
++}
++
++bool        eth_is_present(void)     { return s_present; }
++bool        eth_link_up(void)        { return s_link; }
++bool        eth_is_connected(void)   { return s_link && s_got_ip; }
++const char *eth_get_ip(void)         { return s_ip; }
++int         eth_get_speed_mbps(void) { return s_link ? s_speed : 0; }
++bool        eth_full_duplex(void)    { return s_full; }
++const char *eth_get_mac_str(void)    { return s_mac; }
++
++bool net_is_up(void)
++{
++    return eth_is_connected() || wifi_is_connected();
++}
++
++const char *net_get_ip(void)
++{
++    return eth_is_connected() ? s_ip : wifi_get_ip();
++}
+diff --git a/main/net/eth_w5500.h b/main/net/eth_w5500.h
+new file mode 100644
+index 00000000..62b8858f
+--- /dev/null
++++ b/main/net/eth_w5500.h
+@@ -0,0 +1,50 @@
++#pragma once
++
++/*
++ * eth_w5500 - wired Ethernet through the M5Stack W5500 PoE base on the Tab5's
++ * M5-Bus (on the back of the Tab5).
++ *
++ * At boot the firmware looks for a W5500 on the M5-Bus. No base fitted: it
++ * says so once in the log and nothing else changes - the Tab5 runs on Wi-Fi
++ * exactly as before. Base fitted: Ethernet comes up NEXT TO Wi-Fi, not instead
++ * of it, and is the preferred route while it has an address (its netif has a
++ * higher route priority than the Wi-Fi station). So:
++ *   - cable in, DHCP address: everything new (the NAS relay, the web page,
++ *     spots, SNTP, OTA) goes over Ethernet;
++ *   - cable pulled: traffic falls back to Wi-Fi by itself (connections that
++ *     were open on Ethernet drop and reconnect over Wi-Fi - the NAS relay
++ *     link reconnects on its own);
++ *   - cable back: new connections use Ethernet again.
++ * qmx.local is announced on both links.
++ *
++ * M5-Bus wiring (no soldering - the base plugs into the bus):
++ *   W5500   M5-Bus pin   Tab5 GPIO
++ *   MOSI        7          G18
++ *   MISO        9          G19
++ *   SCK        11          G5
++ *   CS         10          G52   (also Port B's output: leave Port B unused)
++ *   INT        26          G51
++ *   RST        22          G48
++ * SPI3 is used; SPI2 belongs to the SD card (m5stack_tab5.c).
++ */
++
++#include <stdbool.h>
++
++/* Look for the W5500 and, if it is there, start Ethernet. Returns at once;
++ * the probe and DHCP run on a task of their own. Safe to call before or after
++ * panadapter_wifi_start(). */
++void eth_w5500_start(void);
++
++bool        eth_is_present(void);      // a W5500 answered on the M5-Bus
++bool        eth_link_up(void);         // cable in and a link partner
++bool        eth_is_connected(void);    // link up AND a DHCP address held
++const char *eth_get_ip(void);          // "0.0.0.0" when no address
++int         eth_get_speed_mbps(void);  // 10 or 100, 0 when no link
++bool        eth_full_duplex(void);
++const char *eth_get_mac_str(void);     // "aa:bb:cc:dd:ee:ff" - for the DHCP reservation
++
++/* The network as a whole: Ethernet OR Wi-Fi has an address. Use this - not
++ * wifi_is_connected() - wherever the question is "can I reach the network". */
++bool        net_is_up(void);
++/* The address to show / announce: Ethernet's while it has one, else Wi-Fi's. */
++const char *net_get_ip(void);
+diff --git a/main/net/ota_update.c b/main/net/ota_update.c
+index da00fd9e..55e27598 100644
+--- a/main/net/ota_update.c
++++ b/main/net/ota_update.c
+@@ -27,6 +27,7 @@
+ #include "net/net_quiet.h"
+ #include "util/net_guard.h"
+ #include "esp_netif.h"
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ // Pause between image chunks. 1 ms was enough to stop the hardware watchdog
+ // reset this loop used to cause (esp_https_ota sizes each chunk as
+@@ -444,7 +445,7 @@ bool ota_update_start(const char *url, char *err, size_t err_len)
+         if (err) snprintf(err, err_len, "No download address");
+         return false;
+     }
+-    if (!wifi_is_connected()) {
++    if (!net_is_up()) {
+         if (err) snprintf(err, err_len, "No WiFi connection");
+         return false;
+     }
+diff --git a/main/net/psk_rx.c b/main/net/psk_rx.c
+index dc755506..f37353b4 100644
+--- a/main/net/psk_rx.c
++++ b/main/net/psk_rx.c
+@@ -35,6 +35,7 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <time.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "psk_rx";
+ 
+@@ -330,7 +331,7 @@ static void psk_rx_task(void *arg)
+ 
+         qmx_settings_t s;
+         settings_load_all(&s);
+-        if (!s.psk_rx_en || !s.my_callsign[0] || !wifi_is_connected()) continue;
++        if (!s.psk_rx_en || !s.my_callsign[0] || !net_is_up()) continue;
+         // net_quiet: this query's response cap is 64 KB and it comes over TLS -
+         // by far the largest periodic allocation on the device. Not during an
+         // update, where internal free has been measured at 5 KB. See net_quiet.h.
+diff --git a/main/net/pskr_self.c b/main/net/pskr_self.c
+index 840fde94..04de568e 100644
+--- a/main/net/pskr_self.c
++++ b/main/net/pskr_self.c
+@@ -29,6 +29,7 @@
+ #include <stdio.h>
+ #include <ctype.h>
+ #include <time.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "pskr_self";
+ static const char *BROKER_URI = "mqtt://mqtt.pskreporter.info:1883";
+@@ -305,7 +306,7 @@ static void client_destroy(void)
+ static void watchdog_task(void *arg)
+ {
+     (void)arg;
+-    while (!wifi_is_connected() || net_quiet_active()) {
++    while (!net_is_up() || net_quiet_active()) {
+         vTaskDelay(pdMS_TO_TICKS(500));
+     }
+ 
+diff --git a/main/net/pskreporter.c b/main/net/pskreporter.c
+index cf6fabdb..1a20107a 100644
+--- a/main/net/pskreporter.c
++++ b/main/net/pskreporter.c
+@@ -34,6 +34,7 @@
+ #include "freertos/semphr.h"
+ #include "lwip/sockets.h"
+ #include "lwip/netdb.h"
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "pskrep";
+ 
+@@ -299,7 +300,7 @@ static void psk_task(void *arg)
+         settings_load_all(&s);
+         if (!s.pskreporter_en || s.sim_mode_en) continue;
+         if (!s.my_callsign[0] || !s.my_grid[0]) continue;   // receiver record needs both
+-        if (!wifi_is_connected()) continue;
++        if (!net_is_up()) continue;
+ 
+         // Snapshot + clear the batch.
+         spot_t local[BATCH_MAX];
+diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
+index fed5966e..58c50c2c 100644
+--- a/main/net/radio_relay.c
++++ b/main/net/radio_relay.c
+@@ -16,6 +16,7 @@
+ 
+ #include "audio.h"
+ #include "wifi.h"           // wifi_is_connected(): no socket calls before the stack is up
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "relay";
+ 
+@@ -304,7 +305,7 @@ esp_err_t radio_relay_connect(radio_relay_cat_rx_cb_t cat_cb,
+      * ("Invalid mbox") - a boot loop as soon as a NAS address is saved
+      * (hardware-observed 2026-10-04, cat_link at 4.0 s uptime). Not connected
+      * yet is an ordinary "try again": link_task retries every ~2 s. */
+-    if (!wifi_is_connected()) {
++    if (!net_is_up()) {
+         note_fail("waiting for WiFi", 0);
+         return ESP_ERR_INVALID_STATE;
+     }
+@@ -495,7 +496,7 @@ void radio_relay_term_close(void)
+ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
+ {
+     if (!out || max <= 0) return 0;
+-    if (!wifi_is_connected()) return -1;
++    if (!net_is_up()) return -1;
+ 
+     int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+     if (s < 0) return -1;
+diff --git a/main/net/rbn.c b/main/net/rbn.c
+index 194b04da..e499d6ec 100644
+--- a/main/net/rbn.c
++++ b/main/net/rbn.c
+@@ -29,6 +29,7 @@
+ #include <ctype.h>
+ #include <errno.h>
+ #include <time.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "rbn";
+ 
+@@ -423,7 +424,7 @@ static void session(int fd, const char *mycall)
+          * SelfSpotter was open RBN delivered NOTHING, including the CW
+          * self-spots that screen exists to show. */
+ 
+-        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
++        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
+ 
+         // The operator can change callsign in the web UI while this session
+         // is still happily connected - an RBN session can run for hours with
+@@ -504,7 +505,7 @@ static void rbn_task(void *arg)
+         // holding its reconnect while an overlay is up starves that very screen.
+         if (net_quiet_active() || rx_audio_any_listener()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
+ 
+-        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) {
++        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
+             // Drop anything we were showing: stale RBN spots are worse than none.
+             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_RBN, NULL, 0); s_pub_count = 0; }
+             vTaskDelay(pdMS_TO_TICKS(5000));
+diff --git a/main/net/spots.c b/main/net/spots.c
+index f6b3f03a..bf432b17 100644
+--- a/main/net/spots.c
++++ b/main/net/spots.c
+@@ -37,6 +37,7 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <time.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "spots";
+ 
+@@ -705,7 +706,7 @@ static void spots_task(void *arg)
+         was_pota_en = s.spots_en;
+         was_sota_en = s.sota_en;
+ 
+-        if (!wifi_is_connected()) continue;
++        if (!net_is_up()) continue;
+ 
+         // net_quiet: an OTA verify needs internal heap, and a POTA fetch is a
+         // whole TLS session built and torn down. Skipping it costs one polling
+@@ -851,7 +852,7 @@ int sched_events_age_s(void)
+ 
+ bool sched_events_request(bool force)
+ {
+-    if (!wifi_is_connected()) return false;
++    if (!net_is_up()) return false;
+     int age = sched_events_age_s();
+     /* Nothing to do when what we hold is still fresh - opening the pane twice
+      * in a minute must not be two fetches on someone else's server. */
+diff --git a/main/net/update_check.c b/main/net/update_check.c
+index 0a6b51dd..0bee174e 100644
+--- a/main/net/update_check.c
++++ b/main/net/update_check.c
+@@ -26,6 +26,7 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <ctype.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "update_check";
+ 
+@@ -293,7 +294,7 @@ static void check_task(void *arg)
+         // pulls 48 KB over TLS, and the thing it would be checking for is
+         // already in flight. See net_quiet.h.
+         s_checking = true;
+-        bool ok = wifi_is_connected() && !net_quiet_active() && !bg_feed_gate_active() && do_check();
++        bool ok = net_is_up() && !net_quiet_active() && !bg_feed_gate_active() && do_check();
+         s_checking = false;
+ 
+         /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
+diff --git a/main/net/webserver.c b/main/net/webserver.c
+index c85d95f7..67dc265f 100644
+--- a/main/net/webserver.c
++++ b/main/net/webserver.c
+@@ -92,6 +92,7 @@
+ #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
+ #include "config_io.h"         // config_io_export / config_io_import
+ #include "radio_relay.h"       // network radio source (QMX on a NAS)
++#include "eth_w5500.h"         // wired Ethernet via the W5500 PoE base
+ #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
+ #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
+ #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
+@@ -725,6 +726,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+     // checking from another room as it is looking at the Tab5 itself.
+     cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
+ 
++    /* Wired Ethernet through the W5500 PoE base (net/eth_w5500.c). "in_use":
++     * it has an address and so carries the traffic (preferred route). */
++    {
++        cJSON *eth_obj = cJSON_AddObjectToObject(root, "eth");
++        cJSON_AddBoolToObject  (eth_obj, "present", eth_is_present());
++        cJSON_AddBoolToObject  (eth_obj, "link",    eth_link_up());
++        cJSON_AddBoolToObject  (eth_obj, "in_use",  eth_is_connected());
++        cJSON_AddStringToObject(eth_obj, "ip",      eth_get_ip());
++        cJSON_AddNumberToObject(eth_obj, "mbps",    eth_get_speed_mbps());
++        cJSON_AddBoolToObject  (eth_obj, "full_duplex", eth_full_duplex());
++        cJSON_AddStringToObject(eth_obj, "mac",     eth_get_mac_str());
++    }
+     cJSON *wifi_obj = cJSON_AddObjectToObject(root, "wifi");
+     cJSON_AddStringToObject(wifi_obj, "ssid", wifi_get_ssid());
+     cJSON_AddNumberToObject(wifi_obj, "rssi", wifi_get_rssi_dbm());
+diff --git a/main/net/wspr_self.c b/main/net/wspr_self.c
+index a25a653f..7ce5a480 100644
+--- a/main/net/wspr_self.c
++++ b/main/net/wspr_self.c
+@@ -52,6 +52,7 @@
+ #include <stdio.h>
+ #include <time.h>
+ #include <ctype.h>
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "wspr_self";
+ 
+@@ -274,7 +275,7 @@ static void fetch_once(const char *mycall)
+ static void wspr_self_task(void *arg)
+ {
+     (void)arg;
+-    while (!wifi_is_connected()) {
++    while (!net_is_up()) {
+         vTaskDelay(pdMS_TO_TICKS(500));
+     }
+     /* ⛔ QUERY FIRST, THEN WAIT. The delay used to come first, so nothing
+@@ -299,7 +300,7 @@ static void wspr_self_task(void *arg)
+ 
+         qmx_settings_t s;
+         settings_load_all(&s);
+-        if (!s.my_callsign[0] || !wifi_is_connected()) continue;
++        if (!s.my_callsign[0] || !net_is_up()) continue;
+         fetch_once(s.my_callsign);
+     }
+ }
+diff --git a/main/net/www/index.html b/main/net/www/index.html
+index d14008b1..05c50a34 100644
+--- a/main/net/www/index.html
++++ b/main/net/www/index.html
+@@ -8795,11 +8795,13 @@ async function tick() {
+       }
+     }
+ 
+-    /* Bottom-right: WiFi + IP */
+-    const wifi = s.wifi;
++    /* Bottom-right: the link in use - Ethernet (W5500 PoE base) while it has
++       an address, otherwise WiFi - and its IP */
++    const wifi = s.wifi, eth = s.eth;
+     document.getElementById("wifi").textContent =
+-      (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
+-                          : "--";
++      (eth && eth.in_use) ? ("Ethernet " + eth.mbps + " Mbit/s " + eth.ip)
++      : (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
++                            : "--";
+ 
+     /* QSO count + ADIF/QRZ/eQSL buttons - all hidden until there's at least
+        one QSO logged (nothing to download/upload otherwise). */
+diff --git a/main/time_sync/time_sync.c b/main/time_sync/time_sync.c
+index cc2d1cdb..fc48df5c 100644
+--- a/main/time_sync/time_sync.c
++++ b/main/time_sync/time_sync.c
+@@ -13,6 +13,7 @@
+ #include "freertos/task.h"
+ #include "psram_task.h"
+ #include "unit_gps/unit_gps.h"   // liveness wrapper + the module that owns freshness
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ 
+ static const char *TAG = "time_sync";
+ 
+@@ -145,7 +146,7 @@ time_sync_source_t time_sync_get_effective_source(void)
+ {
+     if (time_sync_unit_gps_is_live())                   return TIME_SOURCE_UNIT_GPS;  // Unit GPS on PORT.A
+     if (gps_is_live())                                  return TIME_SOURCE_QMX;       // QMX+ GPS
+-    if (wifi_is_connected() && wifi_time_is_valid())    return TIME_SOURCE_SNTP;
++    if (net_is_up() && wifi_time_is_valid())    return TIME_SOURCE_SNTP;
+     return s_source;   // offline: FT8 / manual / RTC / naive-QMX
+ }
+ 
+@@ -583,7 +584,7 @@ bool time_sync_notify_unit_gps(int year, int mon, int mday,
+     }
+ 
+     // Log a disagreement with the internet, but apply the satellite anyway.
+-    if (wifi_is_connected() && wifi_time_is_valid()) {
++    if (net_is_up() && wifi_time_is_valid()) {
+         struct timeval sys;
+         gettimeofday(&sys, NULL);
+         int64_t sys_us = (int64_t)sys.tv_sec * 1000000LL + sys.tv_usec;
+@@ -749,7 +750,7 @@ static bool rtc_date_is_trustworthy(time_t rtc_now)
+ bool time_sync_date_verified(void)
+ {
+     if (s_dev_force_unverified) return s_date_verified;
+-    return s_date_verified || (wifi_is_connected() && wifi_time_is_valid());
++    return s_date_verified || (net_is_up() && wifi_time_is_valid());
+ }
+ 
+ void time_sync_confirm_date(void)
+@@ -817,7 +818,7 @@ bool time_sync_notify_qmx(int h, int m, int s)
+     time_t  utc       = (time_t)(day_start + h * 3600 + m * 60 + s);
+ 
+     int64_t now_ms    = esp_timer_get_time() / 1000;
+-    bool wifi_sntp_ok = wifi_is_connected() && wifi_time_is_valid();
++    bool wifi_sntp_ok = net_is_up() && wifi_time_is_valid();
+ #if TIMESYNC_FORCE_OFFLINE_TEST
+     // TEMP: pretend we are offline so the POTA path can be exercised on a bench
+     // that has WiFi. Disabling WiFi for real would persist to NVS and strand the
+@@ -902,7 +903,7 @@ static int apply_ft8_correction(int delta_ms, bool leash, time_t *out_utc)
+         // reference when the radio is unplugged, and suppressing the FT8
+         // nudge on the strength of it would leave such a unit with NO
+         // discipline at all.
+-        bool ref_ok = (wifi_is_connected() && wifi_time_is_valid())
++        bool ref_ok = (net_is_up() && wifi_time_is_valid())
+                       || gps_is_live()
+                       || time_sync_unit_gps_is_live();
+         if (ref_ok) {
+@@ -1022,7 +1023,7 @@ static bool apply_gps_tick(int h, int m, int s, int64_t flip_us)
+         return false;
+     }
+ 
+-    if (wifi_is_connected() && wifi_time_is_valid()) {
++    if (net_is_up() && wifi_time_is_valid()) {
+         struct timeval sys;
+         gettimeofday(&sys, NULL);
+         int64_t sys_us = (int64_t)sys.tv_sec * 1000000LL + sys.tv_usec;
+@@ -1238,7 +1239,7 @@ static void qmx_sync_once(void)
+ {
+     int h, m, s;
+     int64_t flip_us;
+-    bool sntp_up = wifi_is_connected() && wifi_time_is_valid();
++    bool sntp_up = net_is_up() && wifi_time_is_valid();
+ 
+     /* ⭐ GP FIRST, FOR THE DATE AND THE GPS VERDICT - NOT FOR THE CLOCK.
+      * It settles whether this radio has a GPS from the radio's own answer
+@@ -1248,7 +1249,7 @@ static void qmx_sync_once(void)
+     bool gp_answered = time_sync_try_qmx_gp();
+     if (gp_answered) {
+         s_qmx_detect_done = true;   // settled, and not by inference
+-        sntp_up = wifi_is_connected() && wifi_time_is_valid();   // GP may have stepped the clock
++        sntp_up = net_is_up() && wifi_time_is_valid();   // GP may have stepped the clock
+     }
+ 
+     /* â­ A LOCKED RECEIVER OUTRANKS A CLAIMED ONE.
+diff --git a/main/ui/help_topics.c b/main/ui/help_topics.c
+index 8278afc1..4e15d507 100644
+--- a/main/ui/help_topics.c
++++ b/main/ui/help_topics.c
+@@ -15,6 +15,7 @@
+ #include "storage/sd_archive.h"
+ 
+ #include "esp_log.h"
++#include "eth_w5500.h"
+ 
+ static const char *TAG = "help";
+ 
+@@ -130,7 +131,7 @@ static bool cond_iq_bad(void)     { return ui_iq_mode_warning_active(); }
+ // Only a fault if WiFi is supposed to be up. Someone operating POTA with WiFi
+ // deliberately off must not be told their network is broken - the row stays in the
+ // list as a normal question, it just is not flagged as happening now.
+-static bool cond_no_wifi(void)    { return panadapter_wifi_is_enabled() && !wifi_is_connected(); }
++static bool cond_no_wifi(void)    { return panadapter_wifi_is_enabled() && !wifi_is_connected() && !eth_is_connected(); }
+ static bool cond_no_decodes(void)
+ {
+     // Only meaningful in FT8/FT4, and only once the radio is actually there -
+diff --git a/main/ui/sched_modal.c b/main/ui/sched_modal.c
+index a0c03912..8e277830 100644
+--- a/main/ui/sched_modal.c
++++ b/main/ui/sched_modal.c
+@@ -16,6 +16,7 @@
+ #include "sched_modal.h"
+ #include "net/spots.h"
+ #include "wifi.h"
++#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
+ #include "ui_theme.h"
+ #include "ui.h"
+ #include "lvgl.h"
+@@ -189,7 +190,7 @@ static void refresh(void)
+     if (s_lbl_empty) {
+         const char *msg = NULL;
+         if (row == 0) {
+-            if (!wifi_is_connected())           msg = "No WiFi - the schedule needs a network.";
++            if (!net_is_up())                   msg = "No network - the schedule needs one.";
+             else if (sched_events_busy())       msg = "Fetching the schedule...";
+             else if (sched_events_version() == 0) msg = "No schedule yet - press Refresh.";
+             else                                msg = "Nothing scheduled in this filter.";
+diff --git a/main/util/diag_log.c b/main/util/diag_log.c
+index 0a356ea1..f45b5171 100644
+--- a/main/util/diag_log.c
++++ b/main/util/diag_log.c
+@@ -24,6 +24,7 @@
+ #include "cat.h"             // cat_get_qmx_fw / cat_is_ready / freq / mode
+ #include "wifi.h"            // wifi_is_connected / ssid / ip / rssi
+ #include "settings.h"        // callsign / grid
++#include "eth_w5500.h"
+ 
+ static const char *TAG = "diag";
+ 
+@@ -104,6 +105,9 @@ void diag_log_write_session_header(void)
+              s.wifi_ssid[0] ? s.wifi_ssid : "(none)",
+              wifi_is_connected() ? "yes" : "no",
+              wifi_get_ip(), wifi_get_rssi_dbm());
++    ESP_LOGI(TAG, "ethernet: W5500 base=%s link=%s ip=%s mac=%s",
++             eth_is_present() ? "yes" : "no", eth_link_up() ? "up" : "down",
++             eth_get_ip(), eth_get_mac_str()[0] ? eth_get_mac_str() : "-");
+ 
+     const char *qfw = cat_get_qmx_fw();
+     ESP_LOGI(TAG, "qmx: connected=%s fw=%s freq=%luHz mode=%s",
+diff --git a/main/util/status.c b/main/util/status.c
+index 3ab6bd7a..519ede69 100644
+--- a/main/util/status.c
++++ b/main/util/status.c
+@@ -28,6 +28,7 @@
+ #include "hid_cursor.h"
+ #include "esp_app_desc.h"
+ #include "esp_log.h"
++#include "eth_w5500.h"      // the bottom bar names Ethernet when the PoE base is in use
+ 
+ static const char *TAG = "status";
+ 
+@@ -643,6 +644,16 @@ static void status_task(void *arg)
+         int rssi = wifi_get_rssi_dbm();
+         const char *ip = wifi_get_ip();
+         bool connected = wifi_is_connected() && ssid[0];
++        /* On the W5500 PoE base with an address, the wired link is the one in
++         * use (it is the preferred route), so the bar names it and its
++         * address instead of the Wi-Fi network. The fan reads full: a cable
++         * has no signal strength to show. */
++        if (eth_is_connected()) {
++            ssid = "Ethernet";
++            ip = eth_get_ip();
++            rssi = -40;
++            connected = true;
++        }
+ 
+ #if BENCH_WIFI_BAR
+         // Bench hook (see BENCH_WIFI_BAR at the top of this file): fakes a
+diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
+index 17c404e2..1139aa0c 100644
+--- a/main/wifi/wifi.c
++++ b/main/wifi/wifi.c
+@@ -899,6 +899,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,
+     }
+ }
+ 
++/* Everything that needs an IP address on SOME link: the name qmx.local, SNTP,
++ * the web server and rigctld. Called on every Wi-Fi got-IP and on every
++ * Ethernet got-IP (net/eth_w5500.c); each step is idempotent. */
++void wifi_net_services_start(void)
++{
++    // Announce qmx.local now that there is an interface to announce on.
++    // Idempotent, so the reconnects and roams that are routine here cost
++    // nothing - and the name survives the address change a roam causes,
++    // which is the whole reason it is here.
++    mdns_svc_start();
++    // Kick off SNTP on first connect.
++    static bool sntp_started = false;
++    if (!sntp_started) {
++        sntp_started = true;
++        esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
++        cfg.sync_cb = sntp_sync_cb;
++        // Same stack/priority as time_sync_task, which runs this same
++        // time_sync code for its other sources.
++        if (!s_sntp_task)
++            s_sntp_task = psram_task_create(sntp_apply_task, "sntp_apply", 8192,
++                                            NULL, 4, tskNO_AFFINITY);
++        esp_netif_sntp_init(&cfg);
++        ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
++    }
++
++    webserver_start();
++    rigctld_server_start();
++}
++
+ static void on_ip_event(void *arg, esp_event_base_t base,
+                         int32_t id, void *data)
+ {
+@@ -959,11 +988,6 @@ static void on_ip_event(void *arg, esp_event_base_t base,
+             }
+         }
+ 
+-        // Announce qmx.local now that there is an interface to announce on.
+-        // Idempotent, so the reconnects and roams that are routine here cost
+-        // nothing - and the name survives the address change a roam causes,
+-        // which is the whole reason it is here.
+-        mdns_svc_start();
+         {
+             // Count only - never a WIFI_KNOWN_MAX buffer here. This runs on the
+             // system event task, whose stack is under 3 KB; a 588-byte array on it
+@@ -974,23 +998,7 @@ static void on_ip_event(void *arg, esp_event_base_t base,
+                      s_ssid, kn_n, kn_n == 1 ? "" : "s");
+         }
+ 
+-        // Kick off SNTP on first connect.
+-        static bool sntp_started = false;
+-        if (!sntp_started) {
+-            sntp_started = true;
+-            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+-            cfg.sync_cb = sntp_sync_cb;
+-            // Same stack/priority as time_sync_task, which runs this same
+-            // time_sync code for its other sources.
+-            if (!s_sntp_task)
+-                s_sntp_task = psram_task_create(sntp_apply_task, "sntp_apply", 8192,
+-                                                NULL, 4, tskNO_AFFINITY);
+-            esp_netif_sntp_init(&cfg);
+-            ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
+-        }
+-
+-        webserver_start();
+-        rigctld_server_start();
++        wifi_net_services_start();
+     }
+ }
+ 
+@@ -1149,7 +1157,12 @@ static void wifi_task(void *arg)
+ 
+     // ESP-IDF core init (event loop, default STA netif).
+     ESP_ERROR_CHECK(esp_netif_init());
+-    ESP_ERROR_CHECK(esp_event_loop_create_default());
++    /* net/eth_w5500.c may have created the default loop first (it starts in
++     * parallel and needs it for its own events) - that is not an error. */
++    {
++        esp_err_t le = esp_event_loop_create_default();
++        if (le != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(le);
++    }
+ 
+     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
+     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
+diff --git a/main/wifi/wifi.h b/main/wifi/wifi.h
+index 07f00bd7..d7236cb0 100644
+--- a/main/wifi/wifi.h
++++ b/main/wifi/wifi.h
+@@ -44,6 +44,11 @@ void panadapter_wifi_apply_preferred(void);
+ // Returns true once the station has an IP address.
+ bool wifi_is_connected(void);
+ 
++/* Start the services that need an address on some link (qmx.local, SNTP, the
++ * web server, rigctld). Idempotent; called from the Wi-Fi and the Ethernet
++ * got-IP paths. */
++void wifi_net_services_start(void);
++
+ // Is WiFi even meant to be running? False after the operator turned it off (the
+ // drawer switch / POTA use). Lets callers tell "WiFi is broken" apart from "WiFi
+ // is off on purpose" - the context-help triage must not flag the second as a fault.
+diff --git a/sdkconfig b/sdkconfig
+index 1a1fac07..36bb2dbc 100644
+--- a/sdkconfig
++++ b/sdkconfig
+@@ -1268,7 +1268,7 @@ CONFIG_ETH_DMA_TX_BUFFER_NUM=10
+ # CONFIG_ETH_IRAM_OPTIMIZATION is not set
+ CONFIG_ETH_USE_SPI_ETHERNET=y
+ # CONFIG_ETH_SPI_ETHERNET_DM9051 is not set
+-# CONFIG_ETH_SPI_ETHERNET_W5500 is not set
++CONFIG_ETH_SPI_ETHERNET_W5500=y
+ # CONFIG_ETH_SPI_ETHERNET_KSZ8851SNL is not set
+ # CONFIG_ETH_USE_OPENETH is not set
+ # CONFIG_ETH_TRANSMIT_MUTEX is not set
+diff --git a/sdkconfig.defaults b/sdkconfig.defaults
+index 778fa85e..c4b567de 100644
+--- a/sdkconfig.defaults
++++ b/sdkconfig.defaults
+@@ -392,3 +392,7 @@ CONFIG_MQTT_USE_CORE_1=y
+ # Costs one 512 B PSRAM allocation per mount and per open file, and saves the
+ # same 512 B of INTERNAL DMA memory being taken and released per sector.
+ CONFIG_FATFS_USE_DYN_BUFFERS=y
++
++# Wired Ethernet through the M5Stack W5500 PoE base on the M5-Bus (net/eth_w5500.c)
++CONFIG_ETH_USE_SPI_ETHERNET=y
++CONFIG_ETH_SPI_ETHERNET_W5500=y
+-- 
+2.43.0
+

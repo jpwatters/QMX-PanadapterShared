@@ -4,7 +4,39 @@ All releases are available on [GitHub Releases](https://github.com/SteffenLav/qm
 
 ## Latest Release
 
-**v1.20.5** - 2026-10-23
+**v1.23.0** - 2026-10-30
+
+**Right-drag pans the spectrum, in the browser and with a BLE mouse on the Tab5. The JS8 panel shows stations, the conversation and a type box all at once. Spur suppression works for the first time since it was written, and the FT8/JS8 decoder is 2.2x faster.**
+
+- **Right-drag pans the spectrum.** Hold the right mouse button on the spectrum or waterfall and drag sideways to move the window along the band; the dial does not move. Left-drag still tunes, so the two do not collide - left moves the radio, right moves the view. The browser had no pan at all before this, and the same gesture works on a BLE mouse connected to the Tab5.
+- **The JS8 panel shows all three panes at once** *(Ryan KK6DZB)*: stations, the conversation, and a type box you compose in. The Stations and Conversation tabs are gone, and so is the old **Free text** button - there is nothing left to switch between. With a physical keyboard you type in place; without one, tapping the box opens the modal composer so the on-screen keyboard does not cover it. The browser shows the same three.
+- **Spur suppression had never worked, and it was walking the dial up the band** *(Steve KX7R)*. The 25 Hz offset it nudges the dial by is not on the QMX's 10 Hz grid, so every nudge was rounded and four callers waiting for the frequency to read back were left waiting.
+- **The S digit of the report you received is measured** *(Gyula HA3HZ)*. In the Log a contact window, Tab5 and browser, it comes from the S-meter's own 10-second peak hold instead of being a `9` every time. R and T stay at the mode default, and the report you *send* is untouched - that is your judgement of a signal this device cannot hear.
+- **A WWFF, IOTA, GMA or WCA activation called `CQ POTA`.** Five programmes were added in v1.22.0 and this one site was not swept, so each went out under the wrong programme's name. Each now carries its own token; WWBOTA does not fit FT8's four-character modifier, so a bunker activation goes out as a plain `CQ` rather than as something untrue.
+- **A finished QSO stopped reporting "Busy: working ..." forever** *(Bruce N9JCV)*.
+- **The off-view marker arrow works.** It exists in the browser now as well as on the Tab5, appears on both edges, is gated on the marker and the bandwidth, and is actually tappable - the tap used to be swallowed by the spots lane's edge counter.
+- **The spectrum no longer jumps when you pan.** The waterfall is re-anchored and the spectrum average re-seeded when the view moves, so the content crossfades instead of snapping. The settle check meant to do this never ran above zoom x1.
+- **The passband dims while you drag it, in every mode.** It used to vanish, and only in CW.
+- **A crash class is closed.** One unlocked table in the WiFi co-processor's RPC layer was behind two different field asserts. It has run 20 hours clean here; the previous failures came within 7 minutes of boot.
+- **The FT8 and JS8 decoder is 2.2x faster.** One of its two monitors had its hottest buffer in a 32 KB region the system calls internal RAM but which is far slower to reach than cached PSRAM, and that buffer is copied twice per block, 93 blocks a slot. Both monitors now sit at 881 and 877 ms where one was 1968 ms - about seven points of one processor core returned on every FT8 and JS8 slot.
+- **Hamlib rigctld is documented at last** *(Brian KB9WFS)*. The Tab5 has been a Hamlib **NET rigctl** server on port 4532 since v0.9.6 with nothing in the manual about it. There is now a chapter, including Brian's own QLog recipe, and the limit nobody had written down: it cannot key the radio. There is no `set_ptt`, so set PTT to none or VOX and key the QMX the way you normally do.
+- **The "no decodes for 20 minutes" message no longer blames the radio.** On a quiet band, telling you to power-cycle the QMX is simply wrong - and a wedged radio and an empty band look identical to this firmware. It now says the band is most likely quiet and that leaving it receiving is the right thing to do, keeping the power-cycle hint conditional on a flash you have not cycled for.
+
+⚠ **One alternate JS8 speed can now be decoded alongside the one you are using**, one slot in five, off the audio the normal slot already captured. **Default off, and not proven.** It is receive-only by explicit refusal: a decode reaches the conversation pane tagged with the speed that heard it and nothing else - never the stations list, the QSO machine, the robot, transmit arming, PSK Reporter or the clock sync. No real station on another speed has ever been decoded with it, only my own encoder. Decoding all four speeds at once measures 118% of one processor core and does not fit.
+
+Audio and binaural CW remain a **declared beta**.
+
+## Previous Releases
+
+### v1.22.0 - 2026-10-28
+
+CW and SSB contacts can be logged by hand on the Tab5 and in the browser; activation covers seven ?OTA programmes and writes each one's own ADIF file on stop, with the contact count on its own button; a Scheduled events pane puts the contest calendar and the ?OTA schedule on one timeline. FT8, FT4 and JS8 each keep their own frequency. Fixed: dial writes quantised to 10 Hz, the waterfall no longer shows history from before a WSPR or FT8 visit, five of the seven activation programmes could not be selected, and several browser faults reported by Randy N4OPI. RF gain relabelled to say what it actually acts on.
+
+### v1.21.0 - 2026-10-25
+
+CW-Tune (long press the bandwidth to land on the nearest CW signal) and a narrow audio peak filter on the CW pitch; peak hold on the spectrum; RF gain and an AGC row in the audio panel; server mode (the Tab5 stops drawing and just serves the web page); the left-edge swipe became a page picker. Fixed: CW audio arrived up to 60 Hz off the dial on units with a calibration trim, the Smoothing slider ran backwards and the browser never applied it, the Diagnostics page was refused by its own guard, and a crash in the WiFi co-processor driver after a command timeout.
+
+### v1.20.5 - 2026-10-23
 
 **The spectrum and waterfall on the Tab5 were throwing away part of what they had already computed, and I had not known it. Plus a round of fixes and ergonomics from your reports.**
 
@@ -20,7 +52,6 @@ All releases are available on [GitHub Releases](https://github.com/SteffenLav/qm
 - **Bigger text and bigger targets** *(Samuel W7STF, Don WB0LQW)*. The frequency keypad's keys are larger with noticeably more space between them — a hand that is not steady misses by landing *between* two keys — and the pad is opaque while you type. The on-screen keyboards everywhere got larger key labels, after Don said he could not read them outdoors. The audio panel's text is sized to match.
 - **The FT8 Options window no longer overlaps itself at the bottom right** *(the operator)*. The Fox/Hound control and the "Skip CQs not for me" checkbox were on the same row and drew on top of each other. Fox/Hound has its own row now.
 
-## Previous Releases
 
 ### v1.20.4 - 2026-10-22
 
@@ -1163,12 +1194,10 @@ See [Full Version History](https://github.com/SteffenLav/qmx-panadapter/blob/mai
 ### Next up (post-v1.0.0)
 
 1. **CW page** — canned-message CW TX memories, then decoded-CW display
-2. **Binaural CW audio** — a stereo sound stage so two stations a few tens of hertz apart land in different places in your head (asked for by Roy KI0ER; shaped by Don N2VGU and Michael KZ4LY, whose point that the stage **width** should be a setting rather than a fixed angle is now the plan). Waits on the same audio-output rework as the CW page
-3. **Live microSD mirroring while WiFi is up** — continuous mirroring currently only runs with WiFi off; v1.3.2 made that explicit and reliable (one complete backup per start-up with WiFi on). This was believed to be bus contention between the card and the WiFi co-processor. v1.4.0 found that a large part of it was actually a memory shortage — the pool the card needs to mount had been squeezed to almost nothing, and now has room again — so this may already behave better than documented. Needs a retest before the behaviour is changed
+2. **Live microSD mirroring while WiFi is up** — continuous mirroring currently only runs with WiFi off; v1.3.2 made that explicit and reliable (one complete backup per start-up with WiFi on). This was believed to be bus contention between the card and the WiFi co-processor. v1.4.0 found that a large part of it was actually a memory shortage — the pool the card needs to mount had been squeezed to almost nothing, and now has room again — so this may already behave better than documented. Needs a retest before the behaviour is changed
 
 ### Future Additions
 
-- CW audio (shelved since v0.18.5 due to CPU contention; needs pipeline redesign)
 - Offline maps (grid squares, distance visualization)
 - Video tutorials & regional quick-start guides
 
@@ -1176,7 +1205,7 @@ See [Full Version History](https://github.com/SteffenLav/qmx-panadapter/blob/mai
 
 - **Source code:** [GitHub Repository](https://github.com/SteffenLav/qmx-panadapter)
 - **Releases:** [GitHub Releases](https://github.com/SteffenLav/qmx-panadapter/releases)
-- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v1.20.5.pdf) or [Web](quick-start.md)
+- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v1.23.0.pdf) or [Web](quick-start.md)
 - **Build Guide:** [Build from Source](build/build.md)
 - **Technical Details:** [CLAUDE.md](https://github.com/SteffenLav/qmx-panadapter/blob/main/CLAUDE.md)
 

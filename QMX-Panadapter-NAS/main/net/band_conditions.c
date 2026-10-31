@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "band_cond";
 static const char *SOLAR_URL = "https://www.hamqsl.com/solarxml.php";
@@ -178,7 +179,7 @@ static void band_conditions_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    while (!wifi_is_connected()) {
+    while (!net_is_up()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     for (;;) {

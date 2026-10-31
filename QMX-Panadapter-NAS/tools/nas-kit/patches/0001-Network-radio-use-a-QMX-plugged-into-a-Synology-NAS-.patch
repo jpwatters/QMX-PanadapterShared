@@ -1,7 +1,7 @@
-From 408e78dc84b36b98b43db60aa855a9a42f4460af Mon Sep 17 00:00:00 2001
+From 8d8bad52ff9345943c461666edbe59396a368680 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 00:57:14 +0000
-Subject: [PATCH 01/37] Network radio: use a QMX plugged into a Synology NAS
+Subject: [PATCH 01/41] Network radio: use a QMX plugged into a Synology NAS
  over TCP/IP
 
 Adds a "network radio" source so the Tab5 can use a QMX that is plugged
@@ -2584,10 +2584,10 @@ literal 0
 HcmV?d00001
 
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 7e54361f..69901040 100644
+index 9891b858..57f37c3e 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -107,6 +107,7 @@ idf_component_register(
+@@ -110,6 +110,7 @@ idf_component_register(
          "net/filebrowser.c"
          "usb_hid_mouse.c"
          "net/rigctld_server.c"
@@ -2693,7 +2693,7 @@ index fca97794..50553b42 100644
  // when a session starts or ends - a new stream begins on a frame boundary, and
  // carrying a fragment across would misalign the interleave from the first
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index 07e30a39..e93e6513 100644
+index 3832194e..a4e17794 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
 @@ -21,6 +21,8 @@
@@ -2740,7 +2740,7 @@ index 07e30a39..e93e6513 100644
      va_start(ap, fmt);
 @@ -666,7 +678,7 @@ esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
  {
-     if (err && err_len) err[0] = ' ';
+     if (err && err_len) err[0] = '\0';
      if (!cmd || !cmd[0]) return ESP_ERR_INVALID_ARG;
 -    if (!s_cdc_dev) return ESP_ERR_INVALID_STATE;
 +    if (!CAT_LINK_UP()) return ESP_ERR_INVALID_STATE;
@@ -2858,7 +2858,7 @@ index 07e30a39..e93e6513 100644
              if (s_cdc_dev) {
                  cdc_acm_dev_hdl_t dev = s_cdc_dev;
                  // Clear the handle FIRST so poll_task's "while (s_cdc_dev !=
-@@ -3178,7 +3237,7 @@ static void link_task(void *arg)
+@@ -3187,7 +3246,7 @@ uint32_t cat_quantise_dial_hz(uint32_t freq_hz)
  
  esp_err_t cat_set_frequency(uint32_t freq_hz)
  {
@@ -2867,7 +2867,7 @@ index 07e30a39..e93e6513 100644
          return ESP_ERR_INVALID_STATE;  // QMX not connected
      }
  
-@@ -3358,7 +3417,7 @@ esp_err_t cat_set_mode(const char *mode)
+@@ -3407,7 +3466,7 @@ esp_err_t cat_set_mode(const char *mode)
          ESP_LOGW(TAG, "cat_set_mode: unknown mode '%s'", mode ? mode : "(null)");
          return ESP_ERR_INVALID_ARG;
      }
@@ -2876,7 +2876,7 @@ index 07e30a39..e93e6513 100644
      // ⛔ WAS THE ONE BLOCKING CDC WRITER IN THIS FILE WITH NO s_poll_paused
      // GUARD (found 2026-09-16, chasing Randy N4OPI's "web Apply hangs and
      // loses the QMX, only during an active QSO/CQ exchange, needs a power
-@@ -3393,7 +3452,7 @@ esp_err_t cat_set_mode(const char *mode)
+@@ -3442,7 +3501,7 @@ esp_err_t cat_set_mode(const char *mode)
  esp_err_t cat_set_passband_hz(uint32_t hz)
  {
      if (hz < 50 || hz > 9999) return ESP_ERR_INVALID_ARG;
@@ -2885,7 +2885,7 @@ index 07e30a39..e93e6513 100644
  
      uint64_t now = esp_timer_get_time();
      if (now - s_last_tx_us < 200000) return ESP_ERR_TIMEOUT;
-@@ -3425,7 +3484,7 @@ esp_err_t cat_set_qmx_time(int hour, int min, int sec)
+@@ -3474,7 +3533,7 @@ esp_err_t cat_set_qmx_time(int hour, int min, int sec)
  
  esp_err_t cat_query_qmx_time(int *out_hour, int *out_min, int *out_sec)
  {
@@ -2894,7 +2894,7 @@ index 07e30a39..e93e6513 100644
  
      /* ⛔ NOT WHILE A BURST IS KEYED. This was missing, and it is what let the
       * RTC read clear a WSPR burst's hold 30 s into a 110.6 s transmission -
-@@ -3919,7 +3978,7 @@ esp_err_t cat_ta_latency_probe(int count, int interval_ms, bool logged,
+@@ -3968,7 +4027,7 @@ esp_err_t cat_ta_latency_probe(int count, int interval_ms, bool logged,
  // already owns the CDC pipe (FT8 TX pauses the same poll flag).
  esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *out_flip_us)
  {
@@ -2903,7 +2903,7 @@ index 07e30a39..e93e6513 100644
      if (cat_poll_held_by_other(CAT_HOLD_TIME_SYNC)) {
          ESP_LOGI(TAG, "GPS tick skipped - %s holds the link", hold_name(s_poll_holds));
          return ESP_ERR_INVALID_STATE;   // a burst owns the pipe
-@@ -4030,6 +4089,20 @@ esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *
+@@ -4079,6 +4138,20 @@ esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *
  // `while (s_cdc_dev != NULL)` lets it exit, wait for it, and only then close.
  void cat_usb_shutdown(void)
  {
@@ -2925,10 +2925,10 @@ index 07e30a39..e93e6513 100644
      if (!dev) {
          ESP_LOGI(TAG, "shutdown: no CAT device open");
 diff --git a/main/cat/cat.h b/main/cat/cat.h
-index 31571db8..16e406fa 100644
+index 90667a64..b238eba7 100644
 --- a/main/cat/cat.h
 +++ b/main/cat/cat.h
-@@ -733,3 +733,15 @@ bool cat_force_rx_pending(void);
+@@ -738,3 +738,15 @@ bool cat_force_rx_pending(void);
   * Reached from POST /api/cmd {"action":"band_scan_restore_test", ...}. Nothing
   * calls it in normal operation; it sends no TX. */
  void cat_band_scan_restore_test(uint32_t pre_freq, char pre_mode_digit);
@@ -2945,7 +2945,7 @@ index 31571db8..16e406fa 100644
 +/** @brief "usb", "net" or "none" - which transport the CAT link is using. */
 +const char *cat_get_transport(void);
 diff --git a/main/main.c b/main/main.c
-index cc3ebe77..cc51a5e5 100644
+index 0700938d..769d8a56 100644
 --- a/main/main.c
 +++ b/main/main.c
 @@ -19,6 +19,7 @@
@@ -3483,10 +3483,10 @@ index 00000000..2dfd794e
 +uint32_t radio_relay_iq_pairs_total(void);
 +const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index d7c3d934..3e47f244 100644
+index ba307700..53ef737a 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -89,6 +89,7 @@
+@@ -91,6 +91,7 @@
  #include <ctype.h>
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
@@ -3494,7 +3494,7 @@ index d7c3d934..3e47f244 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -699,6 +700,7 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -731,6 +732,7 @@ static esp_err_t status_handler(httpd_req_t *req)
      }
  
      cJSON_AddNumberToObject(root, "freq_hz",     (double)cat_get_frequency());
@@ -3502,7 +3502,7 @@ index d7c3d934..3e47f244 100644
      cJSON_AddStringToObject(root, "qmx_fw",       cat_get_qmx_fw());
      cJSON_AddStringToObject(root, "mode",         ui_get_mode_str());
      // Decoded CW, EXACTLY the line the Tab5 is drawing - same grid, same wrap
-@@ -4852,6 +4854,70 @@ static esp_err_t eqsl_upload_handler(httpd_req_t *req)
+@@ -5225,6 +5227,70 @@ static esp_err_t eqsl_upload_handler(httpd_req_t *req)
      return httpd_resp_sendstr(req, "{\"status\":\"uploading\"}");
  }
  
@@ -3573,7 +3573,7 @@ index d7c3d934..3e47f244 100644
  static const httpd_uri_t uri_eqsl_creds = {
      .uri = "/api/eqsl_creds", .method = HTTP_POST, .handler = eqsl_creds_handler,
  };
-@@ -8635,6 +8701,8 @@ esp_err_t webserver_start(void)
+@@ -9226,6 +9292,8 @@ esp_err_t webserver_start(void)
      reg(&uri_help);
      reg(&uri_manual);
      reg(&uri_eqsl_creds);
@@ -3583,18 +3583,18 @@ index d7c3d934..3e47f244 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index a00b75b5..29637a94 100644
+index 298d8e3b..7962d927 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1528,6 +1528,7 @@
-       <button type="button" class="bot-btn" id="radio-group-btn">Radio &#9650;</button>
-       <div class="bot-menu" id="radio-menu">
-         <a href="#" id="screen-toggle-link" title="Switch the Tab5 between the panadapter and the FT8/FT4 screen">Switch to FT8/FT4</a>
+@@ -1564,6 +1564,7 @@
+         <a href="#" class="screen-to" data-screen="ft4" style="color:#00B4FF" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
+         <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
+         <a href="#" class="screen-to" data-screen="wspr" style="color:#3D8C40" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
 +        <a href="#" id="relay-link" title="Where the QMX is: on the Tab5's own USB port, or plugged into your NAS and reached over the network (tools/nas-relay). Click to change.">Radio source: --</a>
          <a href="#" id="memory-btn" title="Your 32 memory channels - click one to tune to it">Memory channels</a>
          <a href="#" id="pause-btn" title="Stops the Tab5 talking to the radio, so its own menus and the Band Configuration terminal app behave normally. Nothing is decoded until you hand it back">Let me use the QMX menus</a>
          <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
-@@ -7309,6 +7310,39 @@ function paintPaused(on) {
+@@ -7606,6 +7607,39 @@ function paintPaused(on) {
      bar.remove();
    }
  }
@@ -3634,7 +3634,7 @@ index a00b75b5..29637a94 100644
  document.getElementById("pause-btn").addEventListener("click", async () => {
    await sendCmd({ action: pausedNow ? "resume" : "pause" });
    paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
-@@ -7610,6 +7644,7 @@ async function tick() {
+@@ -7910,6 +7944,7 @@ async function tick() {
       * one poll has had time to return carrying it. That window is the debounce
       * plus a round trip; anything shorter and the last snap-back still shows. */
      radioFreqHz = s.freq_hz || 0;      /* always - see its declaration */
@@ -3643,7 +3643,7 @@ index a00b75b5..29637a94 100644
      lastPassbandHz = s.passband_hz || 0;
      lastCwFilterMask = (typeof s.cw_filter_mask === "number") ? s.cw_filter_mask : 0;
 diff --git a/main/qmx_term.c b/main/qmx_term.c
-index 7e856f85..a381a58e 100644
+index 5dba1286..51314e2e 100644
 --- a/main/qmx_term.c
 +++ b/main/qmx_term.c
 @@ -10,6 +10,7 @@
@@ -3743,10 +3743,10 @@ index 7e856f85..a381a58e 100644
      return true;
  }
 diff --git a/main/storage/config_io.c b/main/storage/config_io.c
-index 7bd5ff73..f43513d2 100644
+index 943639ac..2e443b1a 100644
 --- a/main/storage/config_io.c
 +++ b/main/storage/config_io.c
-@@ -141,6 +141,8 @@ char *config_io_export(size_t *out_len)
+@@ -144,6 +144,8 @@ char *config_io_export(size_t *out_len)
      APP("qrz_lookup_pass    = %s\n", c.qrz_lookup_pass);
      APP("eqsl_user          = %s\n", c.eqsl_user);
      APP("eqsl_pass          = %s\n", c.eqsl_pswd);
@@ -3755,7 +3755,7 @@ index 7bd5ff73..f43513d2 100644
      APP("cloudlog_url       = %s\n", c.cloudlog_url);
      APP("cloudlog_key       = %s\n", c.cloudlog_key);
      APP("cloudlog_station   = %s\n", c.cloudlog_station);
-@@ -515,6 +517,15 @@ int config_io_import(char *text)
+@@ -522,6 +524,15 @@ int config_io_import(char *text)
              else if (!strcasecmp(key, "qrz_lookup_pass"))   settings_set_qrz_lookup_pass(val);
              else if (!strcasecmp(key, "eqsl_user"))         settings_set_eqsl_user(val);
              else if (!strcasecmp(key, "eqsl_pass"))         settings_set_eqsl_pswd(val);
@@ -3772,10 +3772,10 @@ index 7bd5ff73..f43513d2 100644
              else if (!strcasecmp(key, "cloudlog_key"))      settings_set_cloudlog_key(val);
              else if (!strcasecmp(key, "cloudlog_station"))  settings_set_cloudlog_station(val);
 diff --git a/main/storage/settings.c b/main/storage/settings.c
-index c7258526..53d8435d 100644
+index a61dde2e..6a11950c 100644
 --- a/main/storage/settings.c
 +++ b/main/storage/settings.c
-@@ -84,6 +84,8 @@ static const char *TAG = "settings";
+@@ -87,6 +87,8 @@ static const char *TAG = "settings";
  #define KEY_QRZ_UPLOADED "qrz_upl_n"
  #define KEY_EQSL_USER    "eqsl_user"
  #define KEY_EQSL_PSWD    "eqsl_pswd"
@@ -3784,24 +3784,24 @@ index c7258526..53d8435d 100644
  #define KEY_QRZ_LU_USER  "qrz_lu_user"
  #define KEY_QRZ_LU_PASS  "qrz_lu_pass"
  #define KEY_EQSL_UPLOADED "eqsl_upl_n"
-@@ -249,7 +251,7 @@ static const char *TAG = "settings";
+@@ -258,7 +260,7 @@ static const char *TAG = "settings";
   * taken every one of them while the comment still said 62. Bumped to 5 words
   * rather than land the next person on a full bitmap behind a wrong number.
   * Cost is 4 bytes. Recount before trusting this figure again. */
--#define DIRTY_WORDS      5                        /* 160 bits; highest used 141, 18 spare */
-+#define DIRTY_WORDS      5                        /* 160 bits; highest used 145, 14 spare */
+-#define DIRTY_WORDS      5                        /* 160 bits; highest used 151, 8 spare */
++#define DIRTY_WORDS      5                        /* 160 bits; highest used 152, 7 spare */
  #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
  
  typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
-@@ -461,6 +463,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
- #define DIRTY_CW_ROWS         142  /* rows of decoded CW drawn */
- #define DIRTY_TXBAND_OFF      143  /* TX band guard disabled (T48) */
- #define DIRTY_MY_STATE        144  /* US state, for the directed-CQ filter */
-+#define DIRTY_RELAY           145  /* network radio: relay_host + relay_port (142-144 are upstream's CW_ROWS/TXBAND_OFF/MY_STATE) */
+@@ -477,6 +479,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
+ #define DIRTY_FT4_FREQ        149  /* T89 per-sub-mode preset frequency */
+ #define DIRTY_JS8_FREQ        150  /* T89 per-sub-mode preset frequency */
+ #define DIRTY_JS8_ALT_SUB     151  /* T132 duty-cycled alternate-submode decode */
++#define DIRTY_RELAY           152  /* network radio: relay_host + relay_port (142-151 are upstream's) */
  
  // Bits that actually affect config_io_export()'s output (storage/config_io.c).
  // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
-@@ -483,6 +486,7 @@ static const uint8_t s_config_export_bits[] = {
+@@ -499,6 +502,7 @@ static const uint8_t s_config_export_bits[] = {
      DIRTY_CQ_MSG2, DIRTY_CQ_SEL, DIRTY_ONBOARDED, DIRTY_FT8_FILT,
      DIRTY_WIFI_ENABLED, DIRTY_QMX_GPS, DIRTY_FREQ_KP_CALC,
      DIRTY_QRZ_KEY, DIRTY_QRZ_LU_USER, DIRTY_QRZ_LU_PASS, DIRTY_EQSL_USER, DIRTY_EQSL_PSWD,
@@ -3809,7 +3809,7 @@ index c7258526..53d8435d 100644
      DIRTY_CL_URL, DIRTY_CL_KEY, DIRTY_CL_STATION,
      DIRTY_WF_BLACK, DIRTY_WF_CONTRAST, DIRTY_WF_BLEND, DIRTY_WF_WINDOW,
      DIRTY_DISP_FLIP, DIRTY_QMX_VOL, DIRTY_RX_AUD_VOL, DIRTY_CHARGE_LIM_EN,
-@@ -656,6 +660,10 @@ static void flush_task(void *arg)
+@@ -682,6 +686,10 @@ static void flush_task(void *arg)
          if (dirty_test(&dirty_local, DIRTY_QRZ_UPLOADED)) nvs_set_u32(s_nvs, KEY_QRZ_UPLOADED, snap.qrz_uploaded_n);
          if (dirty_test(&dirty_local, DIRTY_EQSL_USER))     nvs_set_str(s_nvs, KEY_EQSL_USER, snap.eqsl_user);
          if (dirty_test(&dirty_local, DIRTY_EQSL_PSWD))     nvs_set_str(s_nvs, KEY_EQSL_PSWD, snap.eqsl_pswd);
@@ -3820,7 +3820,7 @@ index c7258526..53d8435d 100644
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_USER))   nvs_set_str(s_nvs, KEY_QRZ_LU_USER, snap.qrz_lookup_user);
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_PASS))   nvs_set_str(s_nvs, KEY_QRZ_LU_PASS, snap.qrz_lookup_pass);
          if (dirty_test(&dirty_local, DIRTY_EQSL_UPLOADED)) nvs_set_u32(s_nvs, KEY_EQSL_UPLOADED, snap.eqsl_uploaded_n);
-@@ -938,6 +946,8 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -974,6 +982,8 @@ static void load_from_nvs(qmx_settings_t *out)
      out->qrz_lookup_pass[0] = '\0';
      out->eqsl_user[0] = '\0';
      out->eqsl_pswd[0] = '\0';
@@ -3829,7 +3829,7 @@ index c7258526..53d8435d 100644
      out->eqsl_uploaded_n = 0;
      out->cloudlog_url[0] = '\0';
      out->cloudlog_key[0] = '\0';
-@@ -1164,6 +1174,12 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -1212,6 +1222,12 @@ static void load_from_nvs(qmx_settings_t *out)
      out->eqsl_pswd[0] = '\0';
      sz = sizeof(out->eqsl_pswd);
      nvs_get_str(s_nvs, KEY_EQSL_PSWD, out->eqsl_pswd, &sz);
@@ -3842,7 +3842,7 @@ index c7258526..53d8435d 100644
      nvs_get_u32(s_nvs, KEY_EQSL_UPLOADED, &out->eqsl_uploaded_n);
      out->cloudlog_url[0] = '\0';
      sz = sizeof(out->cloudlog_url);
-@@ -4144,3 +4160,13 @@ void settings_set_gps_grid_auto(const char *grid)
+@@ -4433,3 +4449,13 @@ void settings_set_gps_grid_auto(const char *grid)
      nvs_commit(s_nvs);
      xSemaphoreGive(s_mutex);
  }
@@ -3857,10 +3857,10 @@ index c7258526..53d8435d 100644
 +    mark_dirty(DIRTY_RELAY);
 +}
 diff --git a/main/storage/settings.h b/main/storage/settings.h
-index dc01038d..c95a98e2 100644
+index c3221cc8..dbf40c23 100644
 --- a/main/storage/settings.h
 +++ b/main/storage/settings.h
-@@ -922,6 +922,10 @@ typedef struct {
+@@ -961,6 +961,10 @@ typedef struct {
      char     lotw_state[4];     // 2-letter US state, e.g. "VA"
      char     lotw_county[40];   // county name only, e.g. "Arlington"
      uint32_t lotw_uploaded_n;   // count of ADIF records already uploaded to LoTW
@@ -3871,7 +3871,7 @@ index dc01038d..c95a98e2 100644
  } qmx_settings_t;
  
  // Initialise the settings module. Opens an NVS handle. Safe to call
-@@ -1364,6 +1368,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
+@@ -1449,6 +1453,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
  void settings_set_eqsl_user(const char *user);
  void settings_set_eqsl_pswd(const char *pswd);
  

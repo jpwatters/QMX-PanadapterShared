@@ -24,6 +24,7 @@
 #include "cat.h"             // cat_get_qmx_fw / cat_is_ready / freq / mode
 #include "wifi.h"            // wifi_is_connected / ssid / ip / rssi
 #include "settings.h"        // callsign / grid
+#include "eth_w5500.h"
 
 static const char *TAG = "diag";
 
@@ -104,6 +105,9 @@ void diag_log_write_session_header(void)
              s.wifi_ssid[0] ? s.wifi_ssid : "(none)",
              wifi_is_connected() ? "yes" : "no",
              wifi_get_ip(), wifi_get_rssi_dbm());
+    ESP_LOGI(TAG, "ethernet: W5500 base=%s link=%s ip=%s mac=%s",
+             eth_is_present() ? "yes" : "no", eth_link_up() ? "up" : "down",
+             eth_get_ip(), eth_get_mac_str()[0] ? eth_get_mac_str() : "-");
 
     const char *qfw = cat_get_qmx_fw();
     ESP_LOGI(TAG, "qmx: connected=%s fw=%s freq=%luHz mode=%s",

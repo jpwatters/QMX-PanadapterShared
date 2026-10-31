@@ -84,6 +84,7 @@ static const char *TAG = "main";
 /* The ledger macro moved to util/mem_ledger.h on 2026-10-04 - the marks
  * that matter are now outside app_main. See that header for the why. */
 #include "util/mem_ledger.h"
+#include "eth_w5500.h"
 
 /* SETTLING MARKS (2026-10-04).
  *
@@ -703,6 +704,10 @@ void app_main(void)
     #if BENCH_WIFI_ENABLED != 0
     panadapter_wifi_start();
     MEM_LEDGER("wifi_start (hosted/SDIO)");
+    // Wired Ethernet if the W5500 PoE base is on the M5-Bus (net/eth_w5500.c);
+    // probes on its own task and runs alongside Wi-Fi, preferred while it has
+    // an address. Nothing changes when no base is fitted.
+    eth_w5500_start();
     // ⭐ REVERSED 2026-09-06, and the reason is measured rather than tidy.
     //
     // This used to wait for the SD mount BEFORE starting WiFi, on the strength
@@ -748,6 +753,8 @@ void app_main(void)
     render_waterfall_set_floor_blend((float)cfg->wf_floor_blend / 100.0f);
     dsp_set_window(cfg->wf_window);
     render_set_waterfall_rows_per_s(cfg->wf_rows_per_s);
+    ui_set_peak_hold_s(cfg->spec_peak_s);
+    rx_audio_set_cw_peak_hz(cfg->cw_peak_hz);
     if (cfg != &s_cfg_fallback) heap_caps_free(cfg);  // last read of cfg - see its declaration above
     cfg = NULL;
 

@@ -5,7 +5,7 @@ The panadapter includes **on-device FT8 and FT4 decoders** with real-time spectr
 
 ### 1. FT8 & FT4 View
 
-Swipe → from the left edge to reach the FT8/FT4 view (the edge cycles Panadapter -> FT8/FT4/JS8 -> WSPR). The same decode list and waterfall serve all three modes — FT8, FT4 and **JS8** — switched with the **Preset** dropdown in the left pane (top). JS8 adds a Conversation tab and free-text sending; see [JS8](js8.md).
+Swipe → from the left edge to open the **page picker**, then tap **MODE: FT8** or **MODE: FT4**. The picker lists all five pages - Panadapter, FT8, FT4, JS8 and WSPR - so each one is a single tap rather than a sequence of swipes. The same decode list and waterfall serve all three modes — FT8, FT4 and **JS8** — switched with the **Preset** dropdown in the left pane (top). JS8 adds a Conversation tab and free-text sending; see [JS8](js8.md).
 
 **FT4 notes:**
 - Decodes refresh roughly twice as fast as FT8 because slots are 7.5 seconds
@@ -93,7 +93,7 @@ Tap the **Options** button to open the Options modal:
   in the decode list either way, greyed, and you can still tap one to work it.
   Per band: the same call on another band counts as new. (It was called
   "Exclude stations worked before", which read as a promise about the list.)
-- **Hide worked-before** — new in v1.20.2, and the companion to the entry
+- **Hide worked-before** — the companion to the entry
   above rather than part of it. This one *does* change the list: tick it and a
   station already in your log on this band disappears from the decode list
   altogether, on the Tab5 and in the browser. Off by default, so the grey

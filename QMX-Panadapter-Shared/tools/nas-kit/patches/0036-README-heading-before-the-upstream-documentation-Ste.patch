@@ -1,0 +1,30 @@
+From ca73519c8f9b7fea26c0488e51698585e45602a4 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 25 Oct 2026 14:00:00 -0500
+Subject: [PATCH 36/41] README: heading before the upstream documentation
+ (SteffenLav/qmx-panadapter, by Steffen Lav OZ1LAV)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/README.md b/README.md
+index c62b08f1..0fcde779 100644
+--- a/README.md
++++ b/README.md
+@@ -108,6 +108,10 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
+ * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
+ * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+ 
++---
++
++## Documentation from the upstream repository<br><sub>&nbsp;</sub><br><sub><i>Below is the documentation from the repository <a href="https://github.com/SteffenLav/qmx-panadapter">SteffenLav/qmx-panadapter</a>,<br>by Steffen Lav (OZ1LAV).</i></sub>
++
+ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.
+ 
+ **Documentation:** [tab5.lav.dk](https://tab5.lav.dk) — the user guide, quick-start, and reference as plain web pages. A more approachable read than this page if you just want to set the device up; the source code and release downloads stay here on GitHub.
+-- 
+2.43.0
+

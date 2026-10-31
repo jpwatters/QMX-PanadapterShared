@@ -392,3 +392,7 @@ CONFIG_MQTT_USE_CORE_1=y
 # Costs one 512 B PSRAM allocation per mount and per open file, and saves the
 # same 512 B of INTERNAL DMA memory being taken and released per sector.
 CONFIG_FATFS_USE_DYN_BUFFERS=y
+
+# Wired Ethernet through the M5Stack W5500 PoE base on the M5-Bus (net/eth_w5500.c)
+CONFIG_ETH_USE_SPI_ETHERNET=y
+CONFIG_ETH_SPI_ETHERNET_W5500=y

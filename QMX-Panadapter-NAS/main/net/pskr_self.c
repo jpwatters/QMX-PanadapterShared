@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <time.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "pskr_self";
 static const char *BROKER_URI = "mqtt://mqtt.pskreporter.info:1883";
@@ -305,7 +306,7 @@ static void client_destroy(void)
 static void watchdog_task(void *arg)
 {
     (void)arg;
-    while (!wifi_is_connected() || net_quiet_active()) {
+    while (!net_is_up() || net_quiet_active()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 

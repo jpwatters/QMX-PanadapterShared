@@ -1,7 +1,7 @@
-From 8a39c6c9917e1f998a3c014e8d0dd1b980ae8dca Mon Sep 17 00:00:00 2001
+From e1b877c33ef15c32262420de2a2adc08db277b4c Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
-Subject: [PATCH 05/30] network-radio: Radio source on the touchscreen; fix
+Subject: [PATCH 05/41] network-radio: Radio source on the touchscreen; fix
  network freeze and DMA RAM drain
 
 - Settings drawer: "Radio source" button showing USB / NAS and link state,
@@ -27,13 +27,13 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
 ---
  QMX-Panadapter-SharedViaNAS.pdf               | Bin 203721 -> 262739 bytes
  main/net/radio_relay.c                        |   8 +
- main/ui/ui.c                                  | 264 +++++++++++++++++-
+ main/ui/ui.c                                  | 262 ++++++++++++++++++
  main/wifi/wifi.c                              |  44 ++-
  tools/check_patches.py                        |   7 +
  tools/mac-capture-serial.sh                   |   2 +
  tools/nas-relay/README.md                     |  75 ++++-
  .../apply_esp_hosted_sdio_split_psram.ps1     | 171 ++++++++++++
- 8 files changed, 566 insertions(+), 5 deletions(-)
+ 8 files changed, 565 insertions(+), 4 deletions(-)
  mode change 100755 => 100644 tools/mac-capture-serial.sh
  create mode 100644 tools/patches/apply_esp_hosted_sdio_split_psram.ps1
 
@@ -6578,10 +6578,10 @@ index 1c6e15ce..1e8a3e18 100644
          return ESP_ERR_TIMEOUT;
      }
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 9c0ad2d2..7fbf53df 100644
+index 9bad8934..fac51d4f 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -88,6 +88,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
+@@ -92,6 +92,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
  #include "ft8_test.h"
  #include "esp_lcd_touch.h"
  #include "esp_system.h"        // esp_restart - the drawer's "Restart now" (#270)
@@ -6589,41 +6589,39 @@ index 9c0ad2d2..7fbf53df 100644
  #include "bt_hid_mouse.h"      // is the BLE radio actually up, and was it at boot
  
  static const char *TAG = "ui";
-@@ -3323,7 +3324,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
- //   lv_obj_has_flag_any <- lv_obj_is_layout_positioned
- //
- // A comment cannot stop this on its own, so the assert below now does.
--#define N_DRAWER_SECTIONS     52
-+#define N_DRAWER_SECTIONS     53
+@@ -3426,6 +3427,14 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
+  * start the activation, then log the people you work by hand. */
+ #define DRAWER_SEC_MANLOG     53
+ #define N_DRAWER_SECTIONS     56
 +// "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 +// or one plugged into a NAS running tools/nas-relay. Same effect as the web
 +// page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 +// cat_reconnect), so the switch no longer needs a computer.
-+// (52: upstream took 47 PORTA, 48 GPSSTATS, 49 KEYER, 50 JS8SUB, 51 POWEROFF.)
-+#define DRAWER_SEC_RADIOSRC   52
-+// ⛔ IDs are 0..52 now. The next one raises N_DRAWER_SECTIONS AND gets an
++// (55: upstream uses 0..53 and left 54 spare under N_DRAWER_SECTIONS 56.)
++#define DRAWER_SEC_RADIOSRC   55
++// ⛔ IDs are 0..55 now. The next one raises N_DRAWER_SECTIONS AND gets an
 +// assert below - see the 2026-10-03 note above.
  
  /* Catches the mistake above at COMPILE time instead of as a crash minutes into
   * a session. Every id must be a valid index; raise N_DRAWER_SECTIONS when you
-@@ -3335,6 +3344,8 @@ _Static_assert(DRAWER_SEC_PORTA   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
- _Static_assert(DRAWER_SEC_KEYER   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+@@ -3438,6 +3447,8 @@ _Static_assert(DRAWER_SEC_KEYER   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
  _Static_assert(DRAWER_SEC_JS8SUB  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
- _Static_assert(DRAWER_SEC_POWEROFF < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(DRAWER_SEC_SERVER < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 +_Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 +_Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
  static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
  static int       s_drawer_section_y[N_DRAWER_SECTIONS];
  static int       s_drawer_section_h[N_DRAWER_SECTIONS];
-@@ -3367,6 +3378,7 @@ static const drawer_item_t GRP_STATION[] = {
+@@ -3471,6 +3482,7 @@ static const drawer_item_t GRP_STATION[] = {
      { DRAWER_SEC_BPREGION, "Band-plan region", false },
  };
  static const drawer_item_t GRP_RADIO[] = {
 +    { DRAWER_SEC_RADIOSRC, "Radio source (USB / NAS)", true },
      { DRAWER_SEC_QMXVOL, "QMX volume", true },
-     { DRAWER_SEC_QMXRF, "RF gain", true },
+     { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
      /* Above CW centre (operator, 2026-09-07). It was filed under Spectrum with
-@@ -4044,6 +4056,9 @@ static void gain_resolve_stop(void);
+@@ -4208,6 +4220,9 @@ static void gain_resolve_stop(void);
  static void drawer_pause_btn_cb(lv_event_t *e);
  static void drawer_term_btn_cb(lv_event_t *e);
  static void drawer_gpsstats_btn_cb(lv_event_t *e);
@@ -6633,7 +6631,7 @@ index 9c0ad2d2..7fbf53df 100644
  static void topbar_reconcile_cb(lv_timer_t *t);
  static void drawer_slider_cwtxoff_cb(lv_event_t *e);
  static void ui_set_cw_tx_offset_label(int hz);
-@@ -14269,6 +14284,29 @@ static void drawer_build(void)
+@@ -15732,6 +15747,29 @@ static void drawer_build(void)
      //
      // Directly under the pause button on purpose: an operator reaching for
      // "let me use the QMX menus" on a radio with no front panel wanted this.
@@ -6663,7 +6661,7 @@ index 9c0ad2d2..7fbf53df 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -17402,6 +17440,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
+@@ -19049,6 +19087,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
   * physically swap a card - which is exactly when it disappears. It also has a
   * second instruction after the swap, so it has to still be there afterwards.
   * A window waits. */
@@ -6964,7 +6962,7 @@ index 1e369861..17c404e2 100644
              ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
          }
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 62005eae..451ba568 100644
+index 0c1046b8..215facb0 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -93,6 +93,13 @@ PATCHES = [

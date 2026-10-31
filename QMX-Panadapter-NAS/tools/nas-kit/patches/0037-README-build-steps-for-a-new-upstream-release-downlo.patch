@@ -1,7 +1,7 @@
-From 2e83a9c6a60c53cdf213c33812915b66bbec42ec Mon Sep 17 00:00:00 2001
+From 00ec4d2db3fcefc5c03ead707242e869fda34139 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 15:00:00 -0500
-Subject: [PATCH 37/37] README: build steps for a new upstream release
+Subject: [PATCH 37/41] README: build steps for a new upstream release
  (download and patch, build and flash, mark tested and publish)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,10 +11,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/README.md b/README.md
-index c467741c..52688b93 100644
+index 0fcde779..e77ed701 100644
 --- a/README.md
 +++ b/README.md
-@@ -61,20 +61,37 @@ The NAS patches were last ported on 2026-10-23, to upstream v1.20.5 (compile-che
+@@ -61,20 +61,37 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
  Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
  ________________________________________________________________________________________________________________________________________________
  

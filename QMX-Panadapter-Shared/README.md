@@ -1,10 +1,14 @@
-# QMX+ Panadapter
+# QMX/QMX+ Panadapter Shared over the network
 
 *By Steffen Lav (OZ1LAV).* Shared over the Network Updated by JP Watters
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.20.5-NAS** — upstream QMX-Panadapter **v1.20.5** plus the NAS patch series 0001-0030 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.23.0-NAS** — upstream QMX-Panadapter **v1.23.0** plus the NAS patch series 0001-0041 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+
+$$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
+
+<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, which is connected by Ethernet to port 1 of a Ubiquiti 8-port switch" width="600"></p>
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
@@ -12,7 +16,11 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
 5. M5Stack Tab5 discovery with the web browser at http://qmx.local
-6. An update kit that rebuilds all of this on each new upstream release
+6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
+7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
+8. An update kit that rebuilds all of this on each new upstream release
+
+The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.23.0; not yet flashed). The last build flashed and marked tested on the Tab5 was upstream v1.20.5 with the NAS patches (2026-10-23).
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -22,55 +30,136 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 
 **On the Tab5**
 * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
-* Radio source on the web page: the same setting, also available to other programs at /api/relay. Tested.
+* Radio source on the web page (Radio menu): the same window as on the Tab5 - Find NAS, Use NAS with a typed address, Use USB - also available to other programs at /api/relay and /api/relay/find. Setting the address tested; Find NAS on the web page added 2026-10-25, not yet tested on the Tab5.
 * Everything works over the network: the full-rate spectrum, waterfall, FT8/FT4, WSPR, CAT, RX audio, Radio menus and GPS-time reading. Tested, apart from GPS time (the test QMX+ has no GPS).
 * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
 * Live spectrum on the web page. Tested.
 * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
 * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
+* TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
+* Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
 
 **On the relay**
 * I/Q paused while transmitting, a CAT log of every command and reply, a transmit log of every burst, and a guard that blocks the power-off command (PS0;). Each can be changed with a flag file in the relay folder (catlog.off, allow-ps0, iq-during-tx, tab5-timed-tx), without a restart. Tested on the NAS.
 * Responsive control: the relay sends radio replies ahead of spectrum data, so control never lags behind the stream.
+* One transmitter at a time: while the Mac’s TCI bridge is connected the relay drops the Tab5’s key-down, Tune and tones and refuses its bursts, and tells the Tab5 so (TX_LOCK); while the Tab5 transmits or tunes, the Mac cannot key. A flag file tab5-tx-always lets the Tab5 transmit anyway. Bench-tested.
+* A copy of the I/Q stream on TCP 7357 for the Mac’s TCI bridge, so the Tab5’s own connection is never touched.
 * Transmit timing test (tools/tx-test): tx_compare.py compares the relay’s transmit log with the Tab5’s own log, one clock per number.
 
 **Reliability fixes needed for the network stream**
 * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
-* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed.
+* No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
+
+**Wired Ethernet (M5Stack W5500 PoE base)**
+
+The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
+
+*Installation*
+1. Power the Tab5 off. Plug the W5500 PoE base onto the M5-Bus on the back. No wiring or soldering: the bus carries the signals below. Leave Port B unplugged (G52 is also Port B's output).
+2. Connect the base's Ethernet port to your switch. PoE (IEEE 802.3af) powers the base itself; keep the Tab5 on its own USB-C power, because M5Stack documents the Tab5's M5-Bus 5 V as an output and it is not confirmed that the Tab5 can run from the base.
+3. Flash this firmware as usual (`bash tools/mac-build-flash.sh`) and power-cycle the Tab5. Nothing needs configuring: the firmware looks for the base at every boot.
+4. In your router, give the Tab5 a DHCP reservation for its **Ethernet** MAC address, which differs from the Wi-Fi one. The serial log and `/api/status` (`eth.mac`) show it.
+
+| W5500 signal | M5-Bus pin | Tab5 GPIO |
+|---|---|---|
+| MOSI | 7 | G18 |
+| MISO | 9 | G19 |
+| SCK | 11 | G5 |
+| CS | 10 | G52 |
+| INT | 26 | G51 |
+| RST | 22 | G48 |
+
+The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
+
+*Operation*
+* Startup: about a second after power-on the log says `W5500 PoE base found on the M5-Bus, MAC ...`, then `link up: 100 Mbit/s full duplex` and `address 192.168.x.y - Ethernet is now the preferred route`. The bottom bar shows **Ethernet** and that address in place of the Wi-Fi network; the web page's bottom bar shows `Ethernet 100 Mbit/s <address>`. qmx.local answers on both links, and Find NAS searches over Ethernet.
+* No base fitted: the log says `no W5500 PoE base on the M5-Bus - Wi-Fi only` once and everything is as before.
+* Cable pulled: the log says `link down`; the NAS relay link drops and reconnects over Wi-Fi within seconds, and the bottom bar goes back to the Wi-Fi network. Plugging the cable back in moves new connections back to Ethernet.
+* Shutdown: no procedure is needed; unplug USB-C and the Ethernet cable. Settings are saved as they change.
+* Status for scripts: `/api/status` has an `eth` object (`present`, `link`, `in_use`, `ip`, `mbps`, `full_duplex`, `mac`).
+
+*Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
 
 **Mac tools**
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 
 **Keeping up with upstream**
-* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version.
+* Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.20.5-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.23.0-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 ________________________________________________________________________________________________________________________________________________
 
-Steps:
+These commands build a new version whenever Steffen publishes a new upstream release:
 
 ```
-cd ~/src/qmx-panadapter-nas/tools/nas-kit
-
-# 1. publish the latest build first (patch 0021, the updated PDFs)
-bash make-qmx-panadapter-nas.sh --mark-tested
-bash push-to-github.sh
-
-# 2. build current version into QMX-Panadapter-NAS (the previous version folder is archived)
+# 1. Download the newest release and apply the NAS patches
+cd ~/src/QMX-Panadapter-NAS/tools/nas-kit
 bash make-qmx-panadapter-nas.sh
-cd ~/src/QMX-Panadapter-NAS && bash tools/mac-build-flash.sh
+
+# 2. Build and flash the Tab5 (nothing plugged into its USB-A port)
+cd ~/src/QMX-Panadapter-NAS
+bash tools/mac-build-flash.sh
+#    then power the Tab5 off and on
+
+# 3. Once it works on the Tab5, mark it tested and publish
+bash tools/nas-kit/make-qmx-panadapter-nas.sh --mark-tested
+bash tools/nas-kit/push-to-github.sh
 ```
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.20.5-NAS works, run --mark-tested and the push again.
+Step 1:
+
+* It downloads only the newest release, about 40 MB, and retries if the connection drops.
+* It moves your current `QMX-Panadapter-NAS` folder to `~/src/.qmx-panadapter-archive` and builds the new one in its place.
+* If you’re already on the newest release with these patches, it says “nothing to do”.
+
+Step 2 testing: check that the version shows `vX.Y.Z-NAS`, then try Find NAS, the spectrum, the Radio source switch in the drawer, a few FT8 bursts and a short Tune.
+
+Other options:
+
+* `--status`: shows which release NAS and Shared are on.
+* `--ref v1.20.5`: builds a specific release instead of the newest.
+* `--force`: rebuilds even when there’s nothing new.
+
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.23.0-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
+
+**How the pieces find and talk to each other**
+
+```
+                        ┌──────────── NAS / Raspberry Pi relay (qmx_nas_relay.py) ───────────┐
+QMX/QMX+ ──USB──▶       │ UDP 7355  answers "QMXR?" with "QMXR! <ip> 7355"   (discovery)     │
+                        │ TCP 7355  QMXR/1: I/Q + CAT + menus + timed bursts ──▶ Tab5        │
+                        │ TCP 7356  QMX serial port 3, raw CAT bytes ──────────▶ Mac bridge  │
+                        │ TCP 7357  listen-only copy of the I/Q ───────────────▶ Mac bridge  │
+                        └────────────────────────────────────────────────────────────────────┘
+Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  WS / WSJT-X / JTDX
+     qmx_serial_bridge.py (older)  ──  ~/cu.QMX-NAS (pseudo serial port)  ◀──  CAT programs
+```
+
+*Finding the relay on the network.* Nobody has to type an address. The Tab5’s **Find NAS** button (Radio source, in the drawer) and the Mac bridge both broadcast the 5-byte text `QMXR?` on UDP port 7355, three times over 1.5 s. Every relay on the same network answers straight back with `QMXR! <its IP address> <TCP port>`, for example `QMXR! 10.0.0.137 7355`; the address is the one on the network interface that reaches the asker, so a NAS with several interfaces gives the right one. The relay sends nothing unless asked. The Tab5 offers what answered and remembers the address it uses; the Mac bridge searches when it starts and again whenever the remembered address stops answering, so a relay that gets a new address is followed. Broadcasts do not cross routers, so the relay, the Tab5 and the Mac must be on the same network (and, if DSM’s firewall is on, UDP 7355 and TCP 7355-7357 must be allowed). The Tab5 itself is found the usual way: it announces **qmx.local** (mDNS), so its web page is at http://qmx.local.
+
+*How the Tab5 connects.* The Tab5 opens TCP 7355 and says `QMXR/1 tab5-qmx-panadapter`. The relay answers only once it has the QMX open, with its capabilities (`QMXR/1 rate=48000 … term=1 txsched=1 txlock=1`), so an open connection means “radio present”, exactly like a USB plug. From then on small frames (type, flags, length, data) carry the 48 kHz I/Q, CAT bytes, the radio’s menu port, whole FT8/FT4 bursts for the relay to time, and the transmitter lock. The Tab5 feeds the I/Q and CAT into the same places its USB drivers do, so the panadapter, decoders and transmit code don’t know the radio is on the network.
+
+*The Python “USB port” on the Mac (older serial mode).* Programs that expect a QMX on a USB serial port can be given a stand-in: `qmx_serial_bridge.py` (with `MODE=serial bash install-mac.sh`) creates a pseudo-terminal - a pair of connected virtual serial devices that macOS provides to any program - set to raw 8-bit with echo off, and puts a link to it at `~/cu.QMX-NAS`. A program that opens that path reads and writes it like the QMX’s USB serial port; the bridge copies every byte to and from the relay’s TCP 7356, which is the QMX’s third serial port, so the program talks to the real radio (CAT only - there is no audio on a serial port). The bridge keeps the device open so it does not disappear between programs, throws away radio replies nobody read, and reconnects to the relay on its own. WS and WSJT-X on macOS would not open a pseudo-terminal, which is why the bridge now defaults to TCI.
+
+*How a TCI program connects through the bridge to the relay.* TCI is a network-radio protocol (from Expert Electronics) that WS, WSJT-X 3 and JTDX speak natively: one WebSocket carries control, receive audio and transmit audio. The program does not talk to the relay itself; it connects to the bridge on the same Mac (**TCI Client**, server **127.0.0.1:40001**), and the bridge is the one that connects to the relay:
+* **Receive audio:** the bridge opens the relay’s **TCP 7357** and introduces itself as `QMXR/1 tci-mac tx=1`. It gets the same 48 kHz I/Q the Tab5 gets, on its own connection, and turns it into upper-sideband audio (the dial up to 3.2 kHz above it) that it streams to the program as TCI audio.
+* **Control:** frequency, mode and transmit on/off from the program become the QMX’s own CAT commands (FA, MD, TX;/RX;) on the relay’s **TCP 7356** (serial port 3, which the Tab5 never uses); the bridge reads the frequency and mode back every second, so a change on the Tab5 or the radio shows in the program.
+* **Transmit:** the program sends transmit audio; the bridge measures each FT8/FT4/JS8/WSPR tone in it and sends it to the QMX as `TA<Hz>;` on a fixed 50 ms delay, the same way the Tab5 transmits, so every symbol keeps its spacing (bench test: 160 ms ± 1 ms). Voice does not work: the QMX has no transmit-audio path over the network.
+* **One transmitter at a time:** the `tx=1` in the bridge’s hello tells the relay that a program which can transmit is connected. While it is, the relay keeps the Tab5 off the transmitter and tells it so (the Tab5 shows “TX locked: Another Device has the transmitter”); while the Tab5 is transmitting, the Mac is kept off. The bridge holds port 3 and the I/Q copy only while a TCI program is connected.
 
 **Documentation**
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+* Appendix: [Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter](#appendix-qmx-setup), at the end of this README: the QMX firmware version, the radio settings the Tab5 needs, the power-up order and the first checks.
+
+---
+
+## Documentation from the upstream repository<br><sub>&nbsp;</sub><br><sub><i>Below is the documentation from the repository <a href="https://github.com/SteffenLav/qmx-panadapter">SteffenLav/qmx-panadapter</a>,<br>by Steffen Lav (OZ1LAV).</i></sub>
 
 The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.
 
@@ -80,13 +169,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v1.20.5.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
+> **Release — v1.23.0.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.20.5.pdf).
+Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.23.0.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -122,6 +211,13 @@ the view stays centred on the dial, because the view is already the whole 48 kHz
 sends. The band above dial+12 kHz is hatched on both screens — the radio genuinely cannot
 hear it, and drawing something there would be inventing signal.
 
+**Peak hold** — A second line over the spectrum showing the highest each point of the band
+reached in the last 1, 2, 3 or 5 seconds, on the Tab5 and in the browser. It is a sliding
+window rather than a latch, so a peak falls away once it is older than the window and the
+line stays a picture of the band instead of a record of the past. An intermittent signal —
+an FT8 station every 15 seconds, a CW operator between overs — stays visible seconds after
+the live trace has dropped back into the noise *(Samuel W7STF)*.
+
 ### Hear the band
 
 **Audio, and binaural CW** *(beta)* — The I/Q the radio already sends is turned into sound
@@ -139,6 +235,21 @@ on and off. This is a first implementation and is
 **beta**, with the same features planned for the web interface — sending only the I/Q to
 the PC and doing the work there. See [Audio](docs/mkdocs/guide/audio.md).
 
+**CW peak filter** — A narrow audio peak on the CW pitch, 250, 150 or 100 Hz wide at −3 dB,
+in the Tab5's own audio after the mode filter and **before the AGC**, so the automatic gain
+rides the wanted note instead of the hiss either side of it. Measured at a 700 Hz pitch the
+100 Hz setting is 91 Hz wide and 32 dB down 500 Hz away. Peak gain is 0 dB, so switching it
+on does not also change the volume. It is not a second IF filter — the radio's own CW filter
+still decides what reaches the Tab5 *(Samuel W7STF)*.
+
+**Audio panel** — One tap on the S-meter opens mute, the Tab5's speaker volume, the radio's
+AF gain, the radio's RF gain (0–99 dB, stored per band by the QMX — ⚠ measured 2026-10-27 to have
+no effect on the spectrum or the audio, see below) and an AGC Fast / Slow /
+Off row — Fast being a 1 ms attack and 30 ms release for CW, Slow 5 ms and 400 ms, and Off
+pinning the gain at the AGC ceiling. A tap outside closes it *(Samuel W7STF)*.
+
+⚠ **Correction, 2026-10-27: the RF gain slider does not do what this said.** Taking the gain from 54 to 0 moved the spectrum noise floor **0.06 dB** over 81 frames. The radio accepts the command and reads the new value back — Stan KC7XE confirms `RG` is the right command and that the Band Configuration value is separate by design — but it does not reach the I/Q stream the Tab5 receives, and the spectrum, the decoders and the Tab5's own audio all come from that one stream. So it changes nothing you can see or hear on the Tab5. Stan KC7XE has since explained why (2026-10-28): I/Q mode delivers the raw 48 kHz PCM1804 stream, and every adjustment happens further down the radio's own chain. So the control is real and it works — on the QMX's own headphones and speaker. It is kept and relabelled rather than removed, and deliberately not faked by scaling the samples here, which would move signal and noise together and change no signal-to-noise ratio. The AGC row in the same panel is unaffected and works as described.
+
 **Receive from the 3.5 mm jack** *(beta — Tony, @tony1tf, #17)* — The panadapter can take
 its signal from the Tab5's own headphone jack instead of the radio's USB audio. Tony asked
 for an audio input for digital modes and then ran a test build on his own Tab5 to find
@@ -152,7 +263,7 @@ connection is off by design, so CAT, the S-meter and the band/mode display go qu
 Changing the source needs a restart, which the Tab5 performs itself on **Save**.
 See [Audio](docs/mkdocs/guide/audio.md).
 
-**Decoded CW** ** — In CW or CW-R, a line along the bottom of the
+**Decoded CW** — In CW or CW-R, a line along the bottom of the
 panadapter shows the Morse the radio is decoding, with an estimate of the sending
 speed. The **QMX does the decoding itself** and hands the text over CAT, so it costs
 the panadapter no processing at all and does not touch the spectrum or FT8. Works on
@@ -168,6 +279,13 @@ callsign can be resolved afterwards *(Michael K Johnson KZ4LY)*.
 QMX volume in decibels matching the radio's own display, and an Antenna Tune button on
 1.04+. Round-trip CAT latency under 50 ms. Band presets with per-band frequency recall,
 and 32 memory channels in a 4×8 grid holding any frequency and mode.
+
+**CW-Tune** — A long press on the bandwidth in the top bar puts the dial on the nearest CW
+signal, within ±400 Hz either side. A keyed carrier is absent as often as it is present, so
+it works from a per-bin maximum over the last 4 seconds rather than a single frame, keeps
+listening for up to 8 seconds on a quiet band, and takes a peak at +3 dB over the median of
+the search window. ⛔ It moves the dial **once, when you ask it to**, and never
+automatically *(Samuel W7STF)*.
 
 **RIT** — Pull in a caller answering off your frequency without moving transmit: arm it,
 tap the caller, and a marker shows where you are listening while the gold line goes on
@@ -311,6 +429,14 @@ FT8/FT4 mode it shows a live TX status banner and a **Call CQ** button instead o
 stream. Also: the QSO log as a sortable table, config download/upload as an editable text
 file, a microSD file browser, screenshots, and the diagnostic log.
 
+**Server mode** — The Tab5 stops drawing its screen and stops its own audio, and keeps
+serving the web page, for running the radio from another room. Measured with a browser on
+the page throughout: core 0 idle 10–13% → 67%, core 1 idle 42–56% → 72%. The drawing is
+what costs; serving the page is about 1%. The browser is unaffected, because its spectrum
+and waterfall come from the DSP rather than from the Tab5's canvases, and a browser
+listening to the audio overrides the suspend. Touch the Tab5 to come back. It is not
+remembered across a reboot, deliberately: a unit that boots dark looks broken.
+
 ### Know what time it is
 
 **A GPS of your own, and a sky view** — Two receivers work, and both are confirmed on
@@ -391,9 +517,12 @@ restore as a text file; and a settings reset that does not need a reflash.
 - [Quick Guide](#quick-guide) — get on air in 10 minutes
 - [Getting help](#getting-help) — the manual on the device, and the guidance panel
 - [Panadapter](#panadapter) — spectrum, waterfall, zoom, touch-to-tune, S-meter, memory channels
+- [Audio](#audio) — binaural CW and panoramic split (beta)
 - [Live spots](#live-spots) — POTA, RBN and DX cluster callsigns drawn on the spectrum
 - [Spot map](#spot-map) — who is hearing YOU: RBN, PSK Reporter and WSPR reports of your own signal, on a world map
 - [Web UI](#web-ui) — browser panadapter and remote control
+- [Web API](#web-api) — drive the radio from a script: every endpoint the browser page uses
+- [Hamlib rigctld](#hamlib-rigctld) — point a logger at the Tab5 on port 4532, no cable, no driver
 - [FT8 Receive](#ft8-receive) — onboard decoder, decode list
 - [FT8 Transmit](#ft8-transmit) — reply, CQ-run, auto-QSO, ADIF logging
 - [JS8](#js8) — keyboard mode on the device: decode, free text, CQ (beta)
@@ -473,7 +602,7 @@ The whole app is driven by **one-finger swipes from the screen edges** and **tap
 
 | Gesture | From | Does |
 |---------|------|------|
-| Swipe → | Left edge | Cycle Panadapter → FT8/FT4/JS8 → WSPR |
+| Swipe → | Left edge | Open the **page picker** — tap Panadapter, FT8, FT4, JS8 or WSPR |
 | Swipe ← | Right edge | Open settings drawer |
 | Swipe ↑ | Bottom edge | Open memory channel picker |
 | Tap or swipe ↓ | Any top-bar item | Open that item's selector |
@@ -724,6 +853,24 @@ Full chapter: [tab5.lav.dk/reference/web-api](https://tab5.lav.dk/reference/web-
 
 ---
 
+## Hamlib rigctld
+
+The Tab5 is also a Hamlib **NET rigctl** server on TCP port **4532**, so a
+logger or digital-mode program on the LAN can read and set the QMX's frequency
+and mode with nothing installed on the PC and no serial cable. It starts on its
+own once the Tab5 joins WiFi - there is nothing to turn on.
+
+Point the program at the IP address on the Tab5's bottom bar, port 4532, rig
+model **NET rigctl**. Tested with QLog, WSJT-X and fldigi.
+
+It is receive-side control: there is no `set_ptt`, so it cannot key the radio
+and will never report that you are transmitting. Set PTT to none or VOX, or key
+the QMX the way you normally do.
+
+Full chapter: [tab5.lav.dk/reference/rigctld](https://tab5.lav.dk/reference/rigctld/)
+
+---
+
 ## FT8 Receive
 
 ![FT8 RX in action on 20 m - decode list with DXCC, distance, bearing, and SNR](docs/QMX-Panadapter_FT8_v0.15.7.png)
@@ -761,13 +908,13 @@ Full chapter: [tab5.lav.dk/guide/ft8-tx](https://tab5.lav.dk/guide/ft8-tx/)
 
 **JS8 Normal runs on the Tab5 itself** - decoder, error correction and transmitter, no PC. JS8 is a keyboard mode on FT8's modulation: it carries free text instead of FT8's fixed exchange, so stations hold short conversations.
 
-Pick **JS8** from the **Preset** dropdown in the FT8 view - the dropdown is three wide now. Only **JS8 Normal** (15-second slots) is supported; Fast, Turbo and Slow are not, and Turbo is unreachable over CAT anyway.
+Pick **JS8** from the **Preset** dropdown in the FT8 view - the dropdown is three wide now. All four speeds - Slow, Normal, Fast and Turbo - are selectable from v1.19.0, and **only Normal is proven on air**.
 
-With JS8 selected the right pane carries two tappable tabs: **Stations** (who is on the band, with grid and age) and **Conversation** (what has been said - AGE, Hz, CALL, MESSAGE). Both appear in the browser too.
+With JS8 selected the right pane shows **three panes at once** from v1.23.0 *(Ryan KK6DZB)*: **Stations** (who is on the band, with grid and age), **Conversation** (what has been said - AGE, Hz, CALL, MESSAGE) and a **type box** you compose in. The Stations and Conversation tabs are gone; there is nothing left to switch between. The browser shows the same three.
 
 ⚠ **JS8 is a beta.** Receiving is proven on air, sending free text is proven on air, and a CQ from the Tab5 was decoded by a second station. **A full automatic two-way JS8 QSO has not been watched from both ends** - though the automatic exchange itself *is* implemented and has been since v1.17.0, which the v1.18.0 notes corrected publicly. **All four speeds - Slow, Normal, Fast and Turbo - are selectable from v1.19.0, and only Normal is proven on air.** Compound callsigns — `G0ABC/P`, `W1ABC/4`, special-event calls — are **read** from v1.18.0, where before they were discarded without trace. Proven on air: `SV2BBO/A` decoded twice on 20 m and entered the station list under its full callsign.
 
-**Sending free text.** Tap **Free text** under Call CQ on the Tab5 (JS8 only), or use the composer under the conversation pane on the web page. Both report how many frames the message takes and how many seconds it holds the frequency before anything is keyed, and show the normalised text the encoder will actually send - upper-cased, whitespace collapsed, unsendable characters dropped. One frame per 15-second slot, so a twelve-frame message is three minutes of transmitting. **Stop TX** aborts a run in flight and stays reachable while transmitting. Scriptable as `POST /api/cmd {"action":"js8_text","text":"..."}`, with `js8_text_plan` for the frame/second count without transmitting and `js8_text_cancel` to stop.
+**Sending free text.** Type into the box under the conversation pane - on the Tab5 or on the web page. The old **Free text** button under Call CQ is gone as of v1.23.0; with no physical keyboard, tapping the box opens the modal composer so the on-screen keyboard does not cover it. Both report how many frames the message takes and how many seconds it holds the frequency before anything is keyed, and show the normalised text the encoder will actually send - upper-cased, whitespace collapsed, unsendable characters dropped. One frame per 15-second slot, so a twelve-frame message is three minutes of transmitting. **Stop TX** aborts a run in flight and stays reachable while transmitting. Scriptable as `POST /api/cmd {"action":"js8_text","text":"..."}`, with `js8_text_plan` for the frame/second count without transmitting and `js8_text_cancel` to stop.
 
 A free-text frame carries **no callsign** - that is JS8's design. The Tab5 names a message after a station that identified itself on the same audio frequency, and shows the **frequency instead of a name** when two stations are equally plausible. A wrong callsign on somebody else's words is worse than none.
 
@@ -825,7 +972,7 @@ hunt for.
 
 A propagation beacon rather than a contact mode: a very slow, very weak signal
 carrying only your callsign, grid and declared power, reported by stations
-worldwide. Swipe → from the left edge cycles **Panadapter → FT8/FT4/JS8 → WSPR**.
+worldwide. Swipe → from the left edge opens the **page picker**; tap **MODE: WSPR** to go straight there.
 Receiving is the default and worth doing on its own; transmitting is opt-in.
 
 **Calibrate Power measures what your QMX actually does, on your antenna
@@ -907,12 +1054,14 @@ clock that is wrong, WiFi that will not hold, a card that stops being written.
 | Double-tap | Spectrum / waterfall | Reset zoom and pan to ×1.0 / centred |
 | Pinch (two fingers) | Spectrum / waterfall | Zoom ×1.0–×24.0 |
 | Two-finger drag | Spectrum / waterfall (zoomed) | Pan the zoomed window |
-| Swipe → from left edge | Left edge strip | Cycle Panadapter → FT8/FT4/JS8 → WSPR |
+| Swipe → from left edge | Left edge strip | Open the **page picker** — tap any of the five pages directly |
 | Swipe ← from right edge | Right edge strip | Open settings drawer |
 | Tap right grip handle | Right edge | Open settings drawer (alternative) |
 | Swipe → | Open drawer, or spectrum while drawer open | Close settings drawer |
 | Swipe ↑ from bottom edge | Bottom edge strip | Open memory channel picker |
 | Tap or swipe ↓ | Top-bar item (Band/Mode/BW/Freq/Zoom) | Open that item's selector |
+| Long press | Top-bar **BW** | **CW-Tune** — put the dial on the nearest CW signal within ±400 Hz |
+| Tap | Top-bar **S-meter** | Open the audio panel (mute, speaker volume, AF gain, RF gain, AGC Fast/Slow/Off) |
 | Touch and hold ~250 ms | FT8 decode list row | Dim preview at ~80 ms; full selection at 250 ms (scroll locks, drag moves highlight, lift to confirm) |
 | Quick swipe | FT8 decode list | Scroll the list normally |
 
@@ -1083,11 +1232,12 @@ The full per-version changelog — every release from v0.1.0 onward — lives in
 
 ### Next up
 
-**v1.20.5 is here.** Next on the bench:
+**v1.23.0 is here.** Next on the bench:
 
 - **A full two-way JS8 QSO, watched from both ends.** Receiving, sending free text and calling CQ are all proven on air, and the automatic exchange **is implemented** - with automatic replies on, the Tab5 answers JS8 callers by itself and has since v1.17.0. What is missing is a complete exchange observed end to end, not the code to do it. An earlier version of this line said the exchange "is not written yet", which was wrong and was corrected publicly in the v1.18.0 notes after Gyula HA3HZ found four stations answered unattended in his own log.
 - **JS8 Slow, Fast and Turbo on the air.** All four speeds are selectable from v1.19.0 and they transmit, but no contact has been made on anything but Normal. The Tab5's own side of Turbo is measured and fast enough; the radio's side is not.
 - **CW page.** Canned-message CW TX memories first; decoded-CW display after (the QMX decodes internally — mirroring it over CAT looks cheap).
+- **A real JS8 Fast station decoded.** v1.23.0 can decode one alternate JS8 speed alongside the one you are using, one slot in five, receive-only and default off. It has only ever decoded my own encoder. Until a station actually running Fast is read off the air it stays untested.
 
 ### Longer term
 
@@ -1190,3 +1340,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own 
 GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
 
 Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).
+
+---
+
+<a id="appendix-qmx-setup"></a>
+## Appendix: Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter
+
+*This appendix belongs to the network-shared version (QMX/QMX+ Panadapter Shared over the network), not to the upstream documentation above.*
+
+1. **Check the firmware version.** It’s on the QMX screen at power-on, or on the Tab5 status page if you have no front panel.
+   * v1.03.002 to v1.04.010 works.
+   * v1.04 versions also give you AM mode and the Antenna Tune button.
+   * v1.04.011 is not recommended yet. Steffen’s docs report no transmit output when keyed over CAT from the Tab5, and the QMX’s own Tune SWR and Hardware Test screens freezing. Go back to v1.04.010 if you’re on it.
+
+2. **Check these settings on the radio** (or through the Tab5’s Radio menus):
+   * **System config → IQ Mode: enabled.** The Tab5 switches it on at each connection, and this keeps it on. If it’s missing, signals look shifted or mirrored and slide across the whole spectrum when you tune.
+   * **System config → GPS & Ser. ports → USB serial ports = 3.**
+     * Port 1 carries CAT for the Tab5.
+     * Port 2 is for the Tab5’s Radio menus (the QMX menu terminal on the Tab5 screen).
+     * Port 3 is for PC software through the NAS relay (TCP 7356).
+   * **Band config: enable every band you want to use.** The Tab5 builds its band list from this table. A band the radio doesn’t have enabled is ignored when the Tab5 asks for it. That’s the 60 m problem you saw: the QMX stayed put, and the Tab5 now tells you so.
+
+3. **Connect and power up in order.**
+   * With the QMX+ on the Synology, the relay picks the radio up again after it restarts, so you don’t need to do anything there.
+   * If the QMX is plugged into the Tab5 directly: start the Tab5 first and wait for the spectrum and Wi-Fi to come up, then switch the QMX on. Steffen warns that turning the radio on while the Tab5 is still starting up can leave it short of memory.
+
+4. **Check it from the Tab5.**
+   * The top bar shows Band, Mode and BW, and the spectrum is live.
+   * Pick a few bands, including 60 m, and confirm the radio follows.
+   * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
+
+5. **Optional: calibrate power for WSPR.** If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
+
+If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.

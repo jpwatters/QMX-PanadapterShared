@@ -26,6 +26,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "update_check";
 
@@ -293,7 +294,7 @@ static void check_task(void *arg)
         // pulls 48 KB over TLS, and the thing it would be checking for is
         // already in flight. See net_quiet.h.
         s_checking = true;
-        bool ok = wifi_is_connected() && !net_quiet_active() && !bg_feed_gate_active() && do_check();
+        bool ok = net_is_up() && !net_quiet_active() && !bg_feed_gate_active() && do_check();
         s_checking = false;
 
         /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's

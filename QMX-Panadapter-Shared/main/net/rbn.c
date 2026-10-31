@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "rbn";
 
@@ -423,7 +424,7 @@ static void session(int fd, const char *mycall)
          * SelfSpotter was open RBN delivered NOTHING, including the CW
          * self-spots that screen exists to show. */
 
-        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
+        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
 
         // The operator can change callsign in the web UI while this session
         // is still happily connected - an RBN session can run for hours with
@@ -504,7 +505,7 @@ static void rbn_task(void *arg)
         // holding its reconnect while an overlay is up starves that very screen.
         if (net_quiet_active() || rx_audio_any_listener()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
 
-        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) {
+        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
             // Drop anything we were showing: stale RBN spots are worse than none.
             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_RBN, NULL, 0); s_pub_count = 0; }
             vTaskDelay(pdMS_TO_TICKS(5000));

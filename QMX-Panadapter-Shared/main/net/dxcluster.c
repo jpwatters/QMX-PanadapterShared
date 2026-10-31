@@ -44,6 +44,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 static const char *TAG = "dxc";
 
@@ -475,7 +476,7 @@ static void dxc_task(void *arg)
         // audio is on (standing telnet session, one of the heavier feeds -
         // 2026-09-20)
         if (net_quiet_active() || bg_feed_gate_active() || rx_audio_any_listener()) continue;
-        if (!cfg.cluster_en || !cfg.my_callsign[0] || !wifi_is_connected()) {
+        if (!cfg.cluster_en || !cfg.my_callsign[0] || !net_is_up()) {
             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_CLUSTER, NULL, 0); s_pub_count = 0; }
             continue;
         }

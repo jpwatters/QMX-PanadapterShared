@@ -1,7 +1,7 @@
-From 5c4041374d623280df9b1ee55e49e555e74c0eac Mon Sep 17 00:00:00 2001
+From 9b06ca79af79f3f8c5652e05a70c013d6edc814f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 11:14:16 -0500
-Subject: [PATCH 15/37] web: 10-burst test button on the FT8 page
+Subject: [PATCH 15/41] web: 10-burst test button on the FT8 page
 
 One click sets CQ 'Stop after' = 10 calls and no listening slot, switches
 the Tab5 to FT8 if needed, starts the CQ run, counts the bursts from
@@ -16,10 +16,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 93 insertions(+), 1 deletion(-)
 
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 29637a94..fe829460 100644
+index 7962d927..48f750ff 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1241,7 +1241,7 @@
+@@ -1263,7 +1263,7 @@
  
    <div id="bandplan-wrap"><canvas id="bandplan" title="Whole-band plan - drag or tap to retune"></canvas></div>
  
@@ -28,7 +28,7 @@ index 29637a94..fe829460 100644
      <div id="ft8-decodes" style="width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
          <strong id="dec-title" style="color:#ffa040">Decode list</strong>
-@@ -3859,6 +3859,97 @@ async function sendCmd(payload) {
+@@ -4056,6 +4056,97 @@ async function sendCmd(payload) {
     then held disabled briefly: the device defers the request to its own 1 Hz timer,
     so a second click inside that window would do nothing visible and invite
     double-tapping. */
@@ -126,7 +126,7 @@ index 29637a94..fe829460 100644
  (function wireCqRestart() {
    const btn = document.getElementById("cq-restart");
    if (!btn) return;
-@@ -8025,6 +8116,7 @@ async function tick() {
+@@ -8360,6 +8451,7 @@ async function tick() {
        }
      }
  

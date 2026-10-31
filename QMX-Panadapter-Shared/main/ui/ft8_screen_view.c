@@ -269,9 +269,14 @@ static lv_obj_t *s_lbl_pause           = NULL;  // its label - text changes Paus
 static lv_obj_t *s_btn_parity   = NULL;
 static lv_obj_t *s_lbl_parity   = NULL;
 static lv_obj_t *s_btn_filter   = NULL;  // "Filter" button — opens exclude-prefix modal
-static lv_obj_t *s_btn_js8_text = NULL;  // "Free text" - JS8 only, opens the composer
 static lv_obj_t *s_btn_adif     = NULL;  // "ADIF-log" button - swaps to "Pileup" when ft8_pileup_count() > 0
 static int        s_cq_parity   = -1;
+
+/* T14: the type box, the third JS8 pane. Declared up here and not beside the
+ * other JS8 widgets because its callbacks live with the rest of the button
+ * handlers, well above that block - see type_ta_cb(). */
+static lv_obj_t *s_type_bar     = NULL;
+static lv_obj_t *s_type_ta      = NULL;
 
 static lv_obj_t *s_list         = NULL;
 // PSRAM (allocated in the init path below): 8 KB of internal .bss as an array,
@@ -1477,6 +1482,36 @@ static bool          s_web_result_sticky;        // outlives WEB_RESULT_TTL_MS
 static bool          s_web_done_said;            // DONE reported once per QSO
 static bool          s_web_timeout_said;          // TIMEOUT reported once per QSO - see web_result_set_sticky's TIMEOUT call below
 
+/* ⭐ THE OUTCOME OF A BROWSER CLICK IS NOW IN THE LOG, NOT ONLY ON THE BANNER.
+ *
+ * Randy N4OPI, 2026-10-25, twice: "busy when it isn't", with the diag attached
+ * both times - "hopefully the clue is in the diag file". It was not, and it
+ * could not have been. The Tab5's own refusal logs (ft8_tx_modal.c's
+ * "transmit refused: %s"), but every refusal on the web path wrote a sentence
+ * for /api/status and nothing at all for the log, so a 1 MB capture of the
+ * exact window held no trace of the click or of the answer he got.
+ *
+ * ⛔ LOGGED HERE RATHER THAN AT THE NINE RETURNS. web_reply_drain() has nine
+ * silent exits (busy, queued, expired, no snapshot, not in either list, two
+ * build failures, pounce refused, could not arm) and sprinkling an ESP_LOG at
+ * each is the version that rots - the tenth one gets added without it. Every
+ * one of them already funnels through these two setters for the timestamp, so
+ * this is the same choke point, used for the same reason.
+ *
+ * ⚠ ON CHANGE ONLY. The WAIT_DONE queue re-writes "Queued: ..." on every 1 Hz
+ * tick for up to WEB_REPLY_QUEUE_MAX_MS (90 s), so logging unconditionally
+ * would put 90 identical lines into the capture and push the window that
+ * matters out past the 128 KB flash-persist cap. */
+static char s_web_result_logged[64];
+
+static void web_result_log(void)
+{
+    if (strcmp(s_web_reply_result, s_web_result_logged) == 0) return;
+    snprintf(s_web_result_logged, sizeof(s_web_result_logged), "%s", s_web_reply_result);
+    ESP_LOGI(TAG, "web result: %s [qso=%s]", s_web_reply_result,
+             ft8_qso_state_name(ft8_qso_get_state()));
+}
+
 // Every write goes through here so none can forget the timestamp. The printf
 // attribute keeps the compiler checking the format strings it used to check
 // when these were plain snprintf() calls.
@@ -1489,6 +1524,7 @@ static void web_result_set(const char *fmt, ...)
     va_end(ap);
     s_web_reply_result_us = esp_timer_get_time();
     s_web_result_sticky   = false;   // an answer to a click expires with the click
+    web_result_log();
 }
 
 // A completed QSO is the one result here that nobody clicked for, so nothing
@@ -1513,6 +1549,7 @@ static void web_result_set_sticky(const char *fmt, ...)
     va_end(ap);
     s_web_reply_result_us = esp_timer_get_time();
     s_web_result_sticky   = true;
+    web_result_log();
 }
 
 // Cancel is the one browser action that should leave NOTHING behind - the
@@ -1527,6 +1564,30 @@ static void web_result_clear(void)
     s_web_reply_result[0] = '\0';
     s_web_reply_result_us = 0;
     s_web_result_sticky   = false;
+    // Forget what was logged with it, so the SAME sentence after a clear is a
+    // new event and gets its own line rather than being swallowed as a repeat.
+    s_web_result_logged[0] = '\0';
+}
+
+/* ⭐ THE ARRIVAL IS LOGGED SEPARATELY FROM THE OUTCOME, and it has to be.
+ *
+ * web_result_log() can only speak for picks that reached web_reply_drain().
+ * A pick that is dropped before it ever drains - the FT8 screen not up, or the
+ * POST never arriving at all because the browser's socket died (Randy's own
+ * captures carry httpd_sock_err 11 and 104 either side of the window) - writes
+ * nothing, and "no line" would then be indistinguishable from "no click". One
+ * line here makes that difference readable: an arrival with no result means
+ * the pick was lost inside the firmware, no arrival means it never landed.
+ *
+ * The state goes in because a single click and the browser's own follow-up
+ * dblclick arrive as two picks milliseconds apart, and what separates "the
+ * second one collided with the first" from "the machine was already stuck" is
+ * which state the second one found. */
+static void web_reply_request_log(const char *call, bool retarget)
+{
+    ESP_LOGI(TAG, "web reply request: %s%s [qso=%s]", call,
+             retarget ? " (retarget/double-click)" : "",
+             ft8_qso_state_name(ft8_qso_get_state()));
 }
 
 void ft8_screen_view_request_reply(const char *call)
@@ -1535,6 +1596,7 @@ void ft8_screen_view_request_reply(const char *call)
     snprintf(s_web_reply_call, sizeof(s_web_reply_call), "%s", call);
     s_web_reply_pending  = true;
     s_web_reply_retarget = false;
+    web_reply_request_log(call, false);
 }
 
 void ft8_screen_view_request_reply_retarget(const char *call)
@@ -1543,6 +1605,7 @@ void ft8_screen_view_request_reply_retarget(const char *call)
     snprintf(s_web_reply_call, sizeof(s_web_reply_call), "%s", call);
     s_web_reply_pending  = true;
     s_web_reply_retarget = true;
+    web_reply_request_log(call, true);
 }
 
 // #221: ask for a sub-mode preset from the API. freq_hz of 0 means "keep the
@@ -1603,7 +1666,7 @@ static void web_reply_drain(void)
     for (int i = 0; i < n; i++)
         if (strcmp(snap[i].call, call) == 0) { match = &snap[i]; break; }
 
-    char busy_target[24];
+    char busy_target[24] = "";
     if (ft8_qso_is_busy(busy_target, sizeof(busy_target))) {
         /* ⭐ RE-TARGET: abandon what is running and take this station instead
          * (Randy N4OPI - the third piece of T43, after Skip and the
@@ -1635,7 +1698,7 @@ static void web_reply_drain(void)
                 ft8_qso_final_watch_clear();
                 ESP_LOGI(TAG, "web re-target: dropped %s for %s, auto-answer left ON",
                          who, call);
-                busy_target[0] = ' ';   /* fall through and work the new one */
+                busy_target[0] = '\0';   /* fall through and work the new one */
             } else {
                 web_result_set("%s", serr[0] ? serr : "Could not drop the exchange");
                 return;
@@ -1821,6 +1884,36 @@ static void t_clock_cb(lv_timer_t *t)
      * the same "one piece of state, both surfaces" rule as cq_parity. */
     js8_tx_bar_sync();
 
+    /* ⭐ THE CQ BUTTON MUST SAY WHAT IT WILL TRANSMIT. Don WB0LQW, 2026-10-28:
+     * with an activation running the button read "CQ WB0LQW" while the air
+     * carried "CQ POTA WB0LQW". ft8_cq_get_active_text() has always folded the
+     * forced modifier in - the label just was not rewritten afterwards. It is
+     * refreshed on a preset save and on a Field Day toggle from the filter
+     * modal, and an activation starts somewhere else entirely (Settings, on
+     * the glass or over the web), so nothing told the button.
+     *
+     * He also wants it as the reminder that the activation is still running,
+     * which is why this follows the LIVE state rather than being hooked to the
+     * one modal that starts it.
+     *
+     * Polled here, not called from settings_set_activation(): that runs on the
+     * HTTP task for a web change and must not touch an LVGL object. The guard
+     * is two cheap mutex reads; the multi-kilobyte qmx_settings_t that
+     * ft8_cq_get_active_text() puts on taskLVGL's ~8 KB stack is only paid on
+     * a transition. Field Day is in the guard too - the filter modal is not
+     * the only way it is set (webserver.c, config_io.c). */
+    {
+        static uint8_t s_cq_tag_act = 0xff;
+        static uint8_t s_cq_tag_fd  = 0xff;
+        uint8_t act = settings_get_activation_type();
+        uint8_t fd  = settings_get_field_day_en() ? 1 : 0;
+        if (act != s_cq_tag_act || fd != s_cq_tag_fd) {
+            s_cq_tag_act = act;
+            s_cq_tag_fd  = fd;
+            ft8_screen_view_refresh_cq_label();
+        }
+    }
+
     /* ⭐ SAY WHEN A FREE-TEXT RUN FINISHES. Ryan KK6DZB's complaint was that he
      * "could not tell if it had transmitted my full message yet": the TX line
      * simply vanished when the last frame landed, which reads exactly like a
@@ -1950,9 +2043,8 @@ static void t_clock_cb(lv_timer_t *t)
             // screen would have tuned to anyway.
             hz = cat_get_frequency();
             if (!hz) {
-                qmx_settings_t fs;
-                settings_load_all(&fs);
-                hz = fs.ft8_freq_hz;
+                /* T89: this sub-mode's own slot, not one shared with FT8. */
+                hz = settings_get_ftx_freq_hz((uint8_t)mode);
                 ESP_LOGW(TAG, "API preset: no frequency from the radio - using the stored %lu Hz",
                          (unsigned long)hz);
             }
@@ -2799,10 +2891,52 @@ static void filter_btn_cb(lv_event_t *e)
  * no way to reach it but POST /api/cmd - "how can users be happy for an api?"
  * This is the button. JS8 only: js8_tabs_apply() hides it in FT8 and FT4,
  * where there is no free text to send. */
-static void js8_text_btn_cb(lv_event_t *e)
+/* ⭐ THE TYPE BOX DECIDES WHERE YOU TYPE - T14.
+ *
+ * With a physical keyboard the field is typed into IN PLACE: the panel was
+ * sized for the on-screen keyboard staying down, and neither a BLE nor the
+ * snap-on keyboard raises it.
+ *
+ * Without one the on-screen keyboard would be 280 px over the bottom 45% of
+ * the screen - covering this very field at y 554 - so the tap opens the MODAL
+ * composer instead, which sits at y 70..410 clear of it. That is why the modal
+ * survived T14 rather than being deleted with its button.
+ *
+ * ⛔ ASKED PER TAP, NEVER CACHED. A keyboard can be clicked on or walk out
+ * of range between one message and the next, and ui_phys_kbd_active() reads
+ * both links live. Caching it at build time would have been wrong on the
+ * second message.
+ *
+ * ⛔ CLICKED, NOT FOCUSED. LVGL sends FOCUSED only when an object GAINS
+ * focus, so tapping the same field twice in a row sends one event - the same
+ * trap ui_osk_show()'s own comment records against six modals. */
+static void type_ta_cb(lv_event_t *e)
 {
     (void)e;
+    if (ui_phys_kbd_active()) return;   /* type here; the field has focus */
+    if (s_type_ta) lv_obj_clear_state(s_type_ta, LV_STATE_FOCUSED);
     js8_text_modal_show();
+}
+
+/* Send what is in the type box. Same entry point the modal uses, so there is
+ * one encode-and-arm path and not two. */
+static void type_send_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_type_ta) return;
+    const char *txt = lv_textarea_get_text(s_type_ta);
+    if (!txt || !txt[0]) return;
+    ft8_screen_view_request_freetext(txt);
+    ESP_LOGI(TAG, "free text queued from the type box (%d chars)", (int)strlen(txt));
+    lv_textarea_set_text(s_type_ta, "");
+}
+
+/* The on-screen keyboard's tick, for the no-physical-keyboard case where the
+ * modal is not in play but a BLE keyboard arrived mid-entry. */
+static void type_ta_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    type_send_cb(NULL);
 }
 
 static void tx_tone_btn_cb(lv_event_t *e)
@@ -3216,14 +3350,10 @@ const ft8_preset_t *ft8_preset_list(ft8_op_mode_t mode, int *out_count)
     return (const ft8_preset_t *)t;
 }
 
-// Cyan accent used for everything FT4: the dropdown's FT4 column header and the
-// "MODE: FT4" label, so the two can never drift apart. FT8 keeps the gold
-// UI_COLOR_ACCENT_GOLD.
-#define FT4_ACCENT_HEX 0x00B4FF
-// Magenta for JS8. Picked to be unmistakable against both gold and cyan at a
-// glance across the room - the mode label is the only thing on the screen that
-// says which protocol is about to be transmitted.
-#define JS8_ACCENT_HEX 0xE040FB
+// FT4_ACCENT_HEX / JS8_ACCENT_HEX moved to ft8_screen_view.h on 2026-10-24:
+// the left drawer's MODE buttons in ui.c must be the SAME colour as this
+// page, and a second copy of the number in another file is the drift this
+// project keeps paying for. The reasoning went with them.
 /* The accent is a MARKER colour - a tab border, a mode word on black - and at
  * full saturation it is wrong as a 288x60 fill: white text on it is hard to
  * read and it is the loudest thing on the screen. Same hue, saturation 52%
@@ -3492,10 +3622,22 @@ static void apply_freq_preset(uint32_t freq_hz, ft8_op_mode_t mode, const char *
      * are already on must not kill a contact in progress. */
     if (moved) ft8_band_change_stand_down("preset changed");
 
-    // Persist the chosen FT8/FT4 frequency so it survives a reboot and FT8 mode
-    // never opens on the panadapter's inherited (non-FT8) VFO. (The FT4/FT8
-    // sub-mode itself is already persisted via ft8_op_mode_set() below.)
-    settings_set_ft8_freq_hz(freq_hz);
+    // Persist the chosen frequency so it survives a reboot and the page never
+    // opens on the panadapter's inherited (non-digital) VFO. (The sub-mode
+    // itself is already persisted via ft8_op_mode_set() below.)
+    //
+    // T89: INTO THE SUB-MODE'S OWN SLOT. FT8, FT4 and JS8 have different
+    // calling frequencies on every band, so one shared slot meant a trip
+    // through JS8 overwrote where FT8 was left. `mode` is the one being
+    // applied - deliberately not ft8_op_mode_get(), which is not set until
+    // ft8_op_mode_set() on the next line.
+    //
+    // ⚠ Measured on the bench, v1.21.0-48-g12b30359, with this line still
+    // writing the FT8 slot: entering FT4 set ft8_freq_hz to 14080000 and
+    // entering JS8 set it to 14078000. The end state looked right only
+    // because each entry re-applies that mode's calling frequency; an FT8
+    // dial parked off the calling frequency was lost by the round trip.
+    settings_set_ftx_freq_hz((uint8_t)mode, freq_hz);
 
     ft8_op_mode_set(mode);
     /* ⛔ THE DRAWER HAS TO BE TOLD. FT8, FT4 and JS8 share one ui_mode_t, so
@@ -3889,44 +4031,60 @@ static void ft8_freq_popup_open(void)
     const int col_w  = 240;
     const int col_gap = 20;
 
-    /* One column per sub-mode, left to right: FT8 (gold), FT4 (cyan), JS8
-     * (magenta). All three share the QMX's USB/DiGi data mode, so a tap in any
-     * of them sends no CAT mode change - only the dial and the Tab5-side
-     * sub-mode move.
+    /* \u2b50 ONE COLUMN - THE SUB-MODE YOU ARE ACTUALLY IN.
      *
-     * Three columns at 240 + 20 start at x = 320 and end at 1100, inside
-     * MID_W (1280). A fourth would not fit and would need a different layout,
-     * not a smaller gap. */
+     * This drew all three at once (FT8 gold, FT4 cyan, JS8 magenta) because
+     * the popup was the ONLY way to reach FT4 and JS8: there was no other
+     * door, so every door had to be on display. Since 2026-10-24 the Tab5's
+     * left drawer and the browser's Radio menu both enter FT8/FT4/JS8
+     * directly, so the popup no longer has to carry mode SELECTION as well as
+     * frequency selection. Operator, in the message that asked for the
+     * drawer: "we no longer need to see all three Preset columns at once -
+     * but only the one relevant to the actual choice(!)".
+     *
+     * \u2b50 And this is what makes per-mode presets possible at all. With three
+     * columns up at once, a "current preset" had no single meaning; with one,
+     * the page knows which mode's list it is showing and a persistent
+     * per-mode preset becomes a thing that can exist. NOT built here.
+     *
+     * All three share the QMX's USB/DiGi data mode, so a tap sends no CAT
+     * mode change - only the dial and the Tab5-side sub-mode move. */
     int total = 0;
     int col = 0;
+    const ft8_op_mode_t cur_mode = ft8_op_mode_get();
 
     /* Rebuilt from scratch every time the columns are, so the registry cannot
      * carry rows from a previous popup. */
     preset_rows_reset();
 
-    total += build_preset_column(ov, LEFT_W + col * (col_w + col_gap), top_y,
-                                 "FT8", 0xFFDD00,
-                                 FT8_BAND_FREQS, N_FT8_BAND_FREQS,
-                                 bands, band_count, cur_hz, ft8_freq_preset_cb,
-                                 FT8_OP_MODE_FT8);
-    col++;
+    if (cur_mode == FT8_OP_MODE_FT8) {
+        total += build_preset_column(ov, LEFT_W + col * (col_w + col_gap), top_y,
+                                     "FT8", 0xFFDD00,
+                                     FT8_BAND_FREQS, N_FT8_BAND_FREQS,
+                                     bands, band_count, cur_hz, ft8_freq_preset_cb,
+                                     FT8_OP_MODE_FT8);
+        col++;
+    }
     // FT4 soft-disabled (see FT4_MODE_DISABLED in ft8_test.h) - skip building
     // the column entirely so it's invisible, not just inert; ft8_op_mode_set()
     // would coerce a tap to FT8 anyway, but a visible-but-nonfunctional
     // column would look broken rather than "never there".
 #if !FT4_MODE_DISABLED
-    total += build_preset_column(ov, LEFT_W + col * (col_w + col_gap), top_y,
-                                 "FT4", FT4_ACCENT_HEX,
-                                 FT4_BAND_FREQS, N_FT4_BAND_FREQS,
-                                 bands, band_count, cur_hz, ft4_freq_preset_cb,
-                                 FT8_OP_MODE_FT4);
-    col++;
+    if (cur_mode == FT8_OP_MODE_FT4) {
+        total += build_preset_column(ov, LEFT_W + col * (col_w + col_gap), top_y,
+                                     "FT4", FT4_ACCENT_HEX,
+                                     FT4_BAND_FREQS, N_FT4_BAND_FREQS,
+                                     bands, band_count, cur_hz, ft4_freq_preset_cb,
+                                     FT8_OP_MODE_FT4);
+        col++;
+    }
 #endif
     /* The JS8 column is built only when the protocol is actually implemented,
      * for the same reason FT4's is skipped when disabled: ft8_op_mode_set()
      * refuses an unimplemented mode, and a column whose rows silently did
      * nothing would read as broken rather than as absent. */
-    if (ftx_protocol_is_implemented(FTX_PROTOCOL_JS8)) {
+    if (cur_mode == FT8_OP_MODE_JS8 &&
+        ftx_protocol_is_implemented(FTX_PROTOCOL_JS8)) {
         total += build_preset_column(ov, LEFT_W + col * (col_w + col_gap), top_y,
                                      "JS8", JS8_ACCENT_HEX,
                                      JS8_BAND_FREQS, N_JS8_BAND_FREQS,
@@ -3970,17 +4128,59 @@ static void ft8_freq_label_clicked_cb(lv_event_t *e)
 #define CONV_ROW_H  27
 #define CONV_HDR_H  30      /* same as the Stations column header */
 
+/* ===== T14: the three-pane JS8 panel - Ryan KK6DZB, 2026-10-13 =============
+ *
+ * Stations, the conversation and a type box, ALL THREE AT ONCE, on his
+ * reasoning that "there is plenty of room in the UI window". The Free text
+ * button and its two tabs are gone: the type box replaces the modal as the
+ * surface, and the modal survives only as the no-physical-keyboard fallback.
+ *
+ * ⛔ THE BUDGET IS EXACT AND THERE IS NO REFLOW. 580 px below the tab bar:
+ *
+ *      stations      30 + 5 x 36  = 210
+ *      conversation  30 + 10 x 27 = 300
+ *      type box                     64
+ *                                  ---
+ *                                  574, with 6 px spare
+ *
+ * ⭐ ONE LAYOUT, NEVER TWO (operator, 2026-10-30). The on-screen keyboard is
+ * 280 px bottom-aligned, so while it is up the pane has 336 px, not 580 - and
+ * a layout that resizes under the operator is worse than one that does not.
+ * So the three panes are sized for the keyboard being DOWN and never move:
+ * with a physical keyboard (BLE or snap-on) the type box is typed into in
+ * place, and without one it opens the modal composer, which clears the
+ * keyboard itself. ui_phys_kbd_active() is the predicate - see T131, which
+ * had to be fixed first because the gate could not see the snap-on keyboard.
+ *
+ * ⛔ A SIDE-BY-SIDE SPLIT IS RULED OUT BY ARITHMETIC, not by taste:
+ * CONV_CELL_W 15 x JS8_PAGE_COLS 64 = 960 = RIGHT_W exactly, so the
+ * conversation already uses every pixel of width at qmx_mono_25. Splitting
+ * horizontally costs columns or font size, and on this panel the font does
+ * not shrink. Vertical stacking is the only layout that fits. */
+#define JS8_STN_H       (30 + 5 * ROW_H)                        /* 210 */
+#define JS8_CONV_ROWS   10
+#define JS8_CONV_H      (CONV_HDR_H + JS8_CONV_ROWS * CONV_ROW_H)  /* 300 */
+#define JS8_TYPE_H      64
+#define JS8_STN_Y       TABBAR_H                                /* 44  */
+#define JS8_CONV_Y      (JS8_STN_Y + JS8_STN_H)                 /* 254 */
+#define JS8_TYPE_Y      (JS8_CONV_Y + JS8_CONV_H)               /* 554 */
+
+_Static_assert(JS8_TYPE_Y + JS8_TYPE_H <= MID_H,
+               "T14: the three JS8 panes do not fit the middle band");
+_Static_assert(JS8_CONV_ROWS <= JS8_PAGE_ROWS,
+               "T14: more conversation rows drawn than js8_page renders");
+
 LV_FONT_DECLARE(qmx_mono_25);
 
 static lv_obj_t *s_col_hdr;              /* the Stations column header       */
 static lv_obj_t *s_tabbar;
-static lv_obj_t *s_tab_btn_stations;
-static lv_obj_t *s_tab_btn_conv;
 static lv_obj_t *s_tab_btn_flush;   /* clears the conversation store - an ACTION, not a tab */
 static lv_obj_t *s_conv_pane;
 static lv_obj_t *s_conv_rows[JS8_PAGE_ROWS];
 static lv_obj_t *s_conv_hits[JS8_PAGE_ROWS];
-static bool      s_tab_conversation = true;   /* which tab, while in JS8 */
+
+/* s_type_bar / s_type_ta are declared at the top of the file, beside the other
+ * button objects, because their callbacks sit up there too. */
 
 /* PSRAM, for the same reason the GPS page's scratch is there: this is ~11 kB
  * and internal .bss comes out of the DMA pool (#65, and the SD mount failure
@@ -4255,7 +4455,7 @@ static void js8_chip_cb(lv_event_t *e)
 
 static void conv_repaint(void)
 {
-    if (!s_conv_pane || !js8_mode_now() || !s_tab_conversation) return;
+    if (!s_conv_pane || !js8_mode_now()) return;
     /* Nothing to repaint behind another screen. The clock timer runs whether
      * or not the FT8 screen is up, and 21 label writes a second into hidden
      * objects is work for no reader. */
@@ -4282,9 +4482,14 @@ static void conv_repaint(void)
     int have = js8_chat_copy(sel, s_conv->msgs, JS8_CHAT_MAX_MSGS);
 
     js8_page_render(s_conv->msgs, have, (int64_t)time(NULL),
+                    (uint8_t)ft8_op_mode_protocol(),
                     s_conv->lines, s_conv->row_msg);
 
-    for (int r = 0; r < JS8_PAGE_ROWS; r++) {
+    /* ⛔ ONLY THE ROWS THAT FIT - T14. js8_page_render fills all
+     * JS8_PAGE_ROWS and newest is at the TOP, so the first JS8_CONV_ROWS are
+     * the newest ones and the rest are simply not drawn. The labels past that
+     * are never created, so there is nothing to hide. */
+    for (int r = 0; r < JS8_CONV_ROWS; r++) {
         if (s_conv_rows[r] && strcmp(s_conv->shown[r], s_conv->lines[r]) != 0) {
             lv_label_set_text(s_conv_rows[r], s_conv->lines[r]);
             memcpy(s_conv->shown[r], s_conv->lines[r], JS8_PAGE_COLS + 1);
@@ -4301,25 +4506,6 @@ static void conv_repaint(void)
     }
 }
 
-static void tab_paint(void)
-{
-    const bool js8 = js8_mode_now();
-    if (s_tab_btn_stations) {
-        bool on = !js8 || !s_tab_conversation;
-        lv_obj_set_style_bg_color(s_tab_btn_stations,
-                                  lv_color_hex(on ? 0x2a3138 : 0x14181c), 0);
-        lv_obj_set_style_border_color(s_tab_btn_stations,
-                                      lv_color_hex(on ? JS8_ACCENT_HEX : 0x303840), 0);
-    }
-    if (s_tab_btn_conv) {
-        bool on = js8 && s_tab_conversation;
-        lv_obj_set_style_bg_color(s_tab_btn_conv,
-                                  lv_color_hex(on ? 0x2a3138 : 0x14181c), 0);
-        lv_obj_set_style_border_color(s_tab_btn_conv,
-                                      lv_color_hex(on ? JS8_ACCENT_HEX : 0x303840), 0);
-    }
-}
-
 /* Show the right things for the mode and the chosen tab, and put the column
  * header and the list at the y the mode calls for. Safe before the widgets
  * exist, so it can be called from the sub-mode hook at any time. */
@@ -4327,13 +4513,6 @@ static void js8_tabs_apply(void)
 {
     const bool js8 = js8_mode_now();
     const int  top = js8 ? TABBAR_H : 0;
-
-    /* Free text is a JS8 idea only - FT8 and FT4 carry a fixed exchange, so
-     * the button has nothing to mean there. */
-    if (s_btn_js8_text) {
-        if (js8) lv_obj_clear_flag(s_btn_js8_text, LV_OBJ_FLAG_HIDDEN);
-        else     lv_obj_add_flag(s_btn_js8_text, LV_OBJ_FLAG_HIDDEN);
-    }
 
     /* ⛔ THE STATUS LINE STAYS AT 393 IN BOTH MODES - do not re-add a shift.
      *
@@ -4353,22 +4532,27 @@ static void js8_tabs_apply(void)
         if (js8) lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
         else     lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
     }
-    const bool show_conv = js8 && s_tab_conversation;
-
+    /* ⭐ T14: IN JS8 ALL THREE PANES ARE UP AT ONCE. There is no longer a
+     * chosen tab - the Stations table keeps its header and simply gets a
+     * shorter slot, the conversation sits under it, and the type box under
+     * that. FT8 and FT4 are untouched: top is 0, the list owns the whole
+     * band, and the other two are hidden. */
     if (s_col_hdr) {
         lv_obj_set_pos(s_col_hdr, 0, top);
-        if (show_conv) lv_obj_add_flag(s_col_hdr, LV_OBJ_FLAG_HIDDEN);
-        else           lv_obj_clear_flag(s_col_hdr, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_col_hdr, LV_OBJ_FLAG_HIDDEN);
     }
     if (s_list) {
         lv_obj_set_pos(s_list, 0, top + 30);
-        lv_obj_set_size(s_list, RIGHT_W, MID_H - top - 30);
-        if (show_conv) lv_obj_add_flag(s_list, LV_OBJ_FLAG_HIDDEN);
-        else           lv_obj_clear_flag(s_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_size(s_list, RIGHT_W,
+                        js8 ? (JS8_STN_H - 30) : (MID_H - top - 30));
     }
     if (s_conv_pane) {
-        if (show_conv) lv_obj_clear_flag(s_conv_pane, LV_OBJ_FLAG_HIDDEN);
-        else           lv_obj_add_flag(s_conv_pane, LV_OBJ_FLAG_HIDDEN);
+        if (js8) lv_obj_clear_flag(s_conv_pane, LV_OBJ_FLAG_HIDDEN);
+        else     lv_obj_add_flag(s_conv_pane, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_type_bar) {
+        if (js8) lv_obj_clear_flag(s_type_bar, LV_OBJ_FLAG_HIDDEN);
+        else     lv_obj_add_flag(s_type_bar, LV_OBJ_FLAG_HIDDEN);
     }
     /* TXCQ parity is an FT8 convention. MEASURED 2026-10-09 over 118 KiwiSDR
      * slots: JS8 traffic splits evenly across even and odd slots (5/5 on
@@ -4379,49 +4563,16 @@ static void js8_tabs_apply(void)
         if (js8) lv_obj_add_flag(s_btn_parity, LV_OBJ_FLAG_HIDDEN);
         else     lv_obj_clear_flag(s_btn_parity, LV_OBJ_FLAG_HIDDEN);
     }
-    tab_paint();
-    if (show_conv) conv_repaint();
+    if (js8) conv_repaint();
 }
 
 void ft8_screen_view_js8_tabs_refresh(void) { js8_tabs_apply(); }
 
-/* ⛔ LOG THE TAB, WITH THE HEAP BESIDE IT.
- *
- * 2026-10-09: an internal-heap regression had to be chased by asking the
- * operator which tab was showing, while he was working in the shack. The
- * capture is the instrument; if it cannot say what is on the screen then
- * every question about the screen costs him an interruption. The heap goes on
- * the same line so a tab change and a step in the heap are one reading rather
- * than two to correlate by timestamp. */
-static void log_tab(void)
-{
-    ESP_LOGI(TAG, "js8 tab: %s (heap_i=%uKB lblk=%uKB)",
-             s_tab_conversation ? "conversation" : "stations",
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
-             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
-}
-
-static void tab_stations_cb(lv_event_t *e)
-{
-    (void)e;
-    s_tab_conversation = false;
-    js8_tabs_apply();
-    log_tab();
-}
-
-static void tab_conv_cb(lv_event_t *e)
-{
-    (void)e;
-    s_tab_conversation = true;
-    js8_tabs_apply();
-    log_tab();
-}
-
-/* ⛔ FLUSH EMPTIES THE CONVERSATION STORE - and it is deliberately NOT a
- * tab. tab_paint() colours Conversation and Stations by which one is showing;
- * this one performs an action and then looks exactly as it did, so it is left
- * out of that function and keeps the unselected palette permanently. A button
- * that lit up as "selected" would claim to be a third view.
+/* ⛔ FLUSH EMPTIES THE CONVERSATION STORE, and it was deliberately NOT a
+ * tab even while there were tabs: it performs an action and then looks exactly
+ * as it did. T14 removed the Conversation and Stations tabs beside it - all
+ * three panes are up at once now - so Flush is the only button left in that
+ * row, and the distinction has outlived the thing it was drawn against.
  *
  * ⚠ NO CONFIRMATION, because the operator asked for a button that removes
  * the list. The cost of a mis-tap is the conversation history, which is a
@@ -4436,11 +4587,6 @@ static void tab_flush_cb(lv_event_t *e)
     ESP_LOGI(TAG, "js8 conversation flushed by the operator");
 }
 
-bool ft8_screen_view_js8_tab_is_conversation(void)
-{
-    return s_tab_conversation;
-}
-
 static void build_js8_tabs(void)
 {
     s_tabbar = lv_obj_create(s_right_pane);
@@ -4450,16 +4596,17 @@ static void build_js8_tabs(void)
     lv_obj_clear_flag(s_tabbar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_tabbar, LV_OBJ_FLAG_HIDDEN);
 
-    /* Conversation | Flush | Stations, on the 192 + 8 pitch the first two
-     * already used. Flush sits between them at the operator's request
-     * (2026-10-11) and is built here so it shares the size, radius, border and
-     * font - it has to read as one of this row, not as a stray control. */
-    struct { lv_obj_t **out; const char *text; int x; lv_event_cb_t cb; } tabs[3] = {
-        { &s_tab_btn_conv,     "Conversation", 8,   tab_conv_cb     },
-        { &s_tab_btn_flush,    "Flush",        208, tab_flush_cb    },
-        { &s_tab_btn_stations, "Stations",     408, tab_stations_cb },
+    /* ⛔ FLUSH IS ALL THAT IS LEFT OF THE TAB ROW - T14.
+     *
+     * It was Conversation | Flush | Stations on a 192 + 8 pitch, 8..600. Both
+     * tabs went when all three panes came up at once, and Flush moved to the
+     * front of the row rather than keeping the middle slot of a row that no
+     * longer has ends. The loop is kept rather than unrolled because the chip
+     * and the two macro buttons below still depend on this styling. */
+    struct { lv_obj_t **out; const char *text; int x; lv_event_cb_t cb; } tabs[1] = {
+        { &s_tab_btn_flush,    "Flush",        8,   tab_flush_cb    },
     };
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 1; i++) {
         lv_obj_t *b = lv_btn_create(s_tabbar);
         lv_obj_set_size(b, 192, 40);
         lv_obj_set_pos(b, tabs[i].x, 2);
@@ -4476,18 +4623,24 @@ static void build_js8_tabs(void)
     /* The TX bar - see "THE JS8 TX BAR" above for why it goes here. The three
      * tabs end at 600; this uses 608..944 of the 960 and takes nothing from
      * the conversation grid. Children of s_tabbar, so they appear and vanish
-     * with it and js8_tabs_apply needs no extra case. */
+     * with it and js8_tabs_apply needs no extra case.
+     *
+     * ⚠ T14 WIDENED THE CHIP to 208..744. Dropping the two tabs freed
+     * 400 px in this row, and the chip is where it does the most good: at
+     * 136 px the target text was clipped to "> tap a stat..." on the glass
+     * (2026-10-13) and had to be shortened to fit. The LABEL's width has to
+     * move with the object or it stays clipped at the old 136. */
     {
         s_js8_chip = lv_obj_create(s_tabbar);
         lv_obj_remove_style_all(s_js8_chip);
-        lv_obj_set_size(s_js8_chip, 136, 40);
-        lv_obj_set_pos(s_js8_chip, 608, 2);
+        lv_obj_set_size(s_js8_chip, 536, 40);
+        lv_obj_set_pos(s_js8_chip, 208, 2);
         lv_obj_clear_flag(s_js8_chip, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(s_js8_chip, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_js8_chip, js8_chip_cb, LV_EVENT_CLICKED, NULL);
         s_js8_chip_lbl = lv_label_create(s_js8_chip);
         lv_label_set_long_mode(s_js8_chip_lbl, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(s_js8_chip_lbl, 136);
+        lv_obj_set_width(s_js8_chip_lbl, 536);
         lv_obj_set_style_text_font(s_js8_chip_lbl, &lv_font_montserrat_20, 0);
         lv_obj_set_style_text_color(s_js8_chip_lbl, lv_color_hex(JS8_ACCENT_HEX), 0);
         lv_label_set_text(s_js8_chip_lbl, "> tap a station");
@@ -4519,17 +4672,21 @@ static void build_js8_tabs(void)
         js8_tx_bar_sync();      /* greyed out until a station is tapped */
     }
 
-    /* Set once: tab_paint() deliberately skips Flush, so nothing else will
-     * ever colour it. Same two colours an unselected tab wears. */
+    /* Set once. Flush was always painted outside tab_paint(), which coloured
+     * the two tabs by which one was showing; T14 deleted both, so this is
+     * simply the only button in the row and nothing else ever touches it. */
     if (s_tab_btn_flush) {
         lv_obj_set_style_bg_color(s_tab_btn_flush, lv_color_hex(0x14181c), 0);
         lv_obj_set_style_border_color(s_tab_btn_flush, lv_color_hex(0x303840), 0);
     }
 
+    /* T14: the conversation is the MIDDLE pane now - under the Stations table,
+     * above the type box - and it is sized to the rows it draws rather than to
+     * whatever was left of the band. */
     s_conv_pane = lv_obj_create(s_right_pane);
     lv_obj_remove_style_all(s_conv_pane);
-    lv_obj_set_size(s_conv_pane, RIGHT_W, MID_H - TABBAR_H);
-    lv_obj_set_pos(s_conv_pane, 0, TABBAR_H);
+    lv_obj_set_size(s_conv_pane, RIGHT_W, JS8_CONV_H);
+    lv_obj_set_pos(s_conv_pane, 0, JS8_CONV_Y);
     lv_obj_set_style_bg_color(s_conv_pane, lv_color_hex(0x000000), 0);
     lv_obj_set_style_bg_opa(s_conv_pane, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_conv_pane, LV_OBJ_FLAG_SCROLLABLE);
@@ -4583,7 +4740,12 @@ static void build_js8_tabs(void)
         }
     }
 
-    for (int r = 0; r < JS8_PAGE_ROWS; r++) {
+    /* ⛔ ONLY THE ROWS THAT FIT ARE CREATED - T14. The arrays stay
+     * JS8_PAGE_ROWS long so js8_page_render's output still indexes 1:1, but
+     * the labels past JS8_CONV_ROWS are never made: an object at y 300 in a
+     * 300 px pane is invisible work, and leaving it allocated would have put
+     * ten labels and ten hit targets in the repaint path for no reader. */
+    for (int r = 0; r < JS8_CONV_ROWS; r++) {
         s_conv_rows[r] = lv_label_create(s_conv_pane);
         lv_obj_set_style_text_font(s_conv_rows[r], &qmx_mono_25, 0);
         lv_obj_set_style_text_color(s_conv_rows[r], lv_color_hex(0xD8D8D8), 0);
@@ -4604,6 +4766,58 @@ static void build_js8_tabs(void)
         lv_obj_clear_flag(s_conv_hits[r], LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(s_conv_hits[r], conv_row_clicked_cb,
                             LV_EVENT_CLICKED, (void *)(intptr_t)r);
+    }
+
+    /* ===== the type box - the third pane, and the reason the modal's button
+     * is gone. Ryan KK6DZB asked for "a type box" in the panel itself, with
+     * the web UI as the model; the web has had exactly this inside its own
+     * conversation pane since the composer shipped.
+     *
+     * ⛔ 64 px IS A TOUCH TARGET, NOT A TEXT HEIGHT. The field and the Send
+     * button are both 48 high inside it with 8 px of air above and below; the
+     * tab bar's own buttons are 40, and this one has to be hit with a thumb
+     * while the other hand is on a key. */
+    s_type_bar = lv_obj_create(s_right_pane);
+    lv_obj_remove_style_all(s_type_bar);
+    lv_obj_set_size(s_type_bar, RIGHT_W, JS8_TYPE_H);
+    lv_obj_set_pos(s_type_bar, 0, JS8_TYPE_Y);
+    lv_obj_set_style_bg_color(s_type_bar, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_type_bar, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_type_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_type_bar, LV_OBJ_FLAG_HIDDEN);   /* js8_tabs_apply decides */
+
+    s_type_ta = lv_textarea_create(s_type_bar);
+    lv_textarea_set_one_line(s_type_ta, true);
+    lv_textarea_set_max_length(s_type_ta, 160);
+    lv_textarea_set_placeholder_text(s_type_ta, "Free text to send...");
+    lv_obj_set_size(s_type_ta, 740, 48);
+    lv_obj_set_pos(s_type_ta, 8, 8);
+    lv_obj_set_style_text_font(s_type_ta, &lv_font_montserrat_24, 0);
+    /* ⭐ Registers the textarea with the physical-keyboard bridge, which is
+     * what makes a BLE or snap-on keystroke land here. Same call every other
+     * field in the project uses - see ui_theme_style_textarea(). */
+    ui_theme_style_textarea(s_type_ta);
+    /* ⛔ CLICKED, not FOCUSED - see type_ta_cb()'s own comment for why. */
+    lv_obj_add_event_cb(s_type_ta, type_ta_cb,       LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_type_ta, type_ta_ready_cb, LV_EVENT_READY,   NULL);
+
+    {
+        lv_obj_t *b = lv_btn_create(s_type_bar);
+        lv_obj_set_size(b, 196, 48);
+        lv_obj_set_pos(b, 756, 8);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_set_style_border_width(b, 2, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(JS8_BTN_HEX), 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(JS8_ACCENT_HEX), 0);
+        lv_obj_set_style_pad_hor(b, 0, 0);
+        lv_obj_add_event_cb(b, type_send_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, "Send");
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_width(l, 196);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(l);
     }
 }
 
@@ -4925,54 +5139,17 @@ void ft8_screen_view_init(lv_obj_t *parent)
     lv_obj_center(s_cq_lbl);
     ft8_screen_view_refresh_cq_label();  // show the active CQ message
 
-    /* "Free text" - JS8 only (js8_tabs_apply), and it sits in the TXCQ parity
-     * button's cell: same position, same size.
+    /* ⛔ THE "Free text" BUTTON WAS HERE AND IS GONE - T14.
      *
-     * ⭐ THE CELL IS FREE EXACTLY WHEN THIS BUTTON IS SHOWN. s_btn_parity is
-     * hidden in JS8 (parity is an FT8 convention - see the measurement in
-     * js8_tabs_apply), so (0,197) 140x52 is empty in the one mode that has a
-     * Free text button. Nothing had to move to make room.
+     * 140x52 at (0,197) in the left pane, opening the modal composer. Ryan
+     * KK6DZB asked for it to go when the type box arrived, and he was right:
+     * a button that opens a box to type in is one step more than a box to
+     * type in. The modal it opened is still built - see type_ta_cb() for the
+     * one case that still needs it.
      *
-     * ⛔ IT USED TO BE AT (0,393), 288x60, AND THAT WAS THE SECOND WRONG
-     * PLACE. First it was drawn over the RX status line; c84c1150 then pushed
-     * the status label down to 461 to clear it. But 461 plus two wrapped lines
-     * at font 24 runs to 509, against an override button row starting at 540 -
-     * so during TX the status text was boxed into what was left, which is what
-     * the operator reported on 2026-10-11. Moving the BUTTON instead of the
-     * TEXT gives the status line its whole slot back; js8_tabs_apply no longer
-     * shifts it.
-     *
-     * ⚠ FONT 24 IN A 140 px CELL, at the operator's request 2026-10-11 (it
-     * shares the row with "TX 1500 Hz" at font 20, which is smaller). Nine
-     * characters at 24 is close to the cell width, so the button's horizontal
-     * padding is zeroed and the label is bounded to the button: without both,
-     * the glyphs run over the rounded edge instead of being clipped. Measured
-     * on /ss.bmp afterwards rather than assumed - see below. */
-    s_btn_js8_text = lv_btn_create(s_left_pane);
-    lv_obj_set_size(s_btn_js8_text, 140, 52);
-    lv_obj_set_pos(s_btn_js8_text, 0, 197);
-    lv_obj_set_style_bg_color(s_btn_js8_text, lv_color_hex(JS8_BTN_HEX), 0);
-    lv_obj_set_style_border_color(s_btn_js8_text, lv_color_hex(JS8_ACCENT_HEX), 0);
-    lv_obj_set_style_border_width(s_btn_js8_text, 2, 0);
-    lv_obj_set_style_radius(s_btn_js8_text, 8, 0);
-    /* The default button padding would leave font 24 about 20 px short of the
-     * cell. The label is centred in the button either way, so giving it the
-     * full 140 px costs nothing and is what lets the larger font fit. */
-    lv_obj_set_style_pad_hor(s_btn_js8_text, 0, 0);
-    lv_obj_add_event_cb(s_btn_js8_text, js8_text_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_flag(s_btn_js8_text, LV_OBJ_FLAG_HIDDEN);   /* js8_tabs_apply decides */
-    {
-        lv_obj_t *ftl = lv_label_create(s_btn_js8_text);
-        lv_label_set_text(ftl, "Free text");
-        lv_obj_set_style_text_color(ftl, lv_color_hex(0xffffff), 0);
-        lv_obj_set_style_text_font(ftl, &lv_font_montserrat_24, 0);
-        /* Bound to the button and centred as TEXT, the same rule the override
-         * row learned: lv_obj_center() alone centres the label BLOCK, so a
-         * block wider than 140 px would straddle the button's edges. */
-        lv_obj_set_width(ftl, 140);
-        lv_obj_set_style_text_align(ftl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(ftl);
-    }
+     * ⚠ ITS CELL IS FREE AGAIN. (0,197) 140x52 is the TXCQ parity button's
+     * slot, which is hidden in JS8, so the cell is empty in JS8 and occupied
+     * in FT8/FT4 exactly as it was before the button existed. */
 
 
     // "Active: N" removed (operator, 2026-07-29: not useful information) - the
@@ -4990,8 +5167,11 @@ void ft8_screen_view_init(lv_obj_t *parent)
     lv_label_set_long_mode(s_lbl_tx, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_lbl_tx, 288);
     lv_obj_set_pos(s_lbl_tx, 0, 393);   // the "Active: N" line paid for the mini strip above
-                                        // ⛔ js8_tabs_apply() MOVES THIS to 461 in JS8 - the
-                                        // Free text button owns 393 there.
+                                        // ⛔ NOTHING MOVES THIS ANY MORE. The comment used
+                                        // to say js8_tabs_apply() shifted it to 461 in JS8
+                                        // for the Free text button; that was already stale
+                                        // (the button moved instead, 2026-10-11) and T14
+                                        // deleted the button outright.
 
     // Live TX PWR/SWR line. Separate label (cyan) aligned just under s_lbl_tx:
     // LVGL v9 dropped in-label recolor markup, so a distinct colour from the

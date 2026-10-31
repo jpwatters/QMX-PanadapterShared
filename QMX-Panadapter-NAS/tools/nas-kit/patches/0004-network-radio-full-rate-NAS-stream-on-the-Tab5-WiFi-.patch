@@ -1,7 +1,7 @@
-From 67d3125a2b161e42bd57ae5b86d1020f55d23027 Mon Sep 17 00:00:00 2001
+From 0cbdc2ffced3c542bfa442effcc814cad6b0651b Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
-Subject: [PATCH 04/37] network-radio: full-rate NAS stream on the Tab5 - WiFi
+Subject: [PATCH 04/41] network-radio: full-rate NAS stream on the Tab5 - WiFi
  RX fixes, build on macOS
 
 Bring-up on the real hardware (Tab5 + QMX+ on a Synology DS416j) found the
@@ -176,7 +176,7 @@ index 95d5a4e4..1a1fac07 100644
  CONFIG_TCP_OVERSIZE_MSS=y
  # CONFIG_TCP_OVERSIZE_QUARTER_MSS is not set
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index d3c90364..62005eae 100644
+index 15530395..0c1046b8 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -77,6 +77,22 @@ PATCHES = [

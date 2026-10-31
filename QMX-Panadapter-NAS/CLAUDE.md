@@ -42,6 +42,10 @@ Standing rule:
 
 ## ⛔ FOUR boards share this machine — resolve by BENCH NAME
 
+⛔ **On `main` the bench is `bench1`, always.** bench2 is dedicated to
+`feat/cw-page` and carries that branch's firmware. Read `tools/bench.json` for
+the assignment - never a sentence in the prompt (got this wrong 2026-10-28).
+
 Use `bench flash <name>`, `bench capture <name>`, `bench antenna <name>`. See [bench setup](../../../memory/project_bench_setup.md) for the registry and MAC addresses. All four boards enumerate as `VID_303A&PID_1001` with no serial number—the COM port follows the socket, not the board.
 
 ## Standing patches (MUST be applied before build)
@@ -99,7 +103,7 @@ the checker by adding to EXEMPT without writing why.
 `docs/unattended-tx-inventory.md` — **run it for the number**. This line said
 11 arming sites while the checker and the inventory both said 12 (corrected
 2026-10-17); a count in prose cannot keep up, the same rot the patches section
-above records. Today: 12 sites, **6 unattended**. Run it
+above records. Today: 13 sites, **6 unattended** (12 -> 13 at v1.20.2, where `docs/unattended-tx-inventory.md` last changed - NOT at v1.21.0, as this line claimed; the prose has now been stale three times, which is why the checker is the authority). Run it
 every release; if the table changed, say so in the notes. ⛔ Never call a
 capability "not completed" or "not yet": say implemented or not, then proven or
 not — [why](../../../memory/feedback_the_operator_must_never_learn_his_own_release_from_a_user.md).
@@ -129,6 +133,15 @@ See [patches detail](../../../memory/project_standing_patches.md).
 
 Re-read `TODO.md` first (newest work queue at the top) and reconcile against the
 repo. It is a fresh table every time, never a replay of the last one.
+
+⛔ **RECONCILE MEANS GREP THE CODE, not read the row.** This applies to ANY
+answer about what is open, not only to a table he asked for by name. ⚠
+2026-10-28: I offered E17.2 as open work and he picked it; it had shipped nine
+days earlier as T06 (`ad34fc05`) and the row cited a `NULL` that is not in the
+file. Ten rows in that file were stale the same day, in both directions —
+"not flashed" for commits already on bench dev, and "owed" for promises
+already discharged. **A row that names a `file:line` is a claim to check.**
+And clear the row in the SAME change as the work, never later.
 
 ⛔ **Only work that is NOT IMPLEMENTED.** Leave out anything whose remaining
 work is verifying, flashing or looking at something already built — he does not

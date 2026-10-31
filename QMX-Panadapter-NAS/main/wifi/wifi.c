@@ -899,6 +899,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,
     }
 }
 
+/* Everything that needs an IP address on SOME link: the name qmx.local, SNTP,
+ * the web server and rigctld. Called on every Wi-Fi got-IP and on every
+ * Ethernet got-IP (net/eth_w5500.c); each step is idempotent. */
+void wifi_net_services_start(void)
+{
+    // Announce qmx.local now that there is an interface to announce on.
+    // Idempotent, so the reconnects and roams that are routine here cost
+    // nothing - and the name survives the address change a roam causes,
+    // which is the whole reason it is here.
+    mdns_svc_start();
+    // Kick off SNTP on first connect.
+    static bool sntp_started = false;
+    if (!sntp_started) {
+        sntp_started = true;
+        esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+        cfg.sync_cb = sntp_sync_cb;
+        // Same stack/priority as time_sync_task, which runs this same
+        // time_sync code for its other sources.
+        if (!s_sntp_task)
+            s_sntp_task = psram_task_create(sntp_apply_task, "sntp_apply", 8192,
+                                            NULL, 4, tskNO_AFFINITY);
+        esp_netif_sntp_init(&cfg);
+        ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
+    }
+
+    webserver_start();
+    rigctld_server_start();
+}
+
 static void on_ip_event(void *arg, esp_event_base_t base,
                         int32_t id, void *data)
 {
@@ -959,11 +988,6 @@ static void on_ip_event(void *arg, esp_event_base_t base,
             }
         }
 
-        // Announce qmx.local now that there is an interface to announce on.
-        // Idempotent, so the reconnects and roams that are routine here cost
-        // nothing - and the name survives the address change a roam causes,
-        // which is the whole reason it is here.
-        mdns_svc_start();
         {
             // Count only - never a WIFI_KNOWN_MAX buffer here. This runs on the
             // system event task, whose stack is under 3 KB; a 588-byte array on it
@@ -974,23 +998,7 @@ static void on_ip_event(void *arg, esp_event_base_t base,
                      s_ssid, kn_n, kn_n == 1 ? "" : "s");
         }
 
-        // Kick off SNTP on first connect.
-        static bool sntp_started = false;
-        if (!sntp_started) {
-            sntp_started = true;
-            esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-            cfg.sync_cb = sntp_sync_cb;
-            // Same stack/priority as time_sync_task, which runs this same
-            // time_sync code for its other sources.
-            if (!s_sntp_task)
-                s_sntp_task = psram_task_create(sntp_apply_task, "sntp_apply", 8192,
-                                                NULL, 4, tskNO_AFFINITY);
-            esp_netif_sntp_init(&cfg);
-            ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
-        }
-
-        webserver_start();
-        rigctld_server_start();
+        wifi_net_services_start();
     }
 }
 
@@ -1149,7 +1157,12 @@ static void wifi_task(void *arg)
 
     // ESP-IDF core init (event loop, default STA netif).
     ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    /* net/eth_w5500.c may have created the default loop first (it starts in
+     * parallel and needs it for its own events) - that is not an error. */
+    {
+        esp_err_t le = esp_event_loop_create_default();
+        if (le != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(le);
+    }
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));

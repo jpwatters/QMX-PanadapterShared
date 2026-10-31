@@ -52,7 +52,7 @@ ARCHIVE="$SRC/.qmx-panadapter-archive"
 KIT="$(cd "$(dirname "$0")" && pwd)"
 PATCHES="$KIT/patches"
 TESTED_BASE=""                  # release this patch series was hardware-tested on ("" = not yet)
-SERIES_BASE="v1.20.5"           # release the patches were made against (fetched too, for git am --3way)
+SERIES_BASE="v1.23.0"           # release the patches were made against (fetched too, for git am --3way)
 STAMP=".qmx-nas-build"          # in each tree: what it was built from
 TESTED=".qmx-nas-tested"        # in each tree: when it was marked tested
 BRANCH="network-radio"
@@ -176,9 +176,15 @@ retry() {
 
 # Shallow clone of one release tag into $2 (removed first, so a retry starts clean).
 clone_release() {
+    # Only the release's own commit is fetched. The tag is fetched by name and
+    # checked out as the commit it points to: from v1.22.0 on, upstream's tags
+    # are annotated, and "git clone --branch <tag>" printed
+    # "warning: refs/tags/v1.22.0 ... is not a commit!" for them.
     rm -rf "$2"
-    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$1" --single-branch \
-        "$UPSTREAM_URL" "$2"
+    git init --quiet "$2" &&
+    git -C "$2" remote add origin "$UPSTREAM_URL" &&
+    git -C "$2" fetch --quiet --depth 1 --no-tags origin "refs/tags/$1:refs/tags/$1" &&
+    git -C "$2" -c advice.detachedHead=false checkout --quiet "$1^{commit}"
 }
 
 build() {

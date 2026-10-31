@@ -27,6 +27,7 @@
 #include "net/net_quiet.h"
 #include "util/net_guard.h"
 #include "esp_netif.h"
+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
 // Pause between image chunks. 1 ms was enough to stop the hardware watchdog
 // reset this loop used to cause (esp_https_ota sizes each chunk as
@@ -444,7 +445,7 @@ bool ota_update_start(const char *url, char *err, size_t err_len)
         if (err) snprintf(err, err_len, "No download address");
         return false;
     }
-    if (!wifi_is_connected()) {
+    if (!net_is_up()) {
         if (err) snprintf(err, err_len, "No WiFi connection");
         return false;
     }

@@ -2,6 +2,15 @@
 #include "lvgl.h"
 #include "ft8_test.h"   // ft8_op_mode_t - the sub-mode these take and return
 
+// Cyan accent used for everything FT4: the dropdown's FT4 column header, the
+// "MODE: FT4" label, and the left drawer's MODE: FT4 button - so they can
+// never drift apart. FT8 keeps the gold UI_COLOR_ACCENT_GOLD.
+#define FT4_ACCENT_HEX 0x00B4FF
+// Magenta for JS8. Picked to be unmistakable against both gold and cyan at a
+// glance across the room - the mode label is the only thing on the screen that
+// says which protocol is about to be transmitted.
+#define JS8_ACCENT_HEX 0xE040FB
+
 // Step 4c.2 v0.10: FT8 screen LVGL view.
 //
 // Owns the middle-band container shown when ui_mode == UI_MODE_FT8.
@@ -143,6 +152,8 @@ void ft8_screen_view_refresh_mode_label(void);
  * so both surfaces run the one code path. */
 void ft8_screen_view_request_js8_flush(void);
 
-/* Which JS8 pane is showing. Reported in /api/status so the capture and the
- * API can say what is on the screen without asking the operator. */
-bool ft8_screen_view_js8_tab_is_conversation(void);
+/* ⛔ ft8_screen_view_js8_tab_is_conversation() WAS HERE and is gone - T14.
+ * It answered "which JS8 pane is showing" for /api/status. All three panes
+ * are up at once now, so the question has no answer and the API reports
+ * "all" literally rather than this returning a constant that reads like a
+ * live reading. */

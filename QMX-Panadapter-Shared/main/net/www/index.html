@@ -104,6 +104,16 @@
   }
   #submode-pop button:hover  { background: #262b31; }
   #submode-pop button.active { background: var(--accent); color: #000; }
+  /* T132: the divider between "transmit and receive on" and "also receive". */
+  .submode-pop-hdr {
+    margin-top: 6px;
+    padding: 6px 12px 2px;
+    border-top: 1px solid #3a3f46;
+    color: #8f98a3;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
   #spec-wrap    { grid-row: 3; }
   #freqaxis     { grid-row: 4; }
   #split-handle { grid-row: 5; }
@@ -698,6 +708,9 @@
   /* A finished contact is good news and the one line here that waits for you,
      so it does not read as dim status. Same green the Tab5 uses for it. */
   #ft8-webr.webr-done { color: #4caf50; font-weight: 600; }
+  /* The device's no-decodes warning, on the same line. Amber, not red: it
+     is a report that nothing is arriving, not a fault in this page. */
+  #ft8-webr.webr-warn { color: #ffb300; font-weight: 600; }
   /* SCALED, not fixed. Every user has a different window and browser zoom, and
      a size picked at one of them is wrong at the others - which is how the same
      panel fitted at 67% and covered its own buttons at 100%. clamp() ties these
@@ -914,6 +927,15 @@
   .btn-primary:hover { background: #3367b6; }
   .btn-neutral       { background: #2a3138; border-color: #4a545e; color: #dfe6ee; }
   .btn-neutral:hover { border-color: var(--accent); }
+  /* Scheduled-events filter buttons. The pane styles the selected one with the
+     accent (style_filt_btn() in sched_modal.c); .active is not a generic class
+     on this page, so the rule lives here rather than being borrowed. */
+  .sched-filt {
+    background: #2a3138; border: 1px solid #4a545e; color: #dfe6ee;
+    border-radius: 6px; padding: 5px 14px; font-size: 14px; cursor: pointer;
+  }
+  .sched-filt:hover  { border-color: var(--accent); }
+  .sched-filt.active { background: #2a2a00; border-color: var(--accent); color: var(--accent); font-weight: 600; }
   .btn-ok[disabled], .btn-primary[disabled], .btn-danger[disabled],
   .btn-neutral[disabled] { opacity: .45; cursor: default; }
 
@@ -1258,9 +1280,9 @@
              ordering, so clicking any header does not leave the operator
              wondering how to get the CQ-callers-on-top view back. -->
         <a href="#" id="dec-order-reset" style="color:var(--dim); display:none">↺ CQ callers on top</a>
-        <!-- JS8 only. The Tab5's JS8 screen carries exactly these two tabs, and
-             ⭐ Conversation is the DEFAULT there: it is the only view that can
-             show what a station actually SAID, and Stations is one tap away.
+        <!-- JS8 only. ⭐ T14: the Tab5's JS8 screen now shows stations, the
+             conversation and a type box TOGETHER, and this row matches it - what
+             is left here is the target chip, the two macro sends and Flush.
              Hidden in FT8/FT4, which have no conversation to show. -->
         <span id="js8-tabs" style="display:none; margin-left:auto;">
           <!-- Who is selected, and the two macro sends. JS8 only, and they are
@@ -1281,8 +1303,10 @@
                surfaces end up disagreeing about what is set; the heading is
                already the thing that TELLS you the speed, so it is the thing
                that should change it. See js8SubmodePopup(). -->
-          <button type="button" id="js8-tab-conv" class="bot-btn">Conversation</button>
-          <button type="button" id="js8-tab-stn"  class="bot-btn">Stations</button>
+          <!-- ⛔ THE Conversation AND Stations BUTTONS WERE HERE - T14.
+               Both panes and the composer are shown at once now, matching the
+               Tab5's three-pane panel, so there is nothing to switch between.
+               Flush stays: it is an action, and it always was. -->
           <!-- The Tab5's JS8 tab bar has had a Flush since the page shipped and
                this one did not - Ryan KK6DZB, 2026-10-14: "No flush button in
                the webUI?". Same action and the same code path on the device, and
@@ -1466,6 +1490,7 @@
       <div class="bot-menu" id="reset-menu">
         <a href="#" id="prop-btn" title="Who has heard YOU lately, from PSK Reporter - receivers, distance, bearing and the signal report they gave you">Who has heard me (24 h)</a>
         <a href="/ss.bmp" id="ss-link" target="_blank" title="Opens in a new tab straight away - quickest way to just look at the screen">Tab5 screenshot</a> <a href="#" id="ss-save" title="Saves a PNG file - slower, but the format forums and apps accept">(save PNG)</a>
+        <a href="#" id="server-mode-link" title="Stop the Tab5 drawing its screen and running its speaker, and keep serving this page. Measured: it hands back about half of core 0 and a fifth of core 1. A touch on the Tab5 ends it.">Server mode: <span id="server-mode-state">off</span></a>
         <a href="#" id="reboot-link" title="Restart the Tab5 now. Receiving stops for about ten seconds. Until now this was only reachable after a firmware update.">Reboot the Tab5</a>
         <a href="#" id="poweroff-link" class="danger" title="Shut the Tab5 down. The radio is put back into receive FIRST, so a transmission in progress cannot be left keyed. It does NOT come back on its own - someone has to press the button, or cut and restore its power.">Power off the Tab5</a>
         <a href="#" id="reset-settings-link" class="danger" title="Reset all app settings + memory channels to defaults (keeps the QSO log and WiFi). Clears a stuck stored value without an esptool full-erase. Reboots.">Reset settings</a>
@@ -1530,12 +1555,25 @@
     <div class="bot-menu-wrap">
       <button type="button" class="bot-btn" id="radio-group-btn">Radio &#9650;</button>
       <div class="bot-menu" id="radio-menu">
-        <a href="#" id="screen-toggle-link" title="Switch the Tab5 between the panadapter and the FT8/FT4 screen">Switch to FT8/FT4</a>
+        <!-- ⛔ FIVE ENTRIES, NOT ONE CYCLING LINK. It used to be a single
+             "Switch to <next>" that rotated Panadapter -> FT8 -> WSPR, which
+             could not reach FT4 or JS8 at all: those were only ever selectable
+             by opening FT8 and picking a preset column. Mirrors the Tab5's
+             left drawer, added the same day, button for button and colour for
+             colour - the label colour is the page's own accent, which is why
+             the hexes are repeated from ft8_screen_view.h and ui_theme.h. -->
+        <a href="#" class="screen-to" data-screen="panadapter" style="color:#FFFFFF" title="Show the spectrum and waterfall on the Tab5">Switch to Panadapter</a>
+        <a href="#" class="screen-to" data-screen="ft8" style="color:#FFDD00" title="Open the FT8 page on the Tab5 and select FT8">Switch to FT8</a>
+        <a href="#" class="screen-to" data-screen="ft4" style="color:#00B4FF" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
+        <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
+        <a href="#" class="screen-to" data-screen="wspr" style="color:#3D8C40" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
         <a href="#" id="relay-link" title="Where the QMX is: on the Tab5's own USB port, or plugged into your NAS and reached over the network (tools/nas-relay). Click to change.">Radio source: --</a>
         <a href="#" id="memory-btn" title="Your 32 memory channels - click one to tune to it">Memory channels</a>
         <a href="#" id="pause-btn" title="Stops the Tab5 talking to the radio, so its own menus and the Band Configuration terminal app behave normally. Nothing is decoded until you hand it back">Let me use the QMX menus</a>
         <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
         <a href="#" id="act-btn" title="POTA / SOTA activation: every QSO logged while one is running claims that reference, so start it when you arrive and stop it when you leave">Activation</a>
+        <a href="#" id="log-btn" title="Log a CW or SSB contact you worked by hand - callsign and the two reports; the radio supplies the frequency, mode, band, date, time and the running activation">Log a contact</a>
+        <a href="#" id="sched-btn" title="What is on: the contest calendar and announced POTA / SOTA activations, on one timeline, soonest first">Scheduled events</a>
         <a href="#" id="term-btn" title="The QMX's own menu system, on its second USB serial port - the whole radio, including everything the front panel can reach. Needed if your QMX has no control panel.">Radio menus</a>
         <a href="#" id="gps-btn" title="The GPS status page - fix, position, grid, satellites and the sky plot. The same page the Tab5 shows when you tap the UTC clock.">GPS status</a>
       </div>
@@ -1560,7 +1598,7 @@
     <button id="tune-stop-btn" class="btn-danger">STOP Tune</button>
   </div>
 
-  <!-- POTA / SOTA activation. Mirrors ui/activation_modal.c: pick the programme,
+  <!-- Activation. Mirrors ui/activation_modal.c: pick the programme,
        type the reference, one button that starts or stops. The reference is what
        POTA and SOTA read out of MY_SIG_INFO to credit the contacts, so the wording
        leans on getting it right and on stopping when you leave. -->
@@ -1576,10 +1614,10 @@
         POTA and SOTA read to credit it. Stop it when you leave.
       </div>
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
-        <select id="act-type" style="font-size:15px; padding:6px 8px;">
-          <option value="1">POTA (park)</option>
-          <option value="2">SOTA (summit)</option>
-        </select>
+        <!-- Filled from /api/status?presets=1 act_types, never written out
+             here: one table on the device, so the two surfaces cannot offer
+             different programmes. -->
+        <select id="act-type" style="font-size:15px; padding:6px 8px;"></select>
         <input id="act-ref-in" type="text" placeholder="DL-0123" maxlength="15"
                style="flex:1; font-size:15px; padding:6px 8px; text-transform:uppercase;">
       </div>
@@ -1589,6 +1627,95 @@
         <button type="button" id="act-stop" style="display:none">Stop activating</button>
         <button type="button" id="act-go">Start</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Log a contact. Mirrors ui/manual_log_modal.c, rule for rule: the reports
+       are pre-filled from the mode (599 for CW, 59 for phone), it STAYS OPEN
+       after logging, and Log clears the callsign while keeping the reports -
+       a run of CW contacts is not one dialog at a time.
+
+       ⛔ ONLY THREE FIELDS, like the Tab5 window. Frequency, mode, band, date,
+       time, our callsign, our grid and the activation come from the device
+       inside /api/cmd log_qso; a page holding a stale frequency must not be
+       able to write a record on the wrong band. -->
+  <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
+    <div style="max-width:560px; margin:12vh auto; background:#161616; border:1px solid #494949; border-radius:10px; padding:16px 20px; color:#ddd; font-size:14px;">
+      <div style="display:flex; align-items:center; margin-bottom:10px;">
+        <strong style="color:#ffa040; font-size:17px;">Log a contact</strong>
+        <div style="flex:1"></div>
+        <span id="log-state" style="color:var(--dim); font-size:13px"></span>
+      </div>
+      <div style="color:var(--dim); font-size:13px; margin-bottom:12px;">
+        For CW and SSB contacts you worked by hand. The frequency, mode, band, date,
+        time and the running activation are taken from the radio, so you only type what
+        it cannot know.
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:10px;">
+        <label style="flex:1">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">Callsign</div>
+          <input id="log-call" type="text" maxlength="20" autocomplete="off"
+                 style="width:100%; font-size:17px; padding:6px 8px; text-transform:uppercase;">
+        </label>
+        <label style="width:92px">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">RST sent</div>
+          <input id="log-rst-s" type="text" maxlength="6"
+                 style="width:100%; font-size:17px; padding:6px 8px;">
+        </label>
+        <label style="width:92px">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">RST rcvd</div>
+          <input id="log-rst-r" type="text" maxlength="6"
+                 style="width:100%; font-size:17px; padding:6px 8px;">
+        </label>
+      </div>
+      <!-- Clearing a report logs NO report rather than a wrong one - the same
+           wording the Tab5 window carries, for the same reason. -->
+      <div style="color:var(--dim); font-size:12px; margin-bottom:8px">
+        Clear a report to log the contact without one.
+      </div>
+      <div id="log-err" style="color:#ff6a6a; font-size:13px; min-height:18px;"></div>
+      <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+        <span id="log-ok" style="color:#60D060; font-size:13px"></span>
+        <div style="flex:1"></div>
+        <button type="button" id="log-close">Close</button>
+        <button type="button" id="log-go">Log</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scheduled events. Mirrors ui/sched_modal.c: ONE timeline, contests and
+       announced ?OTA activations sorted together, because they compete for the
+       same evening. The filter buttons are for when that is already decided.
+
+       ⛔ NO ERROR BANNER. Spothole being down is an ordinary state - Ian M0TRT
+       asked for that explicitly - so a failed refresh leaves the last good list
+       up and the age line says how old it is. -->
+  <div id="sched-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
+    <div style="max-width:1000px; margin:7vh auto; background:#161616; border:1px solid #494949; border-radius:10px; padding:16px 20px; color:#ddd; font-size:14px;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+        <strong style="color:#ffa040; font-size:17px;">Scheduled events</strong>
+        <div style="flex:1"></div>
+        <span id="sched-age" style="color:var(--dim); font-size:13px"></span>
+        <button type="button" id="sched-refresh" class="btn-neutral">Refresh</button>
+        <button type="button" id="sched-close">Close</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-bottom:10px;">
+        <button type="button" class="sched-filt" data-filt="0">All</button>
+        <button type="button" class="sched-filt" data-filt="1">Contests</button>
+        <button type="button" class="sched-filt" data-filt="2">&#63;OTA</button>
+      </div>
+      <table id="sched-table" style="width:100%; border-collapse:collapse; font-size:14px">
+        <thead>
+          <tr style="color:var(--dim); text-align:left; font-size:12px">
+            <th style="width:92px; padding:4px 6px">START</th>
+            <th style="padding:4px 6px">WHAT</th>
+            <th style="width:170px; padding:4px 6px">SOURCE</th>
+            <th style="width:110px; padding:4px 6px; text-align:right">IN</th>
+          </tr>
+        </thead>
+        <tbody id="sched-rows"></tbody>
+      </table>
+      <div id="sched-empty" style="color:var(--dim); font-size:13px; padding:10px 6px"></div>
     </div>
   </div>
 
@@ -1679,6 +1806,33 @@
     </div>
   </div>
 
+  <!-- Radio source: the QMX on the Tab5's USB port, or one on a NAS reached
+       over the network - the same choices as the Tab5's drawer section,
+       Find NAS included (POST/GET /api/relay/find). -->
+  <div id="relay-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
+    <div style="max-width:520px; margin:10vh auto; background:#161616; border:1px solid #494949; border-radius:10px;
+                padding:16px 20px; color:#ddd; font-size:14px;">
+      <div style="display:flex; align-items:center; margin-bottom:10px;">
+        <strong style="color:#ffa040; font-size:17px;">Radio source</strong>
+        <div style="flex:1"></div>
+        <button id="relay-close" class="btn-neutral">Close</button>
+      </div>
+      <div id="relay-cur" style="margin-bottom:12px">Reading the Tab5...</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
+        <button id="relay-find" class="btn-neutral" title="Ask the network for a NAS or Raspberry Pi running the QMX relay (QMXR? on UDP 7355)">Find NAS</button>
+        <button id="relay-usb" class="btn-neutral" title="Use the QMX plugged into the Tab5's own USB port">Use USB</button>
+      </div>
+      <div id="relay-found" style="margin-bottom:10px; color:var(--dim)"></div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+        <input id="relay-host" type="text" placeholder="NAS address, e.g. 10.0.0.137 or 10.0.0.137:7355"
+               style="flex:1; min-width:200px; padding:6px 8px; background:#0e0e0e; color:#ddd; border:1px solid #494949; border-radius:6px">
+        <button id="relay-use" class="btn-neutral">Use NAS</button>
+      </div>
+      <div style="color:var(--dim); font-size:12px; margin-top:10px">
+        The search only reaches relays on the same network as the Tab5. The choice is saved and applied at once.
+      </div>
+    </div>
+  </div>
   <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
     <!-- max-height + an inner scroll box: with 32 slots the card ran off the
          bottom of the window and the last rows could not be reached at all. -->
@@ -2043,13 +2197,26 @@ let   bpFadeFrom       = 0;    // ms timestamp the fade may start at; 0 = fully 
 let   bpFadeRaf        = 0;
 /* 0 while dragging, ramps 0..1 after the delay, 1 once done. Clears bpFadeFrom
    on completion, which is also what stops the redraw loop below. */
+/* ⛔ IT NEVER GOES FULLY DARK - it keeps DRAG_PB_ALPHA, in every mode. Gyula HA3HZ,
+   2026-10-29: "the bandwidth indicator disappears while I am dragging the
+   station into the previously visible reception range ... the final position
+   after releasing the mouse is not precise - it ends up being only
+   approximate." The block is ~6 px wide on a whole-band strip and it is the
+   thing being aimed at; in SSB it is ten times wider and the landing is
+   forgiving, which is why only CW reads as imprecise. The floor applies on the
+   way back up too, or the release would blink out what the drag kept. Matches
+   the DRAG_PASSBAND_OPA rule in ui.c - keep the two in step.
+   ⚠ Started CW-only; widened to every mode by the operator on 2026-10-30,
+   reversing his own 2026-09-18 preference for the hide. Do not re-narrow it. */
+const DRAG_PB_ALPHA = 0.35;
 function bpFadeAlpha() {
-  if (bpDragging) return 0;
+  const floor = DRAG_PB_ALPHA;
+  if (bpDragging) return floor;
   if (!bpFadeFrom) return 1;
   const t = Date.now() - bpFadeFrom;
-  if (t <= 0)          return 0;
+  if (t <= 0)          return floor;
   if (t >= BP_FADE_MS) { bpFadeFrom = 0; return 1; }
-  return t / BP_FADE_MS;
+  return Math.max(floor, t / BP_FADE_MS);
 }
 /* The strip is otherwise only redrawn on a status poll, which is far too coarse
    to fade with - so drive it from rAF for the second or so it takes, and stop. */
@@ -2353,6 +2520,40 @@ function sUnitsFromDbm(dbm) {
   return "S" + Math.max(1, Math.min(9, Math.round(9 + (dbm+73)/6)));
 }
 
+/* T120 - the same S-unit number as above, as an integer 1..9 for the Log
+   window's received report. Above S9 clamps to 9: RST has one digit. */
+function sUnitsNumFromDbm(dbm) {
+  if (dbm === null || dbm === undefined) return null;
+  if (dbm >= -73) return 9;
+  return Math.max(1, Math.min(9, Math.round(9 + (dbm+73)/6)));
+}
+
+/* T120 - DECAYING PEAK-HOLD, and it is NOT the meter. The warning at the WS
+   S-meter trailer still stands: no hold or EMA feeds drawSmeter(), because a
+   hold on one screen only re-opens the Tab5-vs-browser disagreement. This
+   variable is read by logOpen() and by nothing else, and it mirrors ui.c's
+   SMETER_HOLD_MS exactly so the two Log windows offer the same digit. */
+const LOG_SMETER_HOLD_MS = 10000;
+let logSmeterPeakUnits = 0;
+let logSmeterPeakAt    = 0;
+
+function logSmeterNote(dbm) {
+  const u = sUnitsNumFromDbm(dbm);
+  if (u === null) return;
+  const now = performance.now();
+  if (!logSmeterPeakAt || now - logSmeterPeakAt > LOG_SMETER_HOLD_MS
+      || u >= logSmeterPeakUnits) {
+    logSmeterPeakUnits = u;
+    logSmeterPeakAt    = now;
+  }
+}
+
+function logSmeterRecentPeak() {
+  if (!logSmeterPeakAt) return null;
+  if (performance.now() - logSmeterPeakAt > LOG_SMETER_HOLD_MS) return null;
+  return logSmeterPeakUnits;
+}
+
 /* =====================================================================
    Dropdown system
    ===================================================================== */
@@ -2597,7 +2798,8 @@ document.getElementById("ft8-status").addEventListener("click", async (e) => {
         return;
       }
       document.getElementById("ft8-webr").textContent = "Asking the Tab5 to " + what + "...";
-      await sendCmd({ action: "qso_override", what: what });
+      ft8ShowRefusal(await sendCmd({ action: "qso_override", what: what }),
+                     document.getElementById("ft8-webr"));
     });
   });
 
@@ -3257,6 +3459,28 @@ function adifImportMessage(j) {
       }
     });
   })();
+
+  /* Server mode (T19). The Tab5 stops drawing and stops its own audio; this
+     page is unaffected, because the spectrum it shows comes from ws_push_task
+     reading the DSP directly, not from the Tab5's canvases.
+     ⚠ No confirm(): it is reversible from here AND by touching the Tab5, and
+     a dialog in front of a one-tap switch is the thing operators complain
+     about. The state comes from /api/status so this label cannot drift from
+     the device - the same rule the waterfall rate follows. */
+  { const sm = document.getElementById("server-mode-link");
+    if (sm) sm.addEventListener("click", async function (e) {
+      e.preventDefault();
+      try {
+        const r = await fetch("/api/cmd", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "server_mode", on: !serverModeOn })
+        });
+        const j = await r.json();
+        if (j && typeof j.server_mode === "boolean") setServerModeLabel(j.server_mode);
+      } catch (err) {
+        alert("No answer from the Tab5.");
+      }
+    }); }
 
   { const rb = document.getElementById("reboot-link");
     if (rb) rb.addEventListener("click", (e) => { e.preventDefault(); plainRestart(); }); }
@@ -4812,7 +5036,7 @@ const SET_FIELDS = [
   /* RF gain is read from the radio, not stored here - it is per band, so a
      remembered number would belong to whichever band you were on last. -1 means
      the radio has not answered yet. */
-  ["Radio & display", "qmx_rf_gain_db",    "num",  "QMX RF gain (dB)", "0-99, per band; the radio's default is 54"],
+  ["Radio & display", "qmx_rf_gain_db",    "num",  "QMX RF gain (dB)", "0-99, per band; default 54. Affects the radio's OWN audio only - I/Q is tapped before the QMX's DSP, so it changes nothing the Tab5 shows or plays"],
   ["Radio & display", "cw_tx_offset_hz",   "num",  "CW transmit offset (Hz)",
      "0 = off. In CW only, transmit this far from the station you are listening to (split), so a QRP call is not buried in the zero-beat pile. -300 to +300, and around 100 Hz or less is typical - most CW operators run a 500 Hz filter or narrower (200 Hz is not unusual), and a QRP signal loses energy towards the filter edges (Michael KZ4LY). Roy KI0ER uses +60"],
   ["Radio & display", "still_view",        "bool", "Still spectrum",
@@ -4951,7 +5175,16 @@ const SET_FIELDS = [
      "For a Tab5 mounted upside down. Touch follows, and it is reversible from either screen"],
   ["Display & waterfall", "display.db_min",         "num", "Scale floor (dBm)", "default -130"],
   ["Display & waterfall", "display.db_max",         "num", "Scale ceiling (dBm)", "default -30"],
-  ["Display & waterfall", "display.ema_pct",        "num", "Spectrum smoothing (%)", "EMA alpha x 100; default 20"],
+  /* ⛔ smooth_pct, NOT ema_pct, and the label used to lie. The field carried
+     the EMA coefficient x 100 under the name "Spectrum smoothing (%)", so 100
+     meant NO smoothing - the same inversion Sam W7STF reported on the Tab5
+     slider. The device now reports and accepts both names for one stored
+     value: ema_pct is the raw coefficient, kept so older config files and
+     scripts still mean what they meant, and smooth_pct is this one. */
+  ["Display & waterfall", "display.smooth_pct",     "num", "Spectrum smoothing (%)",
+   "0 is off, higher is smoother. A first-order average on the spectrum trace, on the Tab5 and on this page alike. The scale is linear in the coefficient, not in time, so most of the visible change is at the top end: 50% is a 0.14 s time constant, 80% is 0.45 s, 90% is 0.95 s and 95% is 1.95 s. Default 60"],
+  ["Display & waterfall", "display.peak_hold_s",    "num", "Peak hold (seconds)",
+   "0 is off. A sliding window, not a latch: the cyan line is the highest each point reached in the last N seconds, and it falls once that peak is older than N. The Tab5 drawer offers 1, 2, 3 and 5; any value up to 60 is accepted here."],
 
   /* The download half of updating, on its own switch. Three people asked for
      it in one afternoon - Michael KZ4LY, Samuel W7STF and Steve N9SZ - and
@@ -4976,10 +5209,14 @@ const SET_FIELDS = [
      (the other is bt_mouse_en, which says so). The codec is opened at boot,
      before the USB host takes the DMA RAM, so a mid-session enable cannot
      open it safely. Switching OFF is immediate. The note says so, because the
-     web had no way of telling anyone - the Tab5 toasts it and the API leaves
-     you to notice that a POST of true reads back false. */
+     web had no way of telling anyone - the Tab5 toasts it and the API said
+     nothing at all. ⛔ The note here used to say the POST "reads back as
+     off". It does not: rx_audio_is_enabled() is the STORED flag, so it reads
+     back ON with the codec shut and frame_count 0 (measured 2026-10-22, T66).
+     The settings GET now carries rxaudio.restart_pending for the real
+     answer. */
   ["RX audio", "rxaudio.en", "bool", "Receiver audio on the Tab5 speaker",
-   "Turning it ON takes effect after a restart - the audio codec is opened at boot, before the USB host claims the memory it needs. Turning it OFF is immediate. Until you restart, this reads back as off: that means stored, waiting."],
+   "Turning it ON takes effect after a restart - the audio codec is opened at boot, before the USB host claims the memory it needs. Turning it OFF is immediate. Until you restart it reads back ON while no sound is produced; rxaudio.restart_pending in the settings GET is the field that says so."],
   ["RX audio", "rxaudio.vol", "num", "Speaker volume (0-100)",
    "Applies at once. This is the Tab5's own speaker, not the audio streamed to this browser - that one follows your computer's volume."],
   ["RX audio", "rxaudio.gain_d10", "num", "AGC ceiling (÷10)",
@@ -5000,6 +5237,8 @@ const SET_FIELDS = [
      auto-mute after v1.16.4 and neither could be reproduced here. It is on
      the Tab5 so it can be reached there, and here so it can be reached from
      a phone when the Tab5 is across the room. */
+  ["RX audio", "rxaudio.cw_peak_hz", "num", "CW peak filter (Hz, 0 = off)",
+   "A narrow audio peak on the CW pitch, in the Tab5's own audio, ahead of the AGC so the AGC rides the note instead of the hiss. The Tab5 drawer offers 250, 150 and 100 Hz; 40 to 1000 is accepted here. It is NOT a second IF filter - the radio's own CW filter still decides what reaches the chain, and a strong signal just outside it still works the radio's AGC."],
   ["RX audio", "rxaudio.hp_mute_en", "bool", "Mute the speaker when headphones are plugged in",
    "Turn this OFF if you lose all audio - it is the headphone auto-mute"],
 
@@ -5082,6 +5321,10 @@ async function ft8LoadPresets() {
        means no JS8 group is offered. */
     window.__ft8Presets = { ft8: d.ft8_presets, ft4: d.ft4_presets || [],
                             js8: d.js8_presets || [] };
+    /* The activation programmes ride the same one-shot fetch - they never
+       change either, and a second round trip for eight short strings is
+       not worth it. */
+    if (d.act_types) window.__actTypes = d.act_types;
     ft8FillPresets();
   } catch (e) { /* offline - the control just stays empty rather than lying */ }
 }
@@ -5126,6 +5369,27 @@ function ft8FillPresets() {
     sel.appendChild(g);
   }
   if (!sel.value && cur) sel.value = cur;
+}
+
+/* Move the selection to whatever the device is on now. Mode AND frequency
+   both have to match, for the reason ft8FillPresets gives: JS8 shares two
+   dial frequencies with FT4, so hz alone can select the wrong row.
+   ⚠ Left alone while the control has focus - the operator is reading the
+   open list, and moving it under them would change what they land on. */
+function ft8PresetSync() {
+  const sel = document.getElementById("ft8-preset");
+  if (!sel || !sel.options.length || sel === document.activeElement) return;
+  const proto = ft8Proto();
+  let want = "";
+  for (const o of sel.options) {
+    if (!o.value || !o.dataset || !o.dataset.mode) continue;
+    if (o.dataset.mode.toUpperCase() !== proto) continue;
+    if (Math.abs(parseInt(o.value, 10) - lastFreqHz) < 500) { want = o.value; break; }
+  }
+  /* An off-preset frequency falls back to the "Band..." row rather than
+     leaving the last preset showing, which would claim a position the
+     radio is no longer on. */
+  if (sel.value !== want) sel.value = want;
 }
 
 /* The device's own answer (/api/status ft8.proto), not a scan of the status
@@ -5304,8 +5568,10 @@ function dbPresetRender(body) {
     b.type = "button";
     b.className = "bot-btn";
     b.textContent = name;
-    b.title = "Floor " + lo + " dBm, ceiling " + hi + " dBm, smoothing " + ema +
-              "%. Fills the three rows below - press Save to apply.";
+    /* The preset table stores the COEFFICIENT (it predates the inversion);
+       the tooltip and the field both show smoothing, so both invert here. */
+    b.title = "Floor " + lo + " dBm, ceiling " + hi + " dBm, smoothing " +
+              (100 - ema) + "%. Fills the three rows below - press Save to apply.";
     b.addEventListener("click", () => {
       const set = (path, v) => {
         const el = body.querySelector('[data-path="' + path + '"]');
@@ -5313,7 +5579,7 @@ function dbPresetRender(body) {
       };
       set("display.db_min", lo);
       set("display.db_max", hi);
-      set("display.ema_pct", ema);
+      set("display.smooth_pct", 100 - ema);   // the row is smoothing, not alpha
     });
     row.appendChild(b);
   }
@@ -5984,6 +6250,8 @@ let lastFtProto = "FT8";     /* what the device says it is running */
    this and the picker reads it back, so the Tab5 drawer, the glass and
    this page cannot disagree about what is set. */
 let lastJs8Submode = 0;
+/* T132: the ALTERNATE submode decoded as well as the primary. 255 = off. */
+let lastJs8AltSubmode = 255;
 let wsprEnabled = false;
 let wsprPollInFlight = false;
 /* The band list is fetched ONCE - it never changes - exactly like the FT8
@@ -6478,7 +6746,27 @@ async function ft8RowClicked(call, retarget) {
   if (wr) wr.textContent = retarget
     ? ("Dropping this exchange for " + call + "...")
     : ("Asking the Tab5 to reply to " + call + "...");
-  await sendCmd({ action: "reply", call: call, retarget: !!retarget });
+  ft8ShowRefusal(await sendCmd({ action: "reply", call: call, retarget: !!retarget }), wr);
+}
+
+/* ⛔ T94: A REFUSAL THE BROWSER CAN ACTUALLY READ.
+ *
+ * The device's "Not in FT8 mode" used to go only into web_r, which is carried
+ * inside /api/status's ft8 block - and that block is emitted ONLY while the
+ * FT8 screen is up, which is the exact condition being refused. Both reads of
+ * web_r on this page sit inside `screen === "ft8"` too, so it was invisible at
+ * both ends. /api/cmd now answers the POST itself with {ok:false,err}.
+ *
+ * It alerts as well as writing the line: when the Tab5 has left FT8 this page
+ * is about to repaint away from the FT8 view, so the line can disappear with
+ * it. An alert is the page's own convention for "what you asked for did not
+ * happen" - and this path is rare by construction (it needs the glass to leave
+ * FT8 while a cached FT8 view is still being clicked). */
+function ft8ShowRefusal(j, wr) {
+  if (!j || j.ok !== false) return;
+  const msg = j.err || "Refused";
+  if (wr) wr.textContent = msg;
+  alert(msg);
 }
 
 /* Click a decode row to WORK that station - the same intelligent Transmit a
@@ -6538,7 +6826,6 @@ document.getElementById("dec-body").addEventListener("dblclick", async (e) => {
    ⛔ Rows are tappable and the row -> message map comes FROM THE DEVICE. A
    message can wrap onto several rows, so a tap cannot be turned into a message
    by arithmetic - the glass asks for the map for exactly this reason. */
-let js8Tab = "conv";      // the Tab5's default in JS8
 /* The selected station, mirrored from /api/status (ft8.js8_target) so the Tab5
    and this page cannot disagree about who is being worked - one piece of state,
    two surfaces, the rule cq_parity had to learn the hard way. */
@@ -6559,23 +6846,29 @@ function js8TabsSync(proto) {
   document.getElementById("js8-tabs").style.display = isJs8 ? "" : "none";
   const conv = document.getElementById("js8-conv");
   const tbl  = document.getElementById("dec-table").parentElement;
-  const showConv = isJs8 && js8Tab === "conv";
+  /* ⭐ T14: IN JS8 EVERYTHING IS UP AT ONCE - the decode table, the
+     conversation and the composer inside it. The old code showed exactly one
+     of the first two, which meant the composer VANISHED whenever you looked
+     at Stations: the Tab5's own fault repeated here, and worse, because the
+     browser has no modal composer to fall back on. */
+  const showConv = isJs8;
   conv.style.display = showConv ? "" : "none";
-  tbl.style.display  = showConv ? "none" : "";
-  /* ⭐ The glass HIDES the Stations column header in conversation view
-     (s_col_hdr, ft8_screen_view.c) and lets the tab bar name the pane. Do the
-     same: "Decode list - nothing heard yet" over a conversation is a heading
-     describing the pane that is not on screen. */
+  tbl.style.display  = "";
+  /* ⛔ THE DECODE-LIST HEADINGS COME BACK - T14. They were hidden in
+     conversation view because the table they named was not on screen; it now
+     always is, and a table with no heading above a conversation grid is the
+     harder thing to read. The glass made the same change: s_col_hdr is no
+     longer hidden in js8_tabs_apply(). The dataset flag is still cleared so a
+     page left open across an update does not keep a stale hidden heading. */
   for (const id of ["dec-title", "dec-count", "dec-rx", "dec-order-reset"]) {
     const el = document.getElementById(id);
     if (!el) continue;
-    if (showConv) { el.dataset.js8Hid = "1"; el.style.visibility = "hidden"; }
-    else if (el.dataset.js8Hid) { delete el.dataset.js8Hid; el.style.visibility = ""; }
+    if (el.dataset.js8Hid) delete el.dataset.js8Hid;
+    el.style.visibility = "";
   }
-  for (const [id, want] of [["js8-tab-conv", "conv"], ["js8-tab-stn", "stn"]]) {
-    const b = document.getElementById(id);
-    b.style.opacity = (js8Tab === want) ? "1" : "0.55";
-  }
+  /* The two tab buttons were dimmed here by which was selected. Gone with
+     them - T14. Flush is painted by its own stylesheet rule and never was
+     part of this. */
   /* The composer belongs to the conversation pane: it is where you are reading
      what was said, which is where you answer. */
   document.getElementById("js8-tx").style.display = showConv ? "" : "none";
@@ -6691,6 +6984,40 @@ function js8SubmodePopup(anchor) {
         alert("JS8 submode not changed: " + (r.err || "refused by the device"));
       }
       js8Poll();          /* re-read it either way */
+    });
+    pop.appendChild(b);
+  });
+
+  /* ⭐ THE SECOND HALF OF THE SAME POPUP: which OTHER submode to decode
+     (T132). It lives here rather than in its own control for the reason the
+     comment above gives - the heading is where the speed is chosen, and a
+     second control elsewhere on the page would be a second place to look.
+
+     ⚠ RECEIVE ONLY. It shows who is calling on the other speed; it cannot
+     work them, because TX stays on the submode chosen above. The device never
+     refuses this one - it touches nothing we transmit with - but it will
+     report fits:false for a submode whose slot is longer than the one we
+     capture, which can never be decoded alongside it. */
+  const hdr = document.createElement("div");
+  hdr.className = "submode-pop-hdr";
+  hdr.textContent = "Also decode (RX only)";
+  pop.appendChild(hdr);
+  const ALT_OPTS = [{ v: 255, label: "Off - primary only" }].concat(
+    JS8_SUBMODES.filter(e => e.v !== 0));
+  ALT_OPTS.forEach(e => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = e.label;
+    if (e.v === lastJs8AltSubmode) b.classList.add("active");
+    b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      js8SubmodeClose();
+      const r = await sendCmd({ action: "js8_alt_submode", submode: e.v });
+      if (r && r.ok && r.fits === false && e.v !== 255) {
+        alert("That submode's slot is longer than the one we capture, so it "
+              + "cannot be decoded alongside the current one.");
+      }
+      js8Poll();
     });
     pop.appendChild(b);
   });
@@ -7026,12 +7353,9 @@ document.getElementById("js8-flush").addEventListener("click", async () => {
   js8Poll();
 });
 
-document.getElementById("js8-tab-conv").addEventListener("click", () => {
-  js8Tab = "conv"; js8TabsSync("JS8");
-});
-document.getElementById("js8-tab-stn").addEventListener("click", () => {
-  js8Tab = "stn"; js8TabsSync("JS8");
-});
+/* ⛔ THE TWO TAB CLICK HANDLERS WERE HERE - T14.
+   Nothing switches panes any more. The selected-tab variable went with them,
+   and js8TabsSync() keys on the protocol alone. */
 
 /* Same gesture, and the same command, as clicking a row in the decode list -
    the glass resolves a conversation tap to the Stations row with that callsign
@@ -7406,27 +7730,84 @@ function paintPaused(on) {
 }
 /* Network radio - the QMX plugged into a NAS, reached over TCP through
    tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */
-document.getElementById("relay-link").addEventListener("click", async (e) => {
+document.getElementById("relay-link").addEventListener("click", (e) => {
   e.preventDefault();
-  let cur = { host: "", port: 7355, last_error: "" };
-  try { cur = await (await fetch("/api/relay", { cache: "no-store" })).json(); } catch (_) {}
-  const shown = cur.host ? (cur.port && cur.port !== 7355 ? cur.host + ":" + cur.port : cur.host) : "";
-  const msg = "Radio source: QMX on a NAS (network).\n\n" +
-              "Enter the NAS IP address (optionally IP:port, default port 7355),\n" +
-              "or leave blank to use the QMX plugged into the Tab5's USB port.\n\n" +
-              "Current: " + (cur.host ? shown + "  (" + (cur.connected ? "connected" : (cur.last_error || "not connected")) + ")" : "USB");
-  const v = prompt(msg, shown);
-  if (v === null) return;
-  let host = v.trim(), port = 7355;
-  const m = host.match(/^(.*):(\d{1,5})$/);
-  if (m) { host = m[1].trim(); port = parseInt(m[2], 10); }
-  if (port < 1 || port > 65535) { alert("Bad port"); return; }
+  relayOpen();
+});
+
+const relayEsc = (t) => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function relayRefresh() {
+  const cur = document.getElementById("relay-cur");
+  let d = null;
+  try { d = await (await fetch("/api/relay", { cache: "no-store" })).json(); } catch (_) {}
+  if (!d) { cur.textContent = "Could not read the Tab5."; return; }
+  if (!d.host) {
+    cur.innerHTML = "Now: <b>USB</b> (the QMX on the Tab5's own USB port)" + (d.transport === "usb" ? " - connected" : " - not connected");
+  } else {
+    const where = d.port && d.port !== 7355 ? d.host + ":" + d.port : d.host;
+    cur.innerHTML = "Now: <b>NAS " + relayEsc(where) + "</b> - " +
+      (d.connected ? '<span style="color:#40c060">connected</span>' : relayEsc(d.last_error || "not connected"));
+    document.getElementById("relay-host").value = where;
+  }
+}
+
+async function relaySet(host, port) {
   try {
     const r = await fetch("/api/relay", { method: "POST", body: JSON.stringify({ host, port }) });
     if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
   } catch (err) {
     alert("Setting the radio source failed: " + err);
+    return;
   }
+  document.getElementById("relay-cur").textContent = host ? "Connecting to " + host + " ..." : "Switching to USB ...";
+  setTimeout(relayRefresh, 2500);
+}
+
+async function relayFind() {
+  const btn = document.getElementById("relay-find"), out = document.getElementById("relay-found");
+  btn.disabled = true; btn.textContent = "Searching...";
+  out.textContent = "Asking the network for a NAS running the QMX relay...";
+  let d = null;
+  try {
+    d = await (await fetch("/api/relay/find", { method: "POST" })).json();
+    for (let i = 0; i < 20 && d && d.searching; i++) {
+      await new Promise(r => setTimeout(r, 300));
+      d = await (await fetch("/api/relay/find", { cache: "no-store" })).json();
+    }
+  } catch (_) { d = null; }
+  btn.disabled = false; btn.textContent = "Find NAS";
+  if (!d || d.searching) { out.textContent = "No answer from the Tab5 - try again."; return; }
+  if (d.result < 0) { out.textContent = "The Tab5's WiFi is not connected - cannot search. Type the address instead."; return; }
+  if (!d.found.length) { out.textContent = "No NAS answered. Is the relay running, and on the same network as the Tab5?"; return; }
+  out.innerHTML = "Found: " + d.found.map(f => {
+    const where = f.port && f.port !== 7355 ? f.ip + ":" + f.port : f.ip;
+    return '<button class="btn-neutral relay-pick" data-ip="' + relayEsc(f.ip) + '" data-port="' + (f.port || 7355) +
+           '" title="Use this NAS">Use ' + relayEsc(where) + '</button>';
+  }).join(" ");
+  document.getElementById("relay-host").value = d.found[0].port && d.found[0].port !== 7355
+    ? d.found[0].ip + ":" + d.found[0].port : d.found[0].ip;
+  out.querySelectorAll(".relay-pick").forEach(b => b.addEventListener("click", () =>
+    relaySet(b.dataset.ip, parseInt(b.dataset.port, 10) || 7355)));
+}
+
+function relayOpen() {
+  document.getElementById("relay-modal").style.display = "";
+  document.getElementById("relay-found").textContent = "";
+  relayRefresh();
+}
+function relayClose() { document.getElementById("relay-modal").style.display = "none"; }
+document.getElementById("relay-close").addEventListener("click", relayClose);
+document.getElementById("relay-modal").addEventListener("click", (e) => { if (e.target.id === "relay-modal") relayClose(); });
+document.getElementById("relay-find").addEventListener("click", relayFind);
+document.getElementById("relay-usb").addEventListener("click", () => relaySet("", 7355));
+document.getElementById("relay-use").addEventListener("click", () => {
+  let host = document.getElementById("relay-host").value.trim(), port = 7355;
+  const m = host.match(/^(.*):(\d{1,5})$/);
+  if (m) { host = m[1].trim(); port = parseInt(m[2], 10); }
+  if (!host) { alert("Type the NAS address, or use Find NAS."); return; }
+  if (port < 1 || port > 65535) { alert("Bad port"); return; }
+  relaySet(host, port);
 });
 
 function updateRelayLink(link) {
@@ -7442,23 +7823,26 @@ document.getElementById("pause-btn").addEventListener("click", async () => {
   paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
 });
 
-(function wireScreenToggle() {
-  const a = document.getElementById("screen-toggle-link");
-  if (!a) return;
-  a.addEventListener("click", async (e) => {
-    e.preventDefault();
-    /* CYCLES, because there are three pages now and a two-state toggle could
-       not reach the third: sitting on WSPR it offered "Switch to FT8/FT4" and
-       left no one-step way back to the panadapter. Same order as the Tab5's own
-       swipe cycle, and WSPR is only in the rotation when it is enabled - the
-       browser must be able to SELECT it, not merely reflect it, because for at
-       least one user (Markus DL8MBY) the Tab5 is "only the WiFi bridge and all
-       control is now done from the notebook". */
-    const cycle = wsprEnabled ? ["panadapter", "ft8", "wspr"] : ["panadapter", "ft8"];
-    const here  = cycle.indexOf(lastScreen || "panadapter");
-    const next  = cycle[(here < 0 ? 0 : here + 1) % cycle.length];
-    a.textContent = "Switching...";
-    await sendCmd({ action: "set_screen", screen: next });
+(function wireScreenLinks() {
+  /* ⛔ ONE LINK PER PAGE, NOT A CYCLE. The old single link rotated
+     Panadapter -> FT8 -> WSPR and therefore could not reach FT4 or JS8 at
+     all. The Tab5 got a left drawer with the same five destinations on
+     2026-10-24; this is the same list so the two surfaces cannot drift.
+     Selecting, not merely reflecting, matters here: for at least one user
+     (Markus DL8MBY) the Tab5 is "only the WiFi bridge and all control is now
+     done from the notebook". */
+  document.querySelectorAll("a.screen-to").forEach((a) => {
+    a.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const want = a.dataset.screen;
+      const was  = a.textContent;
+      a.textContent = "Switching...";
+      /* The device refuses a sub-mode it does not implement, and says so in
+         the body - show that rather than leaving the label stuck. */
+      const r = await sendCmd({ action: "set_screen", screen: want });
+      a.textContent = (r && r.ok === false && r.error) ? ("Refused: " + r.error) : was;
+      if (r && r.ok === false) setTimeout(() => { a.textContent = was; }, 4000);
+    });
   });
 })();
 
@@ -7770,8 +8154,9 @@ async function tick() {
       if (typeof s.wf.contrast === "number") wfContrastDb = s.wf.contrast;
       /* blend_pct is 0..100; the renderer's blend is 0..1. */
       if (typeof s.wf.blend_pct === "number") wfFloorBlend = s.wf.blend_pct / 100;
+      if (typeof s.tune_snap_hz === "number") tuneSnapGrid = s.tune_snap_hz;
       if (typeof s.wf.ema_pct === "number" && s.wf.ema_pct > 0)
-        specEmaAlpha = s.wf.ema_pct / 100;    // the operator's smoothing slider
+        specEmaAlpha = s.wf.ema_pct / 100;    // the COEFFICIENT; the slider shows 100 minus it
       if (typeof s.wf.cmap     === "number" && s.wf.cmap !== wfPaletteIdx) {
         wfPaletteIdx = s.wf.cmap;
         wfPalette    = buildWfPalette(wfPaletteIdx);
@@ -7780,9 +8165,16 @@ async function tick() {
     /* FT8 vs FT4 straight from the engine (s.ft8.proto). It used to be
        inferred by looking for "FT4" in the TX status text, which reads FT8
        whenever nothing is transmitting - a guess wearing a fact's clothes. */
+    /* Peak hold, live, for the same reason the waterfall rate is: changing it
+       on the Tab5 drawer must move this screen too, with no reload. */
+    if (typeof s.peak_hold_s === "number") peakHoldS = s.peak_hold_s;
+    if (typeof s.server_mode === "boolean" && s.server_mode !== serverModeOn)
+      setServerModeLabel(s.server_mode);
     if (s.ft8 && s.ft8.proto) lastFtProto = s.ft8.proto;
     if (s.ft8 && typeof s.ft8.js8_submode === "number") {
       lastJs8Submode = s.ft8.js8_submode;
+      if (s.ft8.js8_alt_submode !== undefined)
+        lastJs8AltSubmode = s.ft8.js8_alt_submode;
     }
 
     /* The JS8 tabs follow the DEVICE's mode, not a click on this page: the
@@ -7790,6 +8182,12 @@ async function tick() {
        here, and the pane must not go on offering a conversation that the
        radio is no longer decoding. */
     js8TabsSync(lastFtProto);
+    /* The preset control is a POSITION, not just a jump list (Randy N4OPI,
+       2026-10-27: it sat at "Band..." and never followed the Tab5). It was
+       marked once, when the list was first filled, so any later retune -
+       from the glass, the drawer or the wheel - left it reading the old
+       value or nothing at all. */
+    ft8PresetSync();
     js8TxInit();
     /* ⛔ `s`, NOT `d`. This read `d.ft8` and shipped in v1.17.0. There is no `d`
        in tick() - the parsed status is `const s` - so every poll threw a
@@ -7841,15 +8239,23 @@ async function tick() {
     if (s.spots_v !== undefined) lastSpotsV = s.spots_v;
     lastTimeSrc = s.time_src && s.time_src !== "none" ? s.time_src : "";
     paintPaused(s.paused);
-    {
-      const a = document.getElementById("screen-toggle-link");
-      if (a) {
-        const cyc  = wsprEnabled ? ["panadapter", "ft8", "wspr"] : ["panadapter", "ft8"];
-        const name = { panadapter: "Panadapter", ft8: "FT8/FT4", wspr: "WSPR" };
-        const i    = cyc.indexOf(s.screen || "panadapter");
-        a.textContent = "Switch to " + name[cyc[(i < 0 ? 0 : i + 1) % cyc.length]];
-      }
-    }
+    /* The five Switch-to links are static labels now - nothing to relabel per
+       poll. What the poll still owns is WHERE WE ARE: the current page's link
+       is dimmed, so the menu says what is showing as well as what it can do. */
+    document.querySelectorAll("a.screen-to").forEach((a) => {
+      /* ⚠ `screen` is the PAGE, and FT8/FT4/JS8 are ONE page - it answers
+         "ft8" for all three, and nine other tests in this file depend on that
+         meaning. So the dimming cannot come from it alone, or every one of the
+         three dims whichever of them you are on (Randy N4OPI, 2026-10-27: from
+         FT4 or JS8 "the button to select FT8 is greyed out"). The sub-mode is
+         already here in lastFtProto, so ask the page which of the three it is
+         and dim only that one. */
+      const page = s.screen || "panadapter";
+      const here = page === "ft8"
+                 ? a.dataset.screen === ft8Proto().toLowerCase()
+                 : a.dataset.screen === page;
+      a.style.opacity = here ? "0.45" : "";
+    });
     tuneAntSync(s);
     // #216 (Samuel W7STF): out of band the Tab5 keeps the strip and turns it
     // into a centre-detented coarse tuner, but the browser used to hide it
@@ -7865,6 +8271,7 @@ async function tick() {
        swap the canvases for a notice pointing at the buttons below. */
     const screen = s.screen || "panadapter";
     if (screen !== lastScreen) {
+      const wasScreen = lastScreen;
       lastScreen = screen;
       const isFt8  = (screen === "ft8");
       const isWspr = (screen === "wspr");
@@ -7926,6 +8333,18 @@ async function tick() {
       document.getElementById("freqaxis").style.display      = noPan ? "none" : "";
       document.getElementById("split-handle").style.display  = noPan ? "none" : "";
       document.getElementById("wf-wrap").style.display       = noPan ? "none" : "";
+      /* ⛔ T100 (Sam W7STF), the browser's half: BLANK THE CARPET ON ENTRY.
+         Hiding #wf-wrap for FT8/WSPR leaves the canvas pixels untouched, and
+         no row is written for the whole visit (the device pauses the WS stream
+         in those modes), so coming back puts the picture from before the visit
+         straight back up as though it were live history - under a dial that
+         may have band-hopped meanwhile. The Tab5 clears its own canvas on the
+         same transition (ui.c, "wf clear: entering Panadapter from ...").
+         Both surfaces, one rule, or they disagree about what is on the air. */
+      if (!noPan && (wasScreen === "ft8" || wasScreen === "wspr")) {
+        wfctx.fillStyle = "#000";
+        wfctx.fillRect(0, 0, wfPxW, wfPxH);
+      }
       document.getElementById("bandplan-wrap").style.display = noPan ? "none" : "";  // falls back to the .show-class-controlled default when cleared
       document.getElementById("ft8-notice").style.display    = isFt8 ? "flex" : "none";
       if (isFt8) { ft8LoadPresets(); ft8FillPresets();
@@ -8179,9 +8598,17 @@ async function tick() {
          line of dim status, and the operator's next action writes over it. */
       {
         const wr = s.ft8.web_r || "";
+        /* ⛔ THE DEVICE'S NO-DECODES WARNING LANDS HERE TOO (Randy N4OPI,
+           2026-10-27): it was a Tab5 toast only, so a browser operator saw
+           an empty decode list and nothing saying why. web_r still wins -
+           it answers a click the operator just made - and the warning shows
+           through whenever that line is otherwise idle. */
+        const stuck = s.ft8.stuck_note || "";
+        const txt = wr || stuck;
         const el = document.getElementById("ft8-webr");
-        el.textContent = wr;
-        el.classList.toggle("webr-done", /QSO complete$/.test(wr));
+        el.textContent = txt;
+        el.classList.toggle("webr-done", /QSO complete$/.test(txt));
+        el.classList.toggle("webr-warn", !wr && !!stuck);
       }
       if (typeof s.ft8.cq_parity === "number") renderCqParity(s.ft8.cq_parity, true);
       /* The occupancy strip and the slot clock. Redrawn only when the picture
@@ -8368,11 +8795,13 @@ async function tick() {
       }
     }
 
-    /* Bottom-right: WiFi + IP */
-    const wifi = s.wifi;
+    /* Bottom-right: the link in use - Ethernet (W5500 PoE base) while it has
+       an address, otherwise WiFi - and its IP */
+    const wifi = s.wifi, eth = s.eth;
     document.getElementById("wifi").textContent =
-      (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
-                          : "--";
+      (eth && eth.in_use) ? ("Ethernet " + eth.mbps + " Mbit/s " + eth.ip)
+      : (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
+                            : "--";
 
     /* QSO count + ADIF/QRZ/eQSL buttons - all hidden until there's at least
        one QSO logged (nothing to download/upload otherwise). */
@@ -8569,6 +8998,418 @@ document.addEventListener("visibilitychange", () => {
    ===================================================================== */
 let tuneActive   = false;
 let tuneCursorX  = -1;   // canvas pixel x, -1 = hidden
+/* ⭐ RIGHT-DRAG PANS THE SPECTRUM. The browser had no pan at all: left-drag is
+   drag-to-TUNE (it moves the dial to where you release), and the only way to
+   move the WINDOW was the band-plan strip. The operator asked for the gesture
+   the Tab5 has, on the button that was free.
+   Left is unchanged, so nothing anybody already does changes meaning.
+   ⭐ The passband is DIMMED, never hidden, for the length of the gesture -
+   see specPassbandOpa(). It used to stay at FULL here, on the reasoning that
+   this gesture leaves the dial alone so there is nothing to signal and the
+   passband is the reference you are panning against. The operator asked for
+   the two surfaces to read alike, 2026-10-30, and the Tab5 dims. ⚠ The old
+   wording claimed the browser kept it drawn "unlike the Tab5" - true when
+   written, false once the Tab5 moved from hiding to dimming, and it is what
+   made a draft to Gyula claim parity that did not exist. */
+let specPanActive      = false;
+let specPanStartX      = 0;
+/* ⭐ WHAT THE LAST FRAME SAID, not what the 1 Hz poll said. These are the
+   trailer fields webserver_ws.c samples beside the bins, valid on both FFT
+   paths, and they are the only source the gesture uses. frameViewSpan is 0
+   until a frame carrying them arrives, which is also the test for firmware
+   that does not send them - on that firmware the right-drag simply declines
+   rather than computing a pan from a stale derived number. */
+let frameViewLo        = null;
+let frameViewSpan      = 0;
+let framePanHz         = null;
+/* ⛔⛔ THE PAN GOES OUT ONCE, ON RELEASE. It used to stream during the drag,
+   throttled to 120 ms, so the trace would follow the hand. The operator tried
+   it, 2026-10-30: "this latency is visually disturbing on the web. So I want
+   you to ONLY communicate the drag to the Tab5 when user finishes dragging."
+   He is right, and the reason is structural rather than a matter of tuning the
+   interval: each send is a round trip through the HTTP command, the LVGL queue,
+   dsp_set_zoom() and then the next WebSocket frame, so the picture arrives a
+   good fraction of a second behind the pointer. At that distance a live update
+   does not read as the spectrum following your hand, it reads as the spectrum
+   lagging it, which is worse than no movement at all.
+   So the drag is now PURELY LOCAL while the button is down - the canvases are
+   translated under the pointer, which costs nothing and is exactly in step with
+   it - and one set_pan goes out when the button comes up. Same shape as the
+   Tab5's own pan: stroll_apply_offset() slides the canvas live, and the real
+   pan is applied on release. */
+/* ⛔ NEGATIVE: THE CONTENT FOLLOWS THE HAND. Drag right and you pull the
+   spectrum right with you, so what comes into view is LOWER in frequency -
+   the way every map and document drags. The first cut had this positive,
+   copied from the band-plan strip, where positive is correct for the opposite
+   reason: there you are dragging the window MARKER along the band, not the
+   picture, so it travels with the hand and the frequency goes up.
+   Operator, 2026-10-30: "now you just need to drag in the right direction"
+   and, when asked: "Tab5 do it in the right direction - its only the web that
+   moves opposite". So the TAB5 IS THE REFERENCE for this gesture and is
+   correct as it stands - do not change ui.c to match this file.
+   ⚠ I nearly did. Reading stroll_apply_offset() I concluded the Tab5 had the
+   same sign as the broken web version and said so; the glass says otherwise.
+   The two sites derive their offsets differently and the code comparison was
+   not a reliable way to answer it. The feel of the gesture is settled by
+   looking at it, not by matching two expressions. */
+/* ⛔ specPanHzPerPx() AND specPanCurrentHz() ARE GONE, deliberately.
+   They derived the span from lastView (stale by up to a second above zoom x1,
+   because the header carries no viewport there) and the pan from
+   lastView.lo + span/2 - lastFreqHz (snapped to a whole Tab5 pixel by
+   view_lo_snapped, and racing a second poll for the dial). Every drag sent a
+   pan built from those two errors, so the view landed slightly away from where
+   the hand left it and the preview had to absorb the difference as a visible
+   step. The frame now carries span, lo and the pan itself - frameViewSpan,
+   frameViewLo, framePanHz - so there is one source and nothing to derive.
+   Do not reintroduce a helper that computes either of them from lastView. */
+/* ⛔ set_pan, NOT view_center. view_center is the band-plan KNOB and is allowed
+   to retune - it rounds the dial to whole kHz and drags the radio along. Built
+   on it first, and the operator caught both symptoms at once, 2026-10-30:
+   "dragging on the web does not move the BW on the screen - but it kind of
+   jitters but stay - however the Freq changes! This should of course stay put
+   during dragging."
+   One cause for both: the dial moved with the view, so the passband held its
+   screen position instead of sliding across, and the whole-kHz rounding was the
+   jitter. set_pan moves the window inside what the radio already hears and
+   never touches the dial. */
+function specPanTo(panHz) {
+  sendCmd({ action: "set_pan", hz: Math.round(panHz) });
+}
+/* ⛔⛔ THE LOCAL PREVIEW IS OFF. It translated both canvases under the pointer
+   so the drag had feedback with no round trip, and the operator liked that part
+   - "it moves super nicely on the web". What could never be made to work was
+   ENDING it: the release flickered, and SIX attempts at the moment to drop it
+   all failed in front of him.
+
+   The last one found the real reason the first five changed nothing - the
+   settle check was never executed above zoom x1 - and the flicker survived even
+   that. What is left is a mapping question I could not measure: at zoom > 1 the
+   frame carries no viewport, so the browser draws the new bins on its own axis
+   and I have no way to say WHEN the drawn content moves relative to the
+   translate. The instrument for it was a cross-correlation of the raw bins
+   across the release; the band was noise and the answer came back incoherent
+   (-141, -161, -196, -150, +200 ...).
+
+   So: no translate. The picture holds still during the drag and moves ONCE,
+   when the device's own frames arrive. One movement cannot flicker. The
+   operator's original requirement is untouched - nothing is sent until the
+   button comes up.
+
+   ⭐ IT IS BACK ON, and not by reasoning - the device now TELLS us. Turning it
+   off was not a fix either: "the whole idea of dragging is to see real time how
+   much you dragged - with this build i only see the hand-grip mouse moving"
+   (operator). But that build established the one fact that was missing: with no
+   translate there is NO jump, so the device's arrival is a single clean step
+   and the only thing ever wrong was WHEN we dropped the preview.
+   That moment turned out not to exist: the drawn trace does not move on one
+   frame, so no choice of instant could cancel it. The translate is now a
+   RESIDUAL recomputed from every frame's own viewport - see
+   specPanTrackFrame(). */
+/* ⛔⛔ THE PAGE WRITES INTO THE DEVICE'S SERIAL CAPTURE.
+   Operator, 2026-10-30: "I am NOT your instrument! Then hurry up implementing
+   web screen logs to the capture so that you can see exactly what happens."
+   Every other subsystem logs there; the browser did not, so the only way to
+   learn what the page had done was to ask him to watch it eight times.
+   Fire-and-forget: a logger that can fail or block its caller is one people
+   stop calling. */
+function weblog(msg) {
+  try {
+    fetch("/api/weblog", { method: "POST", body: String(msg) }).catch(() => {});
+  } catch (e) { /* never let logging break the page */ }
+}
+/* The per-frame pan trace is heavy (a cross-correlation per frame), so it is
+   OFF unless the page is opened with #pandebug. The release/clear lines below
+   are always logged - they are two lines per gesture and they are what makes a
+   report answerable without asking anybody. */
+const PAN_DEBUG = location.hash.indexOf("pandebug") >= 0;
+/* Where the drawn trace has moved to, in BINS, against a snapshot. Correlates
+   specSmooth - the smoothed trace actually drawn - and NOT the raw frame: raw
+   bins on a quiet band are a fresh noise realisation every frame and correlate
+   with nothing.
+
+   ⛔⛔ THIS WAS A BROKEN INSTRUMENT AND IT PRODUCED CONFIDENT WRONG NUMBERS
+   FOR A WHOLE SESSION. It maximised an UN-NORMALISED dot product, sum(ref*cur),
+   over a trace whose values are all positive with a large mean (measured on
+   bench1: range 0.1 to 104.5, mean 79.2). For such a signal the dot product is
+   dominated by the mean level and its argmax has nothing to do with the shift.
+   MEASURED by shifting a live trace by a known K and asking it what it saw:
+
+       K =    0  -40  -80  -152  +60
+       old  -93 -133 -173  -245   -33      <- K minus 93, every time
+       new    0  -40  -80  -152  +60   (r = 1.000)
+
+   A constant -93 bin offset, about -92 px. So every content/net figure this
+   ever printed was wrong by that much, including the "the content RAMPS over
+   three frames - 189, 168, 134" reading that the EMA re-seed was built on.
+   The re-seed is still right - applyDeviceEma() plainly does blend the new
+   window into the old, which is readable in the code - but the ramp was never
+   measured. Nothing from the old instrument should be quoted.
+
+   Now: zero-mean, variance-normalised (Pearson) over the overlap, which is
+   scale and offset invariant and recovers a known shift exactly. It returns r
+   as well as the lag, because r is what says whether the lag means anything -
+   on a quiet band it falls to ~0.4 and the argmax can latch onto a false peak.
+   ⚠ The search is +/-300 bins. A gesture wider than that is UNMEASURABLE by
+   correlation, and reads as a false peak rather than as a refusal. That is why
+   the content figure logged below is no longer taken from here. */
+function panCorrShift(ref, cur) {
+  let best = 0, bs = -Infinity;
+  for (let sft = -300; sft <= 300; sft += 1) {
+    let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    for (let i = 150; i < 874; i += 1) {
+      const j = i + sft;
+      if (j < 0 || j >= SPEC_W) continue;
+      const a = ref[i], b = cur[j];
+      n++; sx += a; sy += b; sxx += a * a; syy += b * b; sxy += a * b;
+    }
+    if (n < 200) continue;
+    const num = sxy - sx * sy / n;
+    const den = Math.sqrt((sxx - sx * sx / n) * (syy - sy * sy / n));
+    if (!(den > 0)) continue;
+    const r = num / den;
+    if (r > bs) { bs = r; best = sft; }
+  }
+  return { bins: best, r: bs };
+}
+let panRef = null, panRefAt = 0, panRefTx = 0;
+/* The viewport the reference trace was drawn under. This is what makes the
+   content figure exact instead of correlated - see panDebugFrame(). */
+let panRefLo = null, panRefSpan = 0;
+/* The view-sequence trailer byte, last seen. Its only job now is to re-seed
+   the spectrum EMA when the view moves - the preview no longer depends on it.
+   null until a frame carrying it arrives.
+   DECLARED HERE DELIBERATELY: it lived inside the hold-and-clear block that
+   the residual tracker replaced, and removing that block took the declaration
+   with it. The frame handler then threw a ReferenceError on EVERY frame, which
+   looked exactly like the trailer not being sent - the device was sending a
+   correct 1063-byte frame the whole time. Caught by evaluating the page state
+   in a browser, not by reading the diff. */
+let lastViewSeq = null;
+
+const SPEC_PAN_PREVIEW_ENABLED = true;
+function specPanPreview(px) {
+  if (!SPEC_PAN_PREVIEW_ENABLED) return;
+  const t = px ? ("translateX(" + Math.round(px) + "px)") : "";
+  for (const id of ["spec", "waterfall"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    /* ⛔ KILL ANY EASE IN PROGRESS. specPanEaseOut() leaves a CSS transition on
+       these elements for 220 ms; a drag that starts inside that window would
+       otherwise animate every frame of the preview 180 ms behind the pointer. */
+    if (el.style.transition) el.style.transition = "";
+    el.style.transform = t;
+  }
+}
+
+/* ⛔⛔ THE PREVIEW IS HELD UNTIL THE DEVICE'S FIRST FRAME ON THE NEW WINDOW.
+   Dropping it at mouseup is the obvious thing and it is WRONG: the device has
+   not panned yet, so for the ~100-200 ms until its next frame the canvas snaps
+   back to where the drag started and then jumps forward again when the frame
+   lands. Operator, 2026-10-30: "when i then release the right mouse button the
+   screen immediately goes back to the original position - and then jumps back
+   to the new again ... please do not show this jump back and forth."
+   So the translate stays exactly as the hand left it, and is cleared on the
+   first frame whose viewport actually differs from the one at release - at
+   which point the pixels underneath have already moved and clearing it is
+   invisible. Waiting for a CHANGE rather than for a predicted value is
+   deliberate: the device quantises the pan to whole FFT bins (46.875 Hz), so a
+   predicted lo would need a tolerance, and a tolerance that is slightly wrong
+   reintroduces the jump in the cases nobody tests. */
+/* ⛔⛔ A SEPARATE FLAG, NOT "lo === null MEANS NOT HOLDING". That overloading
+   was a real defect and it is exactly what the operator hit: the release passes
+   lastView.lo, and when there is no viewport yet that is null - which the
+   settle check read as "nothing is held", so it returned early and THE
+   TRANSFORM WAS NEVER CLEARED. The canvases stayed translated for good, which
+   reads as "dragging Tab5 does not update the web anymore" (operator,
+   2026-10-30): the page was still drawing, just permanently shifted.
+   A sentinel that is also a legal value is a bug waiting for the one input
+   nobody tries. The flag says whether we are holding; the lo is only what we
+   compare against, and a null lo simply means every frame counts as a change. */
+/* -- THE PREVIEW IS NO LONGER CLEARED AT A MOMENT. IT IS DERIVED.
+   Eight attempts tried to pick the instant to drop the translate. Keep the
+   list, because every one of them is a thing that cannot work:
+
+     - at mouseup: the device has not panned yet, so the canvas snaps back and
+       jumps forward when the frame lands. "please do not show this jump back
+       and forth" (operator, 2026-10-30).
+     - on the first frame whose viewport lo DIFFERS: lo is not static between
+       frames, so it fired on a move that was not ours.
+     - on the first frame matching a PREDICTED lo: needs a tolerance, and the
+       pan that lands on its clamp never arrives at all.
+     - on three quiet frames: the device is not finished when the first new
+       frame arrives - a 74 ms waterfall reframe follows it - so this held the
+       offset applied TWICE for ~300 ms and then snapped.
+     - on the view-sequence trailer byte: correct about WHEN the view moved,
+       and still visibly wrong, because the drawn trace does not move on one
+       frame. applyDeviceEma() blends the new window into the old sample by
+       sample, so the content RAMPS over about three frames - measured 189,
+       168, 134 px. A RAMP CANNOT BE CANCELLED BY A BINARY TRANSFORM. No
+       choice of instant could ever have worked, which is what eight attempts
+       were up against. (The ramp itself is now gone - specEmaReseed re-seeds
+       the EMA on any view move - but the lesson stands.)
+
+   THE FIX: THE TRANSLATE IS A RESIDUAL, RECOMPUTED EVERY FRAME.
+   The frame now carries the live viewport on both FFT paths (see
+   WS_TRAILER_LEN in webserver_ws.c). So we know where the view was asked to
+   go, and every frame says where it actually is:
+
+       tx = (frameLo - wantLo) * width / span
+
+   At release frameLo is still the old lo and that evaluates to exactly the
+   drag distance - the picture holds where the hand left it. When the device
+   arrives frameLo IS wantLo and it evaluates to exactly zero. Anything in
+   between - a multi-stage move, a reframe, a pan that is still travelling -
+   gives the right partial offset instead of a guess. There is no instant to
+   choose and no tolerance to get wrong, because the sum of content and
+   translate is held constant by arithmetic.
+
+   Two cases never reach zero and both are ended by going quiet rather than by
+   a timeout at the wrong layer: a pan that lands on its CLAMP, and a drag of a
+   few pixels that quantises to the same FFT bin (46.875 Hz). Those ease out
+   over 180 ms - a movement the preview promised and the device cannot deliver
+   has to go somewhere, and a slide is not a jump. */
+let specPanTrack   = false;   /* a release is being tracked */
+let specPanWantLo  = 0;       /* where we asked the view to go, absolute Hz */
+let specPanTrackW  = 0;       /* canvas CSS width at release - tx is in CSS px */
+let specPanTrackSp = 0;       /* span at release; a zoom change abandons the track */
+let specPanQuiet   = 0;       /* consecutive unchanged frames AFTER the first move */
+let specPanPrevLo  = null;
+/* ⛔⛔ QUIET MEANS FINISHED, NOT NOT-STARTED. Without this flag the quiet
+   counter began at the release, when the device has not panned yet - so three
+   frames of "the device has not moved" read as "the device has stopped" and
+   the preview eased out BEFORE the pan arrived. MEASURED on bench1, five
+   synthetic gestures: 150, -150 and 8 px landed inside 150 ms and were fine,
+   but -320 px and -1200 px took over 300 ms, eased at +231 and +263 ms, and
+   the device's own move then landed as a bare step of -319 and -265 px. Two
+   out of five, and both of them the big drags - the ones a human makes.
+   So nothing is counted until lo has changed at least once. A pan that never
+   moves the view at all is ended by the 2 s backstop instead. */
+let specPanMoved   = false;
+let specPanUntil   = 0;       /* backstop only - never the mechanism */
+
+function specPanEaseOut() {
+  for (const id of ["spec", "waterfall"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.style.transition = "transform 180ms linear";
+    el.style.transform  = "";
+  }
+  setTimeout(() => {
+    for (const id of ["spec", "waterfall"]) {
+      const el = document.getElementById(id);
+      if (el) el.style.transition = "";
+    }
+  }, 220);
+}
+function specPanTrackEnd(ease) {
+  if (specPanTrack && PAN_DEBUG) {
+    weblog("PAN end    +" + (Date.now() - panRefAt) + "ms ease=" + (ease ? 1 : 0) +
+           " quiet=" + specPanQuiet + " moved=" + (specPanMoved ? 1 : 0));
+  }
+  specPanTrack  = false;
+  specPanPrevLo = null;
+  specPanQuiet  = 0;
+  specPanMoved  = false;
+  if (ease) specPanEaseOut(); else specPanPreview(0);
+}
+/* Begin tracking. loAtRelease and span come from the FRAME, not from the 1 Hz
+   status poll: above zoom x1 the poll was the page's only viewport source and
+   it is up to a second stale, so the drag was measured against a view that had
+   already moved. */
+function specPanTrackBegin(loAtRelease, span, width, dxPx) {
+  if (loAtRelease === null || !(span > 0) || !(width > 0)) {
+    specPanPreview(0);
+    return;
+  }
+  specPanTrack   = true;
+  specPanTrackW  = width;
+  specPanTrackSp = span;
+  specPanPrevLo  = loAtRelease;
+  specPanQuiet   = 0;
+  specPanMoved   = false;
+  /* hzPerPx is -span/width (the content follows the hand), so the view's left
+     edge moves the other way from the pointer. */
+  specPanWantLo  = loAtRelease - dxPx * span / width;
+  /* Generous, and a backstop for a device that stops sending frames - not the
+     thing that ends a normal gesture. */
+  specPanUntil   = Date.now() + 2000;
+}
+
+/* Called from the WS frame handler once the frame's own viewport is known, and
+   BEFORE the draw, so the content step and the translate change land in one
+   paint. */
+/* ⭐ THE INSTRUMENT, AND IT IS CALLED AFTER THE DRAW ON PURPOSE.
+   It used to run at the top of specPanTrackFrame(), which is before the trace
+   is drawn and before the translate is updated - so every line paired THIS
+   frame's lo with the PREVIOUS frame's content and the pre-update translate,
+   and the one-frame skew looked exactly like a step. Two artefacts in one line.
+
+   contentPx is now ARITHMETIC, not correlation: a signal at a fixed frequency
+   sits at x = (f - lo)/span*W, so its offset since the reference frame is
+   (refLo - lo)/span*W. Exact, valid at any distance, and valid on the zoom path
+   where correlation has nothing to lock to. The correlator is kept beside it as
+   an independent check that the DRAWN trace really follows lo - measured on
+   bench1 over 20 consecutive frames, a 3544 Hz move predicted 149.8 px and the
+   correlation found 148.6 px - and r says whether to believe it.
+
+   net = content + tx is the offset of a signal on the glass relative to the
+   release. It is the ONE number that matters: it must stay constant until the
+   gesture ends, and a step in it IS the jump. */
+function panDebugFrame(lo, span) {
+  if (!PAN_DEBUG || panRefLo === null || !(span > 0)) return;
+  if ((Date.now() - panRefAt) > 2500) return;
+  const el   = document.getElementById("spec");
+  if (!el) return;
+  const cssW = el.getBoundingClientRect().width;
+  const contentPx = (panRefLo - lo) / span * cssW;
+  const m   = /translateX\((-?[\d.]+)px\)/.exec(el.style.transform || "");
+  const txPx = m ? +m[1] : 0;
+  let corr = "";
+  if (panRef && specSmooth && span === panRefSpan) {
+    const c = panCorrShift(panRef, specSmooth);
+    corr = " corr=" + (c.bins * (cssW / SPEC_W)).toFixed(0) + "px r=" + c.r.toFixed(2);
+  }
+  weblog("PAN frame  +" + (Date.now() - panRefAt) + "ms seq=" + lastViewSeq +
+         " lo=" + lo + " want=" + Math.round(specPanWantLo) +
+         " content=" + contentPx.toFixed(0) + "px tx=" + txPx.toFixed(0) +
+         "px net=" + (contentPx + txPx).toFixed(0) + "px trk=" +
+         (specPanTrack ? 1 : 0) + corr);
+}
+function specPanTrackFrame(lo, span) {
+  if (!specPanTrack) return;
+  if (!(span > 0)) return;                       /* nothing to measure against */
+  if (span !== specPanTrackSp) { specPanTrackEnd(false); return; }  /* zoom changed */
+
+  const tx = (lo - specPanWantLo) * specPanTrackW / span;
+  specPanPreview(tx);
+
+  /* ⚠ ARRIVAL IS NOT EXACT AND MUST NOT BE TESTED AS IF IT WERE.
+     view_lo_snapped() rounds lo to a whole Tab5 pixel - span/1280 Hz - so the
+     reachable lo values are a grid and wantLo generally sits between two of
+     them. The tolerance is that grid expressed in this canvas's CSS pixels,
+     plus one: anything tighter never reaches "arrived" and the gesture ends on
+     the quiet test instead, with a needless 180 ms slide. */
+  if (Math.abs(tx) < 1 + specPanTrackW / 1280) { specPanTrackEnd(false); return; }
+
+  /* Quiet means the device has stopped moving, whatever it was doing and
+     however many stages it took. Only then is the residual real - a clamp, or
+     a drag that quantised away - and only then does it ease out.
+     ⛔ AFTER THE FIRST MOVE ONLY - see specPanMoved. */
+  if (lo !== specPanPrevLo) { specPanMoved = true; specPanQuiet = 0; }
+  else if (specPanMoved)    { specPanQuiet++; }
+  specPanPrevLo = lo;
+  if ((specPanMoved && specPanQuiet >= 3) || Date.now() > specPanUntil) {
+    specPanTrackEnd(true);
+  }
+}
+/* AND A TIMER AS WELL AS THE FRAME CHECK. The frame check only runs when a
+   frame ARRIVES: if the WebSocket drops at the wrong moment, or the page is in
+   a background tab, nothing ends the track and the canvases stay shifted.
+   The one thing this must never do is leave the display lying about where it
+   is pointing. */
+setInterval(() => {
+  if (specPanTrack && Date.now() > specPanUntil) specPanTrackEnd(true);
+}, 500);
 let tuneOnSpec   = true; // which canvas is being dragged
 
 /* The tuning grid, mode by mode. ONE copy: the cursor preview and the commit both
@@ -8584,9 +9425,19 @@ function tuneSnapHz() {
      not use. */
   if (ritArmed) return 10;
   const m = (lastMode || "").toUpperCase();
-  if (m.indexOf("USB") >= 0 || m.indexOf("LSB") >= 0)  return 250;
-  if (m.indexOf("DIGI") >= 0 || m.indexOf("FT") >= 0 ||
-      m.indexOf("RTTY") >= 0)                          return 500;
+  /* ⛔ THE SETTING, NOT A CONSTANT. "Tune snap (SSB & digital)" moved the
+     Tab5 and did nothing here: this returned a hardcoded 250 for SSB and
+     never read tune_snap_hz at all, so every mouse tune in the browser used
+     a grid the operator had not chosen. He found it with the wheel - "on web
+     it is always 250". tuneSnapGrid mirrors /api/status, so a change on
+     either surface moves both. 0 means "tune exactly where I tap", a 1 Hz
+     grid. Scoped to SSB and digital by the setting's own label; CW stays 10
+     and AM/FM 1000, as the Tab5 does. */
+  if (m.indexOf("USB") >= 0 || m.indexOf("LSB") >= 0 ||
+      m.indexOf("DIGI") >= 0 || m.indexOf("FT") >= 0 ||
+      m.indexOf("RTTY") >= 0) {
+    return (tuneSnapGrid === null) ? 250 : (tuneSnapGrid > 0 ? tuneSnapGrid : 1);
+  }
   if (m.indexOf("AM") >= 0 || m.indexOf("FM") >= 0)    return 1000;
   if (m.indexOf("CW") >= 0)                            return 10;
   return 10;
@@ -8846,6 +9697,30 @@ function drawSpots(ctx, W, H) {
    hover preview still explains the redirection, because both go through here. */
 const SPOT_HIT_HALF_PX = 10;   /* ~400 Hz at zoom x1 */
 
+/* ⭐ TAP THE ARROW TO COME BACK TO THE DIAL. Operator, 2026-10-30: "It could
+   also be clickable so that it would move the bw (and marker) to the middle of
+   the screen if clicked (then no need to drag again to look for it)."
+   Checked BEFORE spotHitTest and before tap-to-tune, because a click on the
+   arrow is navigation, not a tune - and the arrow sits at mid-height where the
+   trace is, so without this it would retune to whatever column it covers. */
+function vfoArrowHit(clientX, clientY, rect) {
+  if (!vfoArrowBox) return false;
+  const cx = (clientX - rect.left) / rect.width  * specPxW;
+  const cy = (clientY - rect.top)  / rect.height * specPxH;
+  const b = vfoArrowBox;
+  return cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h;
+}
+/* ⛔ DERIVED FROM THE FRAME, AND FROM THE SAME EXPRESSION THAT DRAWS THE
+   MARKER. freqToPixelX puts the dial at (dial - lo)/span*W, so it lands on the
+   middle exactly when lo is dial - span/2; lo moves one-for-one with the pan,
+   and the frame carries both the live lo and the exact pan. So the click
+   cannot land the marker somewhere the arrow did not promise, and it needs
+   neither the 1 Hz status poll nor a second guess at the IF residual. */
+function vfoArrowRecentre() {
+  if (!(frameViewSpan > 0) || framePanHz === null || !lastFreqHz) return;
+  const desiredLo = lastFreqHz - frameViewSpan / 2;
+  specPanTo(framePanHz + (desiredLo - frameViewLo));
+}
 function spotHitTest(clientX, clientY, rect) {
   const cx = (clientX - rect.left) / rect.width  * specPxW;
   const cy = (clientY - rect.top)  / rect.height * specPxH;
@@ -8964,8 +9839,19 @@ function overlayTuneCursor() {
   const snap    = tuneSnapHz();
   const freqHz  = Math.round((lastFreqHz + offsetHz) / snap) * snap;
 
-  drawTuneCursor(sctx,    tuneCursorX,                   specPxW, specPxH, freqHz);
-  drawTuneCursor(wfcurctx, tuneCursorX * wfPxW / specPxW, wfPxW,  wfPxH,  freqHz);
+  /* ⛔ THE LINE SNAPS TOO, NOT JUST THE LABEL. The number was rounded here and
+     then the line was drawn at tuneCursorX - the raw mouse pixel - so the
+     readout jumped in 250 Hz steps while the cyan dash glided smoothly past
+     it. The Tab5's cursor moves in steps, and the operator noticed the
+     browser's did not. Worse than cosmetic: with the two disagreeing, the
+     line pointed at a frequency the click would not use.
+
+     Project the SNAPPED frequency back through the same mapping that
+     produced offsetHz, so the dash sits exactly where the click will land. */
+  const snapX = (((freqHz - lastFreqHz - panHz) / spanHz) + 0.5) * specPxW;
+
+  drawTuneCursor(sctx,    snapX,                   specPxW, specPxH, freqHz);
+  drawTuneCursor(wfcurctx, snapX * wfPxW / specPxW, wfPxW,  wfPxH,  freqHz);
 }
 
 function handleTuneMove(clientX, rect) {
@@ -9039,24 +9925,66 @@ function updateActPill() {
   const running = lastAct && lastAct.type && lastAct.ref;
   pill.style.display = running ? "" : "none";
   if (!running) return;
-  document.getElementById('act-kind').textContent = lastAct.type === 2 ? "SOTA" : "POTA";
+  /* ⛔ THE DEVICE'S OWN WORD. This translated the id here - "type === 2 ?
+     SOTA : POTA" - so every programme beyond those two would have been
+     labelled POTA in the browser while the Tab5 showed the truth. */
+  document.getElementById('act-kind').textContent = lastAct.sig || "";
+  /* ⭐ THE TARGET, NOT JUST THE COUNT (T109 parity). "7 Q" does not say whether
+     you may pack up; "7/10" does, which is why the Tab5's activation button
+     shows the target too. /api/status has carried `need` since part 1 and
+     nothing read it. Falls back to the bare count on older firmware, where
+     `need` is absent - never prints "7/0". */
   document.getElementById('act-ref').textContent =
-      lastAct.ref + (lastAct.qsos != null ? "  " + lastAct.qsos + " Q" : "");
+      lastAct.ref + (lastAct.qsos != null
+        ? "  " + lastAct.qsos + (lastAct.need ? "/" + lastAct.need : " Q")
+        : "");
+}
+
+function actFillTypes() {
+  const sel = document.getElementById('act-type');
+  const list = window.__actTypes;
+  if (!sel || !list || sel.options.length === list.length) return;
+  const keep = sel.value;
+  sel.innerHTML = "";
+  for (const a of list) {
+    const o = document.createElement("option");
+    o.value = String(a.id);
+    o.textContent = a.sig;
+    o.dataset.hint = a.hint || "";
+    sel.appendChild(o);
+  }
+  if (keep) sel.value = keep;
+}
+
+/* The placeholder is the chosen programme's own reference format - one
+   example for seven schemes would be an example of none of them. */
+function actSyncHint() {
+  const sel = document.getElementById('act-type');
+  const inp = document.getElementById('act-ref-in');
+  const o = sel && sel.selectedOptions && sel.selectedOptions[0];
+  if (inp && o) inp.placeholder = o.dataset.hint || "";
 }
 
 function actOpen() {
   const running = lastAct && lastAct.type && lastAct.ref;
+  actFillTypes();
   document.getElementById('act-type').value = String(running ? lastAct.type : 1);
+  actSyncHint();
   document.getElementById('act-ref-in').value = running ? lastAct.ref : "";
   document.getElementById('act-err').textContent = "";
   document.getElementById('act-state').textContent = running
-      ? "running: " + (lastAct.type === 2 ? "SOTA " : "POTA ") + lastAct.ref +
-        (lastAct.qsos != null ? " - " + lastAct.qsos + " logged" : "")
+      ? "running: " + (lastAct.sig || "") + " " + lastAct.ref +
+        (lastAct.qsos != null ? " - " + lastAct.qsos + " logged"
+           + (lastAct.need ? " of " + lastAct.need : "") : "")
       : "not running";
   document.getElementById('act-stop').style.display = running ? "" : "none";
   document.getElementById('act-go').textContent = running ? "Change reference" : "Start";
   document.getElementById('act-modal').style.display = "block";
 }
+
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'act-type') actSyncHint();
+});
 
 async function actSend(type, ref) {
   const r = await fetch("/api/cmd", {
@@ -9099,6 +10027,247 @@ async function actSend(type, ref) {
   if (menu) menu.addEventListener('click', (e) => { e.preventDefault(); actOpen(); });
 })();
 
+/* ---- Log a contact (T108 parity) -----------------------------------------
+   Mirrors ui/manual_log_modal.c rule for rule. The device does the work in
+   /api/cmd log_qso; this is only the three fields it cannot know. */
+
+/* "599" for CW, "59" for anything else - the QMX's mode strings are "CW",
+   "CW-R", "USB", "LSB", "DiGi" and "AM", and only the CW pair take the
+   readability-strength-tone triplet. Same test as default_rst() on the Tab5. */
+function logDefaultRst() {
+  const m = (lastMode || "").toUpperCase();
+  return m.startsWith("C") ? "599" : "59";
+}
+
+function logSyncState() {
+  const running = lastAct && lastAct.type && lastAct.ref;
+  document.getElementById('log-state').textContent = running
+      ? (lastAct.sig || "") + " " + lastAct.ref + " - " + (lastAct.qsos || 0)
+        + (lastAct.need ? "/" + lastAct.need : " logged")
+      : "no activation running";
+}
+
+function logOpen() {
+  document.getElementById('log-call').value = "";
+  /* PRE-FILLED FROM THE MODE. A CW window offering 59 would be re-typed for
+     every contact; clearing one logs no report rather than a wrong one. */
+  document.getElementById('log-rst-s').value = logDefaultRst();
+  /* T120 - the RECEIVED report's S digit is measured; R and T are not, and
+     the SENT report is never touched. Same rule as measured_rst_rcvd() on the
+     Tab5: no reading in the hold falls back to the mode default rather than
+     offering S0, because absence of a measurement is not a weak signal. */
+  {
+    const u = logSmeterRecentPeak();
+    const cw = (lastMode || "").toUpperCase().startsWith("C");
+    document.getElementById('log-rst-r').value =
+        (u === null) ? logDefaultRst() : (cw ? "5" + u + "9" : "5" + u);
+  }
+  document.getElementById('log-err').textContent = "";
+  document.getElementById('log-ok').textContent = "";
+  logSyncState();
+  document.getElementById('log-modal').style.display = "block";
+  document.getElementById('log-call').focus();
+}
+
+async function logSend() {
+  const call = document.getElementById('log-call').value.trim().toUpperCase();
+  const err  = document.getElementById('log-err');
+  const ok   = document.getElementById('log-ok');
+  err.textContent = "";
+  /* The device refuses an empty callsign and a missing CAT with its own
+     wording - no client-side rule here that could disagree with it. */
+  const r = await fetch("/api/cmd", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action: "log_qso", call: call,
+                          rst_sent: document.getElementById('log-rst-s').value.trim(),
+                          rst_rcvd: document.getElementById('log-rst-r').value.trim()})
+  });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || j.ok === false) {
+    err.textContent = j.error || ("HTTP " + r.status);
+    ok.textContent = "";
+    return;
+  }
+  /* IT STAYS OPEN. A run of CW contacts is not one dialog at a time: the
+     record is written, the callsign is cleared, the reports are KEPT, and the
+     cursor goes back where the next call is typed. */
+  ok.textContent = "Logged " + (j.call || call)
+      + (j.act_qsos ? "  -  " + j.act_qsos + (j.act_need ? "/" + j.act_need : "")
+                    : "");
+  document.getElementById('log-call').value = "";
+  document.getElementById('log-call').focus();
+  /* The answer already carries the new count, but the pill and everything else
+     reading /api/status should not wait a second to agree with it. */
+  tick();
+}
+
+(function wireLogWindow() {
+  const g = document.getElementById('log-go');
+  if (!g) return;
+  g.addEventListener('click', () => logSend());
+  const close = () => document.getElementById('log-modal').style.display = "none";
+  document.getElementById('log-close').addEventListener('click', close);
+  document.getElementById('log-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'log-modal') close();
+  });
+  /* Enter logs from any of the three fields - the same key the Tab5 window's
+     keyboard action does. */
+  for (const id of ['log-call', 'log-rst-s', 'log-rst-r']) {
+    document.getElementById(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); logSend(); }
+    });
+  }
+  const menu = document.getElementById('log-btn');
+  if (menu) menu.addEventListener('click', (e) => { e.preventDefault(); logOpen(); });
+})();
+
+/* ---- Scheduled events (T116 parity) --------------------------------------
+   Mirrors ui/sched_modal.c. The list, the sort and the source names come from
+   the device; this draws them and computes the "in 2h 10m" column against the
+   DEVICE's clock, which /api/sched sends as `now` - a browser clock minutes
+   out would put rows in NOW that the Tab5 still shows as upcoming. */
+
+let schedFilter = 0;          /* 0 all, 1 contests, 2 ?OTA - same ids as the pane */
+let schedData   = null;       /* the last good answer; a failed poll keeps it */
+let schedTimer  = null;
+
+/* Same thresholds as fmt_in() in sched_modal.c. */
+function schedFmtIn(secs) {
+  if (secs < 60)   return "now";
+  if (secs < 3600) return Math.floor(secs / 60) + "m";
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  return (h >= 10 || m === 0) ? h + "h" : h + "h " + m + "m";
+}
+
+function schedStyleFilters() {
+  for (const b of document.querySelectorAll('.sched-filt'))
+    b.classList.toggle('active', parseInt(b.dataset.filt, 10) === schedFilter);
+}
+
+function schedRender() {
+  schedStyleFilters();
+  const tb    = document.getElementById('sched-rows');
+  const empty = document.getElementById('sched-empty');
+  const age   = document.getElementById('sched-age');
+  if (!tb) return;
+  const d = schedData;
+
+  /* Three different facts, and the operator can act on only one of them -
+     so say which it is rather than printing "nothing". */
+  if (age) {
+    if (!d)                 age.textContent = "";
+    else if (d.busy)        age.textContent = "checking...";
+    else if (d.age_s < 0)   age.textContent = "not fetched yet";
+    else if (d.age_s < 90)  age.textContent = "updated just now";
+    else                    age.textContent = "updated " + Math.floor(d.age_s / 60) + " min ago";
+  }
+
+  tb.innerHTML = "";
+  let rows = 0;
+  const now = d ? d.now : Math.floor(Date.now() / 1000);
+  for (const ev of (d && d.events) || []) {
+    if (schedFilter === 1 && !ev.contest) continue;
+    if (schedFilter === 2 &&  ev.contest) continue;
+    const running = ev.start && ev.start <= now;
+
+    let when = "--:--";
+    if (ev.start) {
+      const t = new Date(ev.start * 1000);
+      when = String(t.getUTCHours()).padStart(2, "0") + ":"
+           + String(t.getUTCMinutes()).padStart(2, "0") + "Z";
+    }
+    let inTxt;
+    if (running) {
+      if (ev.end) {
+        const t = new Date(ev.end * 1000);
+        inTxt = "to " + String(t.getUTCHours()).padStart(2, "0") + ":"
+                      + String(t.getUTCMinutes()).padStart(2, "0");
+      } else {
+        inTxt = "on air";
+      }
+    } else {
+      inTxt = schedFmtIn(ev.start ? ev.start - now : 0);
+    }
+
+    const tr = document.createElement("tr");
+    tr.style.borderTop = "1px solid #2a2a2a";
+    const cell = (txt, colour, extra) => {
+      const td = document.createElement("td");
+      td.textContent = txt;
+      td.style.padding = "6px";
+      if (colour) td.style.color = colour;
+      if (extra) td.style.cssText += extra;
+      return td;
+    };
+    tr.appendChild(cell(running ? "NOW" : when, running ? "#60D060" : "var(--dim)"));
+    /* The reference belongs beside the callsign, not in its own column: it is
+       present on half the rows, and an empty column reads as missing data
+       rather than as "contests have no reference". */
+    tr.appendChild(cell(ev.ref ? ev.what + "   " + ev.ref : ev.what, "#fff"));
+    tr.appendChild(cell(ev.srcs || ev.src, ev.contest ? "#9AD0FF" : "#A0E0A0"));
+    tr.appendChild(cell(inTxt,
+      running ? "#60D060" : ((ev.start - now) < 3 * 3600 ? "#FFC864" : "var(--dim)"),
+      "text-align:right"));
+    tb.appendChild(tr);
+    rows++;
+  }
+
+  if (empty) {
+    let msg = "";
+    if (rows === 0) {
+      if (!d)                     msg = "Loading...";
+      else if (!d.wifi)           msg = "No WiFi - the schedule needs a network.";
+      else if (d.busy)            msg = "Fetching the schedule...";
+      else if (!d.version)        msg = "No schedule yet - press Refresh.";
+      else                        msg = "Nothing scheduled in this filter.";
+    }
+    empty.textContent = msg;
+  }
+}
+
+async function schedFetch(force) {
+  try {
+    const r = await fetch("/api/sched" + (force ? "?force=1" : ""));
+    if (!r.ok) return;                /* keep the last good list - see the markup */
+    schedData = await r.json();
+  } catch (e) { return; }
+  schedRender();
+}
+
+function schedOpen() {
+  document.getElementById('sched-modal').style.display = "block";
+  schedRender();                      /* draw what we hold, then refresh it */
+  schedFetch(false);
+  /* 10 s, and only while it is open: the IN column is the only thing that
+     moves, and it moves slowly. The fetch itself is TTL-limited on the
+     device, so this poll cannot hammer spothole. */
+  if (schedTimer) clearInterval(schedTimer);
+  schedTimer = setInterval(() => {
+    if (document.getElementById('sched-modal').style.display === "none") return;
+    schedFetch(false);
+  }, 10000);
+}
+
+(function wireSched() {
+  const m = document.getElementById('sched-modal');
+  if (!m) return;
+  const close = () => {
+    m.style.display = "none";
+    if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
+  };
+  document.getElementById('sched-close').addEventListener('click', close);
+  m.addEventListener('click', (e) => { if (e.target.id === 'sched-modal') close(); });
+  document.getElementById('sched-refresh').addEventListener('click', () => schedFetch(true));
+  for (const b of document.querySelectorAll('.sched-filt'))
+    b.addEventListener('click', () => {
+      schedFilter = parseInt(b.dataset.filt, 10);
+      schedRender();
+    });
+  const menu = document.getElementById('sched-btn');
+  if (menu) menu.addEventListener('click', (e) => { e.preventDefault(); schedOpen(); });
+})();
+
 function ritPillClick() {
   if (lastRitHz) {
     sendCmd({ action: "set_rit", hz: 0 });
@@ -9122,10 +10291,13 @@ function addTuneListeners(overlayId, getRect, onSpec) {
     handleTuneMove(e.clientX, getRect());
   });
   el.addEventListener("mousemove", (e) => {
+    if (specPanActive) return;   /* panning, not aiming - no tune cursor */
     // A spot label under the pointer says so, and swallows the tune cursor: the
     // two mean different things and showing both invites a mis-click.
+    const onArrow = vfoArrowHit(e.clientX, e.clientY, getRect());
     const hit = onSpec ? spotHitTest(e.clientX, e.clientY, getRect()) : null;
-    el.style.cursor = hit ? "pointer" : "";
+    el.style.cursor = (hit || onArrow) ? "pointer" : "";
+    if (onArrow) { spotHover = null; tuneCursorX = -1; return; }
     spotHover = hit;                 // drives the preview in overlayTuneCursor()
     if (hit && !tuneActive) { tuneCursorX = -1; return; }
     handleTuneMove(e.clientX, getRect());
@@ -9135,7 +10307,78 @@ function addTuneListeners(overlayId, getRect, onSpec) {
     spotHover = null;
     el.style.cursor = "";
   });
+  /* Without this the browser's own menu opens on press and the drag never
+     happens. Suppressed on the two overlays only. */
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+
   el.addEventListener("mousedown", (e) => {
+    if (e.button === 2) {                       // RIGHT: pan the window
+      /* ⛔ THE DEVICE'S OWN NUMBERS OR NOTHING. The pan used to be derived -
+         lastView.lo + span/2 - lastFreqHz - from a viewport the status poll
+         refreshed once a second and a lo that view_lo_snapped() rounds to a
+         whole Tab5 pixel. Both errors went straight into the set_pan that was
+         sent, so the view landed a little away from where the hand left it and
+         the preview had to absorb the difference as a step. The frame now
+         carries the live pan and viewport, so nothing is derived. */
+      if (!(frameViewSpan > 0) || framePanHz === null) return;
+      /* ⛔ A SECOND DRAG MUST CANCEL THE FIRST ONE'S HOLD. Without this, the
+         frame that settles the PREVIOUS pan arrives mid-gesture and calls
+         specPanPreview(0), wiping the translate out from under the hand that
+         is still moving. Found by reading the new state back, not on the
+         glass - it needs two drags inside ~200 ms. */
+      if (specPanTrack) specPanTrackEnd(false);   /* a new drag cancels the old track */
+      specPanActive     = true;
+      specPanStartX     = e.clientX;
+      tuneActive  = false;                      // a pan is not a half-made tune
+      tuneCursorX = -1;
+      el.style.cursor = "grabbing";
+      /* ⛔ ON THE WINDOW, NOT THE OVERLAY. A pan that starts here very often
+         ends with the pointer off the canvas - that is what panning to the edge
+         IS - and an overlay-only mouseup would leave specPanActive true and the
+         view following the mouse around the page afterwards. */
+      const onMove = (ev) => {
+        if (!specPanActive) return;
+        specPanPreview(ev.clientX - specPanStartX);   /* local only */
+      };
+      const onUp = (ev) => {
+        if (!specPanActive) return;
+        specPanActive = false;
+        el.style.cursor = "";
+        const dx    = ev.clientX - specPanStartX;
+        const rect  = getRect();
+        const lo0   = frameViewLo;
+        const span  = frameViewSpan;
+        const pan0  = framePanHz;
+        /* Snapshot the drawn trace so every frame after this can be measured
+           against it - this is the reference the shift is relative to. */
+        panRef     = specSmooth ? Float32Array.from(specSmooth) : null;
+        panRefAt   = Date.now();
+        panRefTx   = dx;
+        panRefLo   = lo0;
+        panRefSpan = span;
+        weblog("PAN release dx=" + dx + "px seq=" + lastViewSeq +
+               " lo=" + lo0 + " span=" + span + " pan=" + pan0 +
+               " w=" + Math.round(rect.width) + " zoom=" + lastZoom);
+        /* ⛔ ONE ARITHMETIC FOR THE PREVIEW AND THE REQUEST. The residual the
+           preview converges on is (frameLo - wantLo); the pan we ask for moves
+           the view by exactly the same delta. Derive them from two expressions
+           and they disagree by the difference, which is the step. */
+        const dHz = -dx * span / rect.width;          /* hzPerPx = -span/width */
+        specPanTrackBegin(lo0, span, rect.width, dx);
+        if (span > 0 && rect.width > 0 && pan0 !== null) specPanTo(pan0 + dHz);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+      e.preventDefault();
+      return;
+    }
+    if (e.button !== 0) return;                 // middle does nothing
+    /* The off-view arrow first: navigation, not a tune - see vfoArrowHit(). */
+    if (vfoArrowHit(e.clientX, e.clientY, getRect())) {
+      vfoArrowRecentre(); tuneCursorX = -1; e.preventDefault(); return;
+    }
     // Clicking a spot tunes to THAT station (frequency and mode) instead of to
     // wherever the pixel happened to be - the whole point of drawing them.
     const hit = onSpec ? spotHitTest(e.clientX, e.clientY, getRect()) : null;
@@ -9145,12 +10388,16 @@ function addTuneListeners(overlayId, getRect, onSpec) {
     e.preventDefault();
   });
   el.addEventListener("mouseup", (e) => {
+    if (e.button !== 0) return;   /* the right-button pan ends on the window */
     if (tuneActive) handleTuneCommit(e.clientX, getRect());
   });
 
   // Touch
   el.addEventListener("touchstart", (e) => {
     const t0 = e.touches[0];
+    if (vfoArrowHit(t0.clientX, t0.clientY, getRect())) {
+      vfoArrowRecentre(); tuneCursorX = -1; e.preventDefault(); return;
+    }
     const hit = onSpec ? spotHitTest(t0.clientX, t0.clientY, getRect()) : null;
     if (hit) { tuneToSpot(hit); tuneCursorX = -1; e.preventDefault(); return; }
     tuneActive = true;
@@ -10337,14 +11584,126 @@ function drawRitMarker(ctx, W, H) {
    Recomputed rather than passed in: both spectrum painters want them at the
    same point in their own draw order, and passing three numbers through would
    mean two call sites that can disagree about which passband they mean. */
+/* ⭐ DIMMED WHILE THE WINDOW IS BEING DRAGGED, to match the Tab5.
+ *
+ * Mirrors DRAG_PASSBAND_OPA in ui.c - keep the two numbers in step. The Tab5
+ * used to HIDE its passband during a pan and now dims it instead, because the
+ * passband is the thing being aimed at (Gyula HA3HZ, 2026-10-29: aiming at
+ * ~300 Hz on a 12 kHz span is about 25 px of 1280, and the aim point was what
+ * vanished).
+ *
+ * ⚠ THE BROWSER NEVER HAD THAT FAULT - it kept the passband at FULL through a
+ * drag, which is why the operator found this file's claim of parity false:
+ * "the web does NOT dim while dragging". Matching is his explicit call,
+ * 2026-10-30, so the two surfaces read the same during the gesture. It is not
+ * a bug fix; the previous behaviour was defensible.
+ *
+ * ⛔ DO NOT look for this in DRAG_PB_ALPHA / bpFadeAlpha(). Those are the
+ * BAND-PLAN STRIP (`bp` is the bandplan prefix throughout this file) and apply
+ * while `bpDragging`, a drag of the strip. They are a different object and
+ * mislead anyone grepping for 0.35 - which is exactly what happened. */
+const SPEC_DRAG_PB_OPA = 0.35;
+function specPassbandOpa() {
+  /* While the hand is down AND while the residual settles - the same span the
+     Tab5 covers with s_stroll_active, and the same span the CSS translate is
+     applied over, so the dim starts and ends with the gesture rather than with
+     one of its halves. */
+  return (specPanActive || specPanTrack) ? SPEC_DRAG_PB_OPA : 1;
+}
+/* ⛔ ONE COPY. This tint was duplicated verbatim - comment and all - in
+   drawSpectrumFlat() and drawSpectrumRaw(), so the drag dim would have had to
+   be added twice and the second copy would have been the one that got missed.
+   Behind the trace, which is why it is a separate call from the edges below. */
+function drawPassbandTint(sctx, W, H) {
+  const pb = passbandBins();
+  if (!pb) return;
+  const x1 = Math.round(pb.loBin * W / SPEC_W);
+  const x2 = Math.round(pb.hiBin * W / SPEC_W);
+  const bx1 = Math.max(0, Math.min(W, x1));
+  const bx2 = Math.max(0, Math.min(W, x2));
+  if (bx2 <= bx1) return;
+  const a = 0.38 * specPassbandOpa();
+  sctx.fillStyle = "rgba(74,85,96," + a.toFixed(3) + ")";
+  sctx.fillRect(bx1, 0, bx2 - bx1, H);
+}
+/* The EDGE LINES are drawn AFTER the trace, unlike the tint: they used to sit
+   beside it, and the trace is filled opaque "#003800" and stroked over them
+   immediately afterwards, so the filter edges vanished under any signal
+   (Samuel W7STF: "The filter extents on the Web-view are occluded by the
+   PSD"). They go next to the VFO marker, which was already - correctly -
+   painted after the trace and was therefore always visible. */
+/* ⭐ THE OFF-VIEW ARROW - the Tab5 has had one since #298 phase 4 and this page
+ * had NOTHING: the amber line is drawn with a bare fillRect and no bounds test,
+ * so once the dial left the view the marker was simply painted off-canvas and
+ * vanished. Panned away from the VFO and "something is broken" looked identical,
+ * which is the fault the Tab5's triangle exists to prevent.
+ *
+ * ⛔ THE OPERATOR HAD IT THE OTHER WAY ROUND, and so did I: he asked for "the
+ * same for the Tab5" believing the web had it. It is the web that was missing.
+ * I then searched the history for arrow GLYPHS and "edge arrow" and reported
+ * that neither screen ever had one - wrong, because the Tab5 draws it pixel by
+ * pixel and its comment says "A TRIANGLE". Searching for one vocabulary is not
+ * searching the space.
+ *
+ * Geometry, colour and direction mirror ui.c: 22 px half-height, 14 px of
+ * taper, point AT the edge with the base inwards so the shape says which way
+ * the dial went, in the VFO line's own amber. dpr-scaled, like the spot edge
+ * counters - a literal 14 renders at about 7 CSS px on a 2x display.
+ *
+ * ⛔ BOTH THE MARKER AND THE WHOLE PASSBAND MUST BE OFF VIEW. Operator,
+ * 2026-10-30: "no need for any indication if the bw is for example still half
+ * visible". The passband test is an INTERSECTION, because a filter wider than
+ * the span has both edges off screen while covering every column of it. */
+let vfoArrowBox = null;   /* hit rect in CANVAS px, or null - see the hit test */
+function drawVfoMarker(sctx, W, H) {
+  const vfoX = Math.round(freqToPixelX(lastFreqHz, W));
+  const onScreen = (vfoX >= 0 && vfoX < W);
+  const pb = passbandBins();
+  let pbOff = true;
+  if (pb) {
+    const px1 = pb.loBin * W / SPEC_W, px2 = pb.hiBin * W / SPEC_W;
+    const lo = Math.min(px1, px2), hi = Math.max(px1, px2);
+    pbOff = (hi < 0 || lo >= W);
+  }
+  if (onScreen) {
+    sctx.fillStyle = "#ffb95a";
+    sctx.fillRect(vfoX - 1, 0, 2, H);
+    vfoArrowBox = null;
+    return;
+  }
+  if (!pbOff) { vfoArrowBox = null; return; }   /* the filter is still in sight */
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const th  = Math.round(22 * dpr);
+  const tw  = Math.round(14 * dpr);
+  const mid = Math.round(H / 2);
+  const left = (vfoX < 0);
+  sctx.fillStyle = "#ffb95a";
+  for (let i = 0; i < tw; i++) {
+    const half = Math.round(th * i / tw);
+    const x = left ? i : (W - 1 - i);
+    sctx.fillRect(x, Math.max(0, mid - half), 1, Math.min(H, 2 * half + 1));
+  }
+  /* Generous tap/click target around it, same reasoning as ui.c's 44x80: the
+     taper is too thin to hit. Stored for the hit test, which runs BEFORE
+     tap-to-tune so a click here recentres instead of retuning. */
+  /* 140 x 80, the size spots_lane.c has proven under a fingertip - not 44,
+     which is about 7 mm and which the operator could not hit on the Tab5. */
+  const hw = Math.round(140 * dpr), hh = Math.round(80 * dpr);
+  vfoArrowBox = { x: left ? 0 : (W - hw), y: Math.max(0, mid - hh / 2), w: hw, h: hh,
+                  left: left };
+}
 function drawPassbandEdges(sctx, W, H) {
   const pb = passbandBins();
   if (!pb) return;
   const x1 = Math.round(pb.loBin * W / SPEC_W);
   const x2 = Math.round(pb.hiBin * W / SPEC_W);
+  const prev = sctx.globalAlpha;
+  sctx.globalAlpha = prev * specPassbandOpa();
   sctx.fillStyle = "#7a9aaa";
   if (x1 >= 0 && x1 < W) sctx.fillRect(x1 - 1, 0, 2, H);
   if (x2 >= 0 && x2 < W) sctx.fillRect(x2 - 1, 0, 2, H);
+  sctx.globalAlpha = prev;
 }
 
 function drawSpectrumFlat(bytes) {
@@ -10387,22 +11746,7 @@ function drawSpectrumFlat(bytes) {
     if (y >= 0 && y < H) sctx.fillRect(0, y, W, 1);
   }
 
-  const pb = passbandBins();
-  if (pb) {
-    const x1 = Math.round(pb.loBin * W / SPEC_W);
-    const x2 = Math.round(pb.hiBin * W / SPEC_W);
-    const bx1 = Math.max(0, Math.min(W, x1));
-    const bx2 = Math.max(0, Math.min(W, x2));
-    /* The TINT stays here, behind the trace - it is a wash over the band and
-       reads correctly with signals drawn on top of it. The EDGE LINES do not:
-       they were drawn here too, and the trace is filled opaque "#003800" and
-       stroked over them immediately afterwards, so the filter edges vanished
-       under any signal (Samuel W7STF: "The filter extents on the Web-view are
-       occluded by the PSD"). They are now drawn by drawPassbandEdges() next to
-       the VFO marker, which was already - correctly - painted after the trace
-       and was therefore always visible. That inconsistency is the bug. */
-    if (bx2 > bx1) { sctx.fillStyle = "rgba(74,85,96,0.38)"; sctx.fillRect(bx1, 0, bx2-bx1, H); }
-  }
+  drawPassbandTint(sctx, W, H);
 
   /* Zoom: render only windowBins centred on the IF-shifted centre.
      With zoom-FFT the server already mixed to DC; getZoomWindow() applies
@@ -10443,13 +11787,14 @@ function drawSpectrumFlat(bytes) {
   sctx.lineTo(W, H); sctx.closePath();
   sctx.fillStyle = "#003800"; sctx.fill();
 
+  const peakOnF = peakBegin(W, H, "flat|" + (frameDialHz || radioFreqHz) + "|" + lastZoom + "|" + lastPanBins + "|" + lastZoomDecim);
   sctx.beginPath(); sctx.moveTo(0, yOf(0));
   for (let i = 1; i < W; i++) sctx.lineTo(i, yOf(i));
   sctx.strokeStyle = "#07e007"; sctx.lineWidth = 1.5; sctx.stroke();
+  if (peakOnF) { for (let i = 0; i < W; i++) peakFeed(i, yOf(i)); peakStroke(W); }
 
   drawPassbandEdges(sctx, W, H);
-  const vfoX = Math.round(freqToPixelX(lastFreqHz, W));
-  sctx.fillStyle = "#ffb95a"; sctx.fillRect(vfoX-1, 0, 2, H);
+  drawVfoMarker(sctx, W, H);
   drawRitMarker(sctx, W, H);
 
   /* dB-above-floor scale labels at the gridlines (right edge) */
@@ -10476,22 +11821,7 @@ function drawSpectrumRaw(bytes) {
     sctx.fillRect(0, y, W, 1);
   }
 
-  const pb = passbandBins();
-  if (pb) {
-    const x1 = Math.round(pb.loBin * W / SPEC_W);
-    const x2 = Math.round(pb.hiBin * W / SPEC_W);
-    const bx1 = Math.max(0, Math.min(W, x1));
-    const bx2 = Math.max(0, Math.min(W, x2));
-    /* The TINT stays here, behind the trace - it is a wash over the band and
-       reads correctly with signals drawn on top of it. The EDGE LINES do not:
-       they were drawn here too, and the trace is filled opaque "#003800" and
-       stroked over them immediately afterwards, so the filter edges vanished
-       under any signal (Samuel W7STF: "The filter extents on the Web-view are
-       occluded by the PSD"). They are now drawn by drawPassbandEdges() next to
-       the VFO marker, which was already - correctly - painted after the trace
-       and was therefore always visible. That inconsistency is the bug. */
-    if (bx2 > bx1) { sctx.fillStyle = "rgba(74,85,96,0.38)"; sctx.fillRect(bx1, 0, bx2-bx1, H); }
-  }
+  drawPassbandTint(sctx, W, H);
 
   /* Prefer the device's own viewport. The fallback below is the OLD path, kept
      only for a device that is not sending one (older firmware, or the zoom-FFT
@@ -10522,10 +11852,16 @@ function drawSpectrumRaw(bytes) {
   for (let i = 1; i < W; i++)
     sctx.lineTo(i, H - 1 - Math.round(bytes[getBinR(i)] * (H-1) / 255));
   sctx.strokeStyle = "#07e007"; sctx.lineWidth = 1.5; sctx.stroke();
+  if (peakBegin(W, H, "raw|" + (frameDialHz || radioFreqHz) + "|" + lastZoom + "|" + lastPanBins + "|" + lastZoomDecim)) {
+    for (let i = 0; i < W; i++) {
+      const b = getBinR(i);
+      peakFeed(i, b === null ? null : H - 1 - Math.round(bytes[b] * (H-1) / 255));
+    }
+    peakStroke(W);
+  }
 
   drawPassbandEdges(sctx, W, H);
-  const vfoX = Math.round(freqToPixelX(lastFreqHz, W));
-  sctx.fillStyle = "#ffb95a"; sctx.fillRect(vfoX-1, 0, 2, H);
+  drawVfoMarker(sctx, W, H);
   drawRitMarker(sctx, W, H);
 
   /* dBm scale labels at the gridlines (right edge) */
@@ -10606,7 +11942,24 @@ let wfPaletteIdx = 0;
    The FLOOR is different: it tracks how the band's noise moves, which is a physical
    thing happening in seconds regardless of anyone's frame rate, so those stay as
    time constants derived from the elapsed time. */
-const WF_SMOOTH_ALPHA     = 0.15;                // WF_EMA_ALPHA, render.c - per ROW
+/* ⛔ A TIME CONSTANT, NOT A PER-ROW ALPHA - the number was copied from the
+   device and the CLOCK IT RUNS ON WAS NOT.
+
+   render.c applies WF_EMA_ALPHA 0.15 once per 100 ms FRAME, so its memory is
+   tau = -0.1 / ln(1 - 0.15) = 0.62 s, fixed in seconds, and the row rate then
+   samples that running average. This file applied the same 0.15 once per ROW,
+   so its memory was ~6 ROWS - whatever a row happened to last.
+
+   They agree only at 10 rows/s, where a row IS 100 ms. Below that they
+   diverge badly: at 1 row/s the browser smeared over ~6 s against the Tab5's
+   0.62 s, about ten times longer. The operator saw it as "much more smearing
+   on the web wf than on the Tab5" (2026-10-24). It only became visible in
+   v1.20.5, which is when the browser started following wf_rows_per_s at all
+   (T74) - before that it ignored the rate and the bug could not show.
+
+   Expressed in SECONDS and converted with alphaFor(dt), so the two surfaces
+   now smear by the same amount at every rate. */
+const WF_SMOOTH_TC_S      = 0.62;                // = render.c's WF_EMA_ALPHA 0.15 per 100 ms
 const WF_FLOOR_ATTACK_TC_S= 1 / (0.05   * 30);   // WF_FLOOR_ATTACK              -> 0.67 s
 const WF_FLOOR_FAST_TC_S  = 1 / (0.05   * 30);   // WF_FLOOR_DECAY_FAST          -> 0.67 s
 const WF_FLOOR_SLOW_TC_S  = 1 / (0.0005 * 30);   // WF_FLOOR_DECAY_SLOW          -> 67 s
@@ -10625,6 +11978,11 @@ const WF_COUNTS_PER_DB = WS_COUNTS_PER_DB;
    match WF_*_DEFAULT in render_waterfall.c. */
 let wfBlackDb = 9, wfContrastDb = 45, wfFloorBlend = 1.0;
 
+/* The operator's tune-snap grid, mirrored from /api/status. null until the
+   first poll answers, and tuneSnapHz() then falls back to the old 250 so a
+   click before any status is not a surprise. */
+let tuneSnapGrid = null;
+
 /* render.c applies an EMA to the raw spectrum BEFORE anything renders it -
    s_ema_alpha, which is the operator's own "Spectrum smoothing" setting - and the
    Tab5's flat mode then adds its own 0.25 EMA on top. The browser had only the
@@ -10634,12 +11992,138 @@ let wfBlackDb = 9, wfContrastDb = 45, wfFloorBlend = 1.0;
    NOTE the waterfall does NOT chain off this - render.c builds s_wf_smoothed from
    the RAW scratch with its own alpha, independently, which is what wfSmooth already
    mirrors. Chaining the two would smooth twice and is why they are kept separate. */
+/* Server mode, mirrored from /api/status so the menu label cannot disagree
+   with the device - someone may have switched it at the Tab5. */
+let serverModeOn = false;
+function setServerModeLabel(on) {
+  serverModeOn = !!on;
+  const el = document.getElementById("server-mode-state");
+  if (el) el.textContent = serverModeOn ? "ON" : "off";
+}
+
 let specEmaAlpha = 0.4;                       // render.c's default
+
+/* PEAK HOLD, the browser's half - ui.c's algorithm, not a second design.
+   A SLIDING WINDOW, not a latch: the line shows the highest each column
+   reached in the last peakHoldS seconds and falls when that peak ages out
+   (operator, 2026-10-23: "kind of skip peaks older than xx seconds").
+
+   Same bucketing as the device, for the same reason: keeping every frame
+   would be 10 fps x 30 s x W samples to scan per draw. The window is split
+   into PEAK_BUCKETS sub-windows, each draw writes only the current one, and
+   the shown minimum is recomputed when a bucket rotates - so expiry is
+   accurate to window/8 on both screens.
+
+   Y, not dB, and for the same reason as on the Tab5: the flat and raw paths
+   compute their heights differently and the peak has to sit on whichever
+   trace is being drawn. The canvas can also be resized under us, so the
+   buffers are rebuilt whenever W, H or the view changes. */
+const PEAK_BUCKETS = 8;
+let peakHoldS   = 0;          // 0 = off; /api/status carries the setting
+let peakBuk     = null;       // PEAK_BUCKETS arrays of W
+let peakShow    = null;
+let peakSig     = "";
+let peakCur     = 0;
+let peakRollMs  = 0;
+
+function peakReset(W, sig) {
+  peakBuk = [];
+  for (let k = 0; k < PEAK_BUCKETS; k++) peakBuk.push(new Float32Array(W).fill(Infinity));
+  peakShow   = new Float32Array(W).fill(Infinity);
+  peakSig    = sig;
+  peakCur    = 0;
+  peakRollMs = performance.now();
+}
+
+/* Called once per draw, BEFORE the trace loop. Returns false when the feature
+   is off, which is also the signal to skip peakFeed/peakStroke. */
+function peakBegin(W, H, sig) {
+  if (!peakHoldS) { peakBuk = null; peakShow = null; peakSig = ""; return false; }
+  const full = sig + "|" + W + "x" + H + "|" + peakHoldS;
+  if (!peakBuk || peakSig !== full || peakShow.length !== W) peakReset(W, full);
+  const perMs = Math.max(100, peakHoldS * 1000 / PEAK_BUCKETS);
+  const now   = performance.now();
+  let age = now - peakRollMs;
+  if (age >= perMs) {
+    let steps = Math.min(PEAK_BUCKETS, Math.floor(age / perMs));
+    for (let k = 0; k < steps; k++) {
+      peakCur = (peakCur + 1) % PEAK_BUCKETS;
+      peakBuk[peakCur].fill(Infinity);
+    }
+    peakRollMs += steps * perMs;
+    /* The only place the shown value can get WEAKER: the bucket that held the
+       old maximum has just been dropped. */
+    for (let i = 0; i < W; i++) {
+      let m = Infinity;
+      for (let k = 0; k < PEAK_BUCKETS; k++) { const v = peakBuk[k][i]; if (v < m) m = v; }
+      peakShow[i] = m;
+    }
+  }
+  return true;
+}
+
+/* One column. y === null means "no data here" - that column holds nothing,
+   exactly as the hatched columns on the Tab5 hold nothing. */
+function peakFeed(x, y) {
+  if (!peakBuk) return;
+  if (y === null || y === undefined || !isFinite(y)) {
+    peakBuk[peakCur][x] = Infinity;
+    peakShow[x] = Infinity;
+    return;
+  }
+  if (y < peakBuk[peakCur][x]) peakBuk[peakCur][x] = y;
+  if (y < peakShow[x])         peakShow[x] = y;
+}
+
+/* Drawn after the trace and before the passband edges and the VFO marker, so
+   the markers still win - the same order as the Tab5 canvas. Cyan, because
+   the trace is green, the VFO amber and RIT magenta. */
+function peakStroke(W) {
+  if (!peakBuk) return;
+  sctx.strokeStyle = "#35d6e6"; sctx.lineWidth = 1;
+  sctx.beginPath();
+  let pen = false;
+  for (let i = 0; i < W; i++) {
+    const y = peakShow[i];
+    if (!isFinite(y)) { if (pen) { sctx.stroke(); sctx.beginPath(); pen = false; } continue; }
+    if (!pen) { sctx.moveTo(i, y); pen = true; } else sctx.lineTo(i, y);
+  }
+  if (pen) sctx.stroke();
+}
 const specStage1 = new Float32Array(SPEC_W);
 let specStage1Ready = false;
 
+/* ⛔⛔ SET WHEN THE VIEW MOVES, AND IT IS WHY THE PAN FLICKERED.
+   MEASURED from the page's own trace in the serial capture, one right-drag of
+   150 px:
+
+     +98ms   content=189px tx=150px net=339px   <- content already moving
+     +199ms  content=168px tx=150px net=318px   <- preview cleared here
+     +340ms  content=134px tx=0px   net=134px
+     +515ms  content=137px tx=0px   net=137px
+
+   net is where a signal actually sits on the glass. It went 150 -> 339 -> 134:
+   two jumps, +189 then -204, which is exactly what the operator kept seeing.
+
+   And the content does not MOVE, it CROSSFADES - 189, 168, 134, 137 - over
+   about three frames, because this EMA blends the new window into the old one
+   sample by sample. A ramp cannot be cancelled by a binary transform, so no
+   choice of clearing instant was ever going to work. That is what eight
+   attempts at the TIMING were really up against.
+
+   So the smoothing is RE-SEEDED when the view moves: the first frame on the new
+   window replaces the trace instead of blending into it. The content then steps
+   once, on one frame, and the preview is dropped on that same frame - both in
+   the same paint. Consistent by construction rather than by timing.
+
+   It is also correct on its own terms: an EMA exists to average successive looks
+   at the SAME thing, and after a pan the old samples describe different
+   frequencies. Blending them was never meaningful. */
+let specEmaReseed = false;
+
 function applyDeviceEma(bytes) {
-  if (!specStage1Ready) {
+  if (!specStage1Ready || specEmaReseed) {
+    specEmaReseed = false;
     for (let i = 0; i < SPEC_W; i++) specStage1[i] = bytes[i];
     specStage1Ready = true;
   } else {
@@ -10689,7 +12173,7 @@ function drawWaterfall(bytes) {
 
   /* Fast decay briefly after (re)init so a fresh connection settles in seconds
      instead of a minute, then slow - signals must not be absorbed into the floor. */
-  const aSmooth  = WF_SMOOTH_ALPHA;          // per ROW, not per second - see above
+  const aSmooth  = alphaFor(WF_SMOOTH_TC_S); // per SECOND, matching render.c - see above
   /* With the floor re-seeded every frame there is nothing accumulating, so the single
      update step that follows has to use the device's PER-TICK alpha (0.05), not an
      alpha derived from elapsed time - at 10 fps that came out 0.14 and quietly cut
@@ -10934,6 +12418,19 @@ function termShowErr(msg) {
   const el = document.getElementById("term-err");
   el.textContent = msg;
   el.style.display = msg ? "" : "none";
+}
+
+/* A refused keystroke must SAY so. The firmware answers
+   {"ok":false,"error":"Refused: ..."} when the transmit guard stops a key, and
+   this function used to throw that away - so on the browser the press simply
+   did nothing, which is indistinguishable from a dead radio. Randy N4OPI spent
+   2026-10-24 on it: Hardware tests > Diagnostics > Enter, no page, no message,
+   on two Tab5s. The Tab5's own Radio Menus has toasted the reason since T65
+   (qmx_term_view.c); only the browser was silent. The refusal that cost him the
+   screen is gone, but EVERY refusal from this endpoint is now visible. */
+function termKeyResult(r) {
+  if (r && r.ok) { termShowErr(""); return; }
+  termShowErr((r && r.error) ? r.error : "the radio did not accept that key");
 }
 
 async function termSend(action, extra) {
@@ -11258,7 +12755,7 @@ window.addEventListener("resize", () => {
 });
 document.querySelectorAll(".term-key").forEach((b) => {
   b.addEventListener("click", async () => {
-    await termSend("key", { key: b.dataset.key });
+    termKeyResult(await termSend("key", { key: b.dataset.key }));
     setTimeout(termPoll, 120);   // the radio repaints, then we look
   });
 });
@@ -11279,7 +12776,7 @@ document.addEventListener("keydown", async (e) => {
   if (!key && e.key.length === 1) key = e.key;
   if (!key) return;
   e.preventDefault();
-  await termSend("key", { key: key });
+  termKeyResult(await termSend("key", { key: key }));
   setTimeout(termPoll, 120);
 });
 
@@ -11778,7 +13275,76 @@ function connectWs() {
        span === 0 means the device had no viewport for this frame (the zoom-FFT
        path); the browser then keeps its own centred mapping. */
     const u32 = (o) => (buf[o] | (buf[o+1] << 8) | (buf[o+2] << 16) | (buf[o+3] << 24)) >>> 0;
+    /* ⛔ READ BEFORE THE DRAW, because the EMA re-seed it sets has to take
+       effect on THIS frame's trace. The preview no longer depends on it at all
+       - that is specPanTrackFrame()'s residual - so this byte's only remaining
+       job is the re-seed, which is also the one it does well.
+       One byte after the S-meter's two. Appended rather than put in the header
+       for the reason stated in webserver_ws.c: the header is full, and growing
+       it would shift the payload under any cached page. Length-checked, so
+       firmware without it never sets lastViewSeq and the preview falls back to
+       the viewport comparison. */
+    if (buf.length >= HEADER_LEN + SPEC_W + 3) {
+      const sq = buf[HEADER_LEN + SPEC_W + 2];
+      /* ⛔ ANY view move re-seeds the smoothing, not just one the browser asked
+         for. A pan from the Tab5, the band-plan strip or a band change smears
+         exactly the same way - the EMA blends two different sets of frequencies
+         - and that smear has been there since the device EMA was mirrored here.
+         Nobody reported it because without a drag to compare against it just
+         looked like the waterfall settling. */
+      if (lastViewSeq !== null && sq !== lastViewSeq) specEmaReseed = true;
+      lastViewSeq = sq;
+    }
+    /* ⭐⭐ THE LIVE VIEWPORT, ON EVERY FRAME AND EVERY ZOOM - trailer bytes
+       +3..+14, see WS_TRAILER_LEN in webserver_ws.c.
+       The header's own view_lo/span at [6..13] are ZERO above zoom x1, because
+       they come from ui_pan_view_current() and the bins mean something else
+       there. The page's only other source was the 1 Hz /api/status poll, so at
+       zoom x2 - which is where the operator works - the axis, the waterfall
+       anchor and the drag were all measured against a viewport up to a second
+       old. That is not a tuning problem, it is the reason the pan could not be
+       made to land cleanly: the browser could not see where the view WAS.
+       Length-checked: firmware without these bytes falls back to the header. */
+    const i32 = (o) => (buf[o] | (buf[o+1] << 8) | (buf[o+2] << 16) | (buf[o+3] << 24)) | 0;
+    let tLo = null, tSpan = 0;
+    if (buf.length >= HEADER_LEN + SPEC_W + 15) {
+      const sp = u32(HEADER_LEN + SPEC_W + 7);
+      if (sp > 0) {
+        tSpan         = sp;
+        tLo           = i32(HEADER_LEN + SPEC_W + 3);
+        frameViewSpan = tSpan;
+        frameViewLo   = tLo;
+        framePanHz    = i32(HEADER_LEN + SPEC_W + 11);
+      }
+    }
     const spanF = u32(10);
+    /* ⛔⛔ RE-ANCHOR THE WATERFALL HISTORY BEFORE lastView MOVES, ON BOTH
+       PATHS. This used to sit inside the spanF branch, so above zoom x1 it
+       never ran at all and every pan left the waterfall's history at the old
+       frequencies with new rows arriving at the new ones. The trailer viewport
+       is what makes it possible here. */
+    {
+      const rSpan = (tSpan > 0) ? tSpan : spanF;
+      const rLo   = (tSpan > 0) ? tLo   : u32(6);
+      if (rSpan > 0 && lastView && typeof lastView.span === "number" &&
+          rSpan === lastView.span) {
+        const dHz = rLo - lastView.lo;
+        if (dHz) {
+          const dpx = Math.round(-dHz / rSpan * wfPxW);
+          if (dpx && Math.abs(dpx) < wfPxW) {
+            wfctx.drawImage(wf, 0, 0, wfPxW, wfPxH, dpx, 0, wfPxW, wfPxH);
+            /* The column that slid in has no history - leave it black rather
+               than smeared with a copy of the edge. */
+            wfctx.fillStyle = "#000";
+            if (dpx > 0) wfctx.fillRect(0, 0, dpx, wfPxH);
+            else         wfctx.fillRect(wfPxW + dpx, 0, -dpx, wfPxH);
+          } else if (dpx) {
+            wfctx.fillStyle = "#000";
+            wfctx.fillRect(0, 0, wfPxW, wfPxH);   /* moved further than a screen */
+          }
+        }
+      }
+    }
     if (spanF > 0) {
       let ifo = buf[22] | (buf[23] << 8);
       if (ifo & 0x8000) ifo -= 0x10000;              /* signed */
@@ -11794,7 +13360,21 @@ function connectWs() {
          drawing correctly at 10 fps, which is how Dave KX3DX and the operator
          both saw it while decoding carried on perfectly. */
       lastViewAt = performance.now();
+    } else if (tSpan > 0) {
+      /* ⭐ THE ZOOM-FFT PATH NOW HAS AN AXIS TOO. No bin mapping here - which
+         BIN a frequency lands in is unknowable once dsp_set_zoom() has mixed
+         the target to DC - so capLo/capHi/ifOff/nBins are carried forward from
+         whatever the base path or the status poll last gave us, and only the
+         viewport is replaced. Stamping lastViewAt is part of it: the staleness
+         watchdog used to be fed only by the 1 Hz poll at this zoom. */
+      lastView = Object.assign({}, lastView || {},
+                               { lo: tLo, hi: tLo + tSpan, span: tSpan });
+      lastViewAt = performance.now();
     }
+    /* The right-drag residual, computed from THIS frame's viewport and applied
+       before the draw below, so the content step and the translate change land
+       in one paint. */
+    specPanTrackFrame((tSpan > 0) ? tLo : u32(6), (tSpan > 0) ? tSpan : spanF);
     /* S-meter trailer: 2 bytes AFTER the bins, int16 LE, dBm x10, 0x8000 = no
        reading. Absent on older firmware, which is why this is length-checked
        rather than assumed - the frame is still perfectly valid without it.
@@ -11814,6 +13394,7 @@ function connectWs() {
       if (wsSmeterTick === 0) {
         lastSignalDbm = (sq === -32768) ? null : sq / 10;
         lastSignalFromWsAt = performance.now();
+        logSmeterNote(lastSignalDbm);   /* T120 - the Log window's hold, not the meter */
         drawSmeter(lastSignalDbm);
       }
     }
@@ -11821,6 +13402,9 @@ function connectWs() {
     /* Spectrum gets the device's first EMA stage; the waterfall keeps its own,
        built from the RAW frame, exactly as render.c does it. */
     (specFlatten?drawSpectrumFlat:drawSpectrumRaw)(applyDeviceEma(payload));
+    /* ⛔ AFTER THE DRAW. See panDebugFrame() - logging it before the draw was
+       half of what made the old numbers unreadable. */
+    panDebugFrame((tSpan > 0) ? tLo : u32(6), (tSpan > 0) ? tSpan : spanF);
     /* T74: honour the rate here too, with render.c's own accumulator. 0 is
        off - nothing ticks, so nothing is drawn. */
     if (wfRowsPerS !== 0) {
@@ -11889,12 +13473,19 @@ function handleWheel(e) {
   e.preventDefault();
   if (!lastFreqHz) return;
   const m = (lastMode || "").toUpperCase();
-  let step = 10;
-  if      (m.indexOf("USB") >= 0 || m.indexOf("LSB") >= 0)  step = 500;
-  else if (m.indexOf("DIGI") >= 0 || m.indexOf("FT") >= 0 ||
-           m.indexOf("RTTY") >= 0)                           step = 100;
-  else if (m.indexOf("AM") >= 0 || m.indexOf("FM") >= 0)    step = 1000;
-  // else CW / unknown: 10 Hz
+  /* ⛔ THE WHEEL HAD ITS OWN LADDER, which is why fixing tuneSnapHz() alone
+     would have left this half-alive: the click path and the wheel path each
+     carried hardcoded steps, and they DISAGREED - 500 here against the click
+     path's 250 for the same SSB signal. One function now, so the operator's
+     "Tune snap" setting reaches every way of tuning in the browser.
+     A snap of 0 means "exactly where I tap": no grid for a click, but useless
+     for a wheel detent, so the wheel keeps a usable minimum per mode. */
+  let step = tuneSnapHz();
+  if (step <= 1) {
+    if      (m.indexOf("USB") >= 0 || m.indexOf("LSB") >= 0)  step = 100;
+    else if (m.indexOf("AM")  >= 0 || m.indexOf("FM")  >= 0)  step = 1000;
+    else                                                      step = 10;
+  }
   const dir = e.deltaY > 0 ? -1 : 1;  // scroll up = tune up
   // Snap to step grid then advance one step, so we always land on a grid point
   const newHz = Math.round(lastFreqHz / step) * step + dir * step;
