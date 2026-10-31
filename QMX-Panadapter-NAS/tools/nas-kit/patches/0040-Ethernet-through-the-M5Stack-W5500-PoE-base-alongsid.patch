@@ -1,4 +1,4 @@
-From 69c8395aac66af0acf75c9a1db620b917890a161 Mon Sep 17 00:00:00 2001
+From b13ed5263c355c86a74c6fff982f7c4d543bebc1 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/41] Ethernet through the M5Stack W5500 PoE base, alongside
@@ -64,7 +64,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index 07be6b9d..9f0f7871 100644
+index 07be6b9d..51d1efca 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -81,7 +81,7 @@ index 07be6b9d..9f0f7871 100644
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
-+**Wired Ethernet (M5Stack W5500 PoE base)**
++**TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
 +
 +The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
 +

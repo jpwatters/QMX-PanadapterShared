@@ -50,7 +50,7 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.0 (compile-che
 * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
 * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
 
-**Wired Ethernet (M5Stack W5500 PoE base)**
+**TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
 
 The Tab5 can be wired to the network with M5Stack's W5500 PoE base on its M5-Bus (the connector on the back). Ethernet runs alongside Wi-Fi rather than replacing it: while the cable has a DHCP address it is the preferred route, so the NAS relay stream, the web page, spots, SNTP and updates use it; if the cable is pulled, traffic falls back to Wi-Fi by itself, and new connections use Ethernet again once it is back. With no base fitted nothing changes. Built and compile-checked; not yet tested with a base on the Tab5.
 

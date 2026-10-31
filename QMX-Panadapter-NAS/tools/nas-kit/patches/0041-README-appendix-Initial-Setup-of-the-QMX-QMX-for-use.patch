@@ -1,4 +1,4 @@
-From 54ce69ade99a74f84907ad42b4ed24ac3757147e Mon Sep 17 00:00:00 2001
+From 0bef0ea1c5729e02ef10cd5adb307c3c585ff85d Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/41] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 57 insertions(+)
 
 diff --git a/README.md b/README.md
-index 9f0f7871..4da12184 100644
+index 51d1efca..9bcb4b8b 100644
 --- a/README.md
 +++ b/README.md
 @@ -156,6 +156,30 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
