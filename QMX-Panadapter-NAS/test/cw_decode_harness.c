@@ -116,10 +116,36 @@ int main(void)
           { "run resets after real text",  "CQ TTTTTTTT DE K",      "CQ DE K"     },
           /* '*' is the decoder saying it could not resolve a symbol. Measured at
              23.6% of everything arriving on a live band - the biggest single
-             contributor to the mess, and never part of real text. */
-          { "unresolved symbols dropped",  "C*Q* D*E K",            "CQ DE K"     },
+             contributor to the mess, and never part of real text.
+
+             ⛔ THE CONTRACT CHANGED 2026-11-02 AND THIS TEST CAUGHT IT. It used
+             to assert "C*Q* D*E K" -> "CQ DE K", i.e. dropped at the door. That
+             dropped the WORD BOUNDARY with the symbol, so "CQ*DE*W1AW" reached
+             the screen as "CQDEW1AW" - reported by the operator as several words
+             welded into one row of letters, and reproduced on a host probe
+             before anything was changed.
+
+             '*' is now HELD like a space, so its position survives, and the
+             SAME short/long run verdict decides it: a short run prints verbatim
+             (exactly what the QMX's own LCD shows, which is the consistency the
+             operator asked for), a long run is still noise and goes.
+             CW_SQUELCH_RUN is the bound that keeps the 23.6% off the screen -
+             at most 4 consecutive can ever be printed. */
+          { "short run keeps its place",   "C*Q* D*E K",            "C*Q* D*E K" },
+          { "* IS the word boundary",      "CQ*DE*W1AW",            "CQ*DE*W1AW" },
+          { "spaced, position kept",       "CQ * DE W1AW",          "CQ * DE W1AW" },
+          { "honest inside a callsign",    "W1*AW",                 "W1*AW"       },
           { "a line of nothing but them",  "**********",            ""            },
+          { "long run still dropped",      "CQ ****** DE W1AW",     "CQ DE W1AW"  },
           { "they count toward a run",     "T*T*E*T*T*T CQ",        "CQ"          },
+          /* ⚠ AND THIS ONE IS NOT "CQ". I wrote it expecting the leading run to
+             be suppressed, borrowing the long-run rule's "not at the very
+             start, where it would just indent the first word" - but that rule
+             is about a SPACE stand-in, which carries no information. These are
+             real characters the radio would print, and a line that opens with
+             the decoder having lost its footing is worth knowing. The code was
+             right and the expectation was mine. */
+          { "leading run is shown too",    "*** CQ",                "*** CQ"      },
         };
         for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
             cw_squelch_t st;
@@ -137,6 +163,50 @@ int main(void)
                        cases[i].what, cases[i].in, got, cases[i].want);
             } else {
                 printf("  ok   %-30s -> \"%s\"\n", cases[i].what, got);
+            }
+        }
+    }
+
+    /* ---- T141: time-based flush ----------------------------------------- */
+    printf("\ncw_squelch_flush_stale\n");
+    {
+        /* Pushes `in`, then (crucially) does NOT push any settling character
+           - exactly the reported symptom: the band goes quiet right behind
+           the last real letter, so cw_squelch_push() alone never releases
+           it. Calls cw_squelch_flush_stale() instead and checks what comes
+           out of THAT. */
+        struct { const char *what; const char *in; const char *want_flush; } cases[] = {
+          /* The reported case: "CQ TTTTTTTT DE" with nothing after the E.
+             cw_squelch_push() on this input renders "CQ D" (per the
+             "run resets after real text" case above) and leaves the E
+             pending - flush_stale must release exactly that E. */
+          { "T141: trailing E released",  "CQ TTTTTTTT DE",        "E"  },
+          /* A long dead run with nothing to settle it either: still noise,
+             so flush_stale must drop it, not print it - at most the usual
+             one-space gap marker, same as cw_squelch_push() would give a
+             long run followed by real text. */
+          { "trailing noise still dropped", "CQ TTTTTTTTTTTT",     " "  },
+        };
+        for (size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+            cw_squelch_t st;
+            memset(&st, 0, sizeof(st));
+            char got[128]; size_t g = 0;
+            for (const char *q = cases[i].in; *q; q++) {
+                char rel[CW_SQUELCH_HOLD + 2];
+                int m = cw_squelch_push(&st, *q, rel, sizeof(rel));
+                for (int k = 0; k < m && g < sizeof(got)-1; k++) got[g++] = rel[k];
+            }
+            got[g] = 0;
+            char flushed[CW_SQUELCH_HOLD + 2];
+            int fn = cw_squelch_flush_stale(&st, flushed, sizeof(flushed));
+            flushed[fn < 0 ? 0 : fn] = 0;
+            if (strcmp(flushed, cases[i].want_flush) != 0) {
+                fails++;
+                printf("  FAIL %-30s in=\"%s\"  pushed \"%s\"  flush got \"%s\" want \"%s\"\n",
+                       cases[i].what, cases[i].in, got, flushed, cases[i].want_flush);
+            } else {
+                printf("  ok   %-30s pushed \"%s\" + flush \"%s\"\n",
+                       cases[i].what, got, flushed);
             }
         }
     }

@@ -18,6 +18,11 @@
 typedef enum {
     UI_MODE_PANADAPTER = 0,
     UI_MODE_FT8        = 1,
+    // CW page (v1.4): the panadapter pipeline KEEPS RUNNING — every consumer
+    // that gates on == UI_MODE_FT8 (dsp, render, ft8_task) treats CW exactly
+    // like PANADAPTER, which is the intended behaviour: spectrum + waterfall
+    // stay live as the CW page's backdrop, only LVGL overlays differ.
+    UI_MODE_CW         = 2,
     /* 2 is deliberately skipped: the CW page branch (feat/cw-page) already
      * owns UI_MODE_CW = 2, and the two feature branches will eventually meet.
      * Taking 3 here costs nothing and avoids a merge that silently makes two

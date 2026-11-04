@@ -1,4 +1,4 @@
-From 61b8dcd6858cd5d8c21a1869d4934af7db6f3347 Mon Sep 17 00:00:00 2001
+From e2c2f61310390f801e841bc31afe08100ad24ebb Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
 Subject: [PATCH 41/42] README: appendix "Initial Setup of the QMX/QMX+ for use
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 94 insertions(+), 2 deletions(-)
 
 diff --git a/README.md b/README.md
-index c444ee2e..20c262de 100644
+index 2230f9c6..4fe43e75 100644
 --- a/README.md
 +++ b/README.md
 @@ -8,7 +8,7 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
@@ -29,7 +29,7 @@ index c444ee2e..20c262de 100644
  
  Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
  1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
-@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
+@@ -50,6 +50,31 @@ The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-che
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
@@ -107,7 +107,7 @@ index c444ee2e..20c262de 100644
  **Keeping up with upstream**
  * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
  * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-@@ -1339,3 +1398,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
+@@ -1380,3 +1439,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
  GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
  
  Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).

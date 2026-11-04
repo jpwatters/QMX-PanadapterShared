@@ -526,6 +526,21 @@ static volatile uint8_t s_volume = 60;
 static volatile bool s_muted;
 
 static esp_codec_dev_handle_t s_codec = NULL;
+
+/* ⭐ THE SPEAKER, LENT OUT. The web-radio player needs the same codec this
+ * file owns, and two writers on one I2S channel interleave into noise - so it
+ * BORROWS the output instead of opening its own.
+ *
+ * ⛔ IT CANNOT OPEN ITS OWN, and that is not a style choice: the codec is
+ * opened once at boot, before the USB host takes the DMA RAM
+ * (rx_audio_preopen), and the comment at rx_audio_set_enabled() records that
+ * opening it mid-session is unsafe. The player is therefore stuck with this
+ * channel's 48 kHz and resamples to it.
+ *
+ * While claimed, this file's own writes are skipped rather than muted: the
+ * chain keeps running (the web-audio feed and the level meters still want it),
+ * only the speaker belongs to somebody else. */
+static volatile bool s_aux_claimed = false;
 static i2s_chan_handle_t s_tx_chan = NULL;   // TX-only I2S channel (no RX/mic)
 static volatile bool s_codec_ready = false;  // codec opened (at boot, pre-USB-host)
 static TaskHandle_t s_task = NULL;
@@ -1780,7 +1795,8 @@ static void rx_audio_task(void *arg)
             rxcap_push(s_out, DSP_FFT_SIZE);   /* record exactly what is played */
             webaud_push(s_out, DSP_FFT_SIZE);  /* ...and send the browser the same */
             if (codec_out)
-                esp_codec_dev_write(s_codec, s_out, DSP_FFT_SIZE * 2 * (int)sizeof(int16_t));
+                if (!s_aux_claimed)
+                    esp_codec_dev_write(s_codec, s_out, DSP_FFT_SIZE * 2 * (int)sizeof(int16_t));
             uint32_t w_us = (uint32_t)(esp_timer_get_time() - w0);
             if (w_us > s_write_us_max) s_write_us_max = w_us;
             s_write_us_sum += w_us;
@@ -2508,7 +2524,8 @@ static void rx_audio_task(void *arg)
          * the read blocks for a full frame - but it is the reason this task
          * must never be given a shorter read timeout. */
         if (codec_out)
-            esp_codec_dev_write(s_codec, s_out, pairs * 2 * (int)sizeof(int16_t));
+            if (!s_aux_claimed)
+                esp_codec_dev_write(s_codec, s_out, pairs * 2 * (int)sizeof(int16_t));
         uint32_t write_us = (uint32_t)(esp_timer_get_time() - write_start_us);
         if (write_us > s_write_us_max) s_write_us_max = write_us;
         s_write_us_sum += write_us;
@@ -2613,6 +2630,10 @@ void rx_audio_apply_settings(void)
     rx_audio_set_am_half_bw_hz ((int)settings_get_rxaud_am_half_bw_h100() * 100);
     rx_audio_set_agc_release_ms(settings_get_rxaud_agc_release_ms());
     rx_audio_set_agc_off       (settings_get_rxaud_agc_off());
+    /* The toggle, not just the shape. Without this the stored value was
+     * loaded and never reached the DSP, which is the same defect one layer
+     * down from the one being fixed. */
+    s_binaural_en = settings_get_binaural_en();
 }
 
 void rx_audio_init(void)
@@ -2623,7 +2644,7 @@ void rx_audio_init(void)
     settings_load_all(&cfg);
     s_enabled = cfg.rx_audio_en;
     s_volume  = cfg.rx_audio_vol;
-    rx_audio_apply_settings();   // gain ceiling + the three pan controls
+    rx_audio_apply_settings();   // gain ceiling, the three pan controls, binaural on/off
     // NOT net_quiet - that stays OTA-only (see net_quiet.h). Standing
     // feeds that should hold off while RX audio is on (SelfSpotter, RBN,
     // DX cluster, PSK Reporter RX) check rx_audio_is_enabled() directly
@@ -2874,8 +2895,17 @@ static void preopen_body(void)
     // audio don't claim I2S/DMA at all (and there's zero risk to USB host).
     qmx_settings_t cfg;
     settings_load_all(&cfg);
-    if (!cfg.rx_audio_en) {
-        ESP_LOGI(TAG, "preopen skipped (RX audio disabled)");
+    /* ⛔ THE WEB-RADIO PLAYER IS THE SECOND CONSUMER OF THIS OUTPUT, and it
+     * cannot open the codec itself - by the time the operator taps a station
+     * the USB host has the DMA RAM. So the player's flag has to be read HERE,
+     * at boot, or it has no speaker at all.
+     *
+     * Found on the bench 2026-11-01: field came up with a wiped NVS, so
+     * rx_audio_en was at its default false, the codec was never opened, and
+     * every station tap answered "The audio output is not open". The player
+     * looked broken; the gate was one boot earlier. */
+    if (!cfg.rx_audio_en && !cfg.webradio_en) {
+        ESP_LOGI(TAG, "preopen skipped (RX audio and web radio both disabled)");
         return;
     }
     s_volume = cfg.rx_audio_vol;
@@ -3025,6 +3055,44 @@ bool rx_audio_any_listener(void) { return s_enabled || s_web_en; }
 /* On, but the codec was never opened for this session - see rx_audio.h. */
 bool rx_audio_restart_pending(void) { return s_enabled && !s_codec_ready; }
 
+bool rx_audio_aux_claim(bool on)
+{
+    if (on && !s_codec_ready) {
+        ESP_LOGW(TAG, "aux claim refused - the codec was never opened");
+        return false;
+    }
+    s_aux_claimed = on;
+    ESP_LOGI(TAG, "speaker %s", on ? "lent to the aux writer" : "returned to RX audio");
+    return true;
+}
+
+bool rx_audio_aux_active(void) { return s_aux_claimed; }
+
+int rx_audio_aux_write(const int16_t *pcm, int frames)
+{
+    if (!s_aux_claimed || !s_codec || !pcm || frames <= 0) return 0;
+    /* ⭐ THE AUX WRITER GETS RECORDED TOO, and until 2026-11-01 it did not.
+     *
+     * rxcap sits on the RX path above, which this call deliberately bypasses
+     * - so while the web radio owned the speaker there was NO WAY to capture
+     * what was actually played. Three rounds of diagnosing a break-up were
+     * done entirely on path counters (CPU, ring level, frames/s) with no
+     * recording of the sound itself, and the operator had to ask for the
+     * signature before anyone looked for one. This is the single point every
+     * played sample passes through, so it is the right place.
+     *
+     * Same arm and dump as the RX path: POST /api/cmd {"action":"rxcap",
+     * "seconds":N} then GET /api/rxaudio.wav. Costs one branch when not
+     * armed. */
+    rxcap_push(pcm, frames);
+    /* Stereo, 16-bit, at this channel's rate - the caller resamples. Blocking,
+     * which is deliberate: the codec write is what paces the decode task, the
+     * same way it paces the RX chain above. */
+    if (esp_codec_dev_write(s_codec, (void *)pcm, frames * 2 * (int)sizeof(int16_t)) != 0)
+        return 0;
+    return frames;
+}
+
 void rx_audio_set_volume(uint8_t vol)
 {
     if (vol > 100) vol = 100;
@@ -3116,7 +3184,18 @@ void rx_audio_get_tuning(rx_audio_tuning_t *out)
 // Takes effect via the same mode/center-tracking check rx_audio_task()
 // already runs every loop (binaural_prev comparison) - no restart, no
 // re-enable, same "live" promise as the AGC tuning above.
-void rx_audio_set_binaural_enabled(bool en) { s_binaural_en = en; }
+void rx_audio_set_binaural_enabled(bool en)
+{
+    s_binaural_en = en;
+    /* ⭐ PERSIST IT. Same shape as rx_audio_set_volume() right above: the
+     * setter stores, so every caller - the Resource Management row, the web
+     * {"binaural":...} command and a config import - gets it remembered
+     * without each one having to remember to. It was RAM-only until
+     * 2026-11-02 while the three pan sliders that shape the split were
+     * already stored, so the feature came back half-configured after every
+     * power cycle. */
+    settings_set_binaural_en(en);
+}
 bool rx_audio_get_binaural_enabled(void) { return s_binaural_en; }
 void rx_audio_set_pan_blend(float v) { if (v >= 0.0f && v <= 0.5f) s_pan_blend = v; }
 float rx_audio_get_pan_blend(void) { return s_pan_blend; }

@@ -25,11 +25,12 @@
 #include "ui/qmx_term_view.h" // the dev "term_view" action
 #include "ui/gps_status_view.h" // the dev "gps_view" action
 #include "ft8_screen_view.h"  // ft8_screen_view_is_active
+#include "ui_mode.h"          // ui_mode_get (CW page reports screen:"cw")
 #include "js8_chat.h"      // the JS8 conversation store, reported in /api/status
 #include "js8_submode.h"   // the submode table and the one refusal rule
 #include "js8_alt.h"       // T132 alternate-submode decode (RX only)
 #include "ui/js8_page.h"   // the conversation grid, composed for /api/js8
-#include "ft8_tx.h"
+#include "ft8_tx.h"        // ft8_tx_get_status (web TX-status banner)
 #include "js8_ftx.h"
 #include "js8_target.h"           // who the operator is working in JS8
 #include "wspr_tx.h"          // the dev "wspr_tx_test" action
@@ -76,6 +77,7 @@
 #include "hid_cursor.h"
 #include "iq_balance.h"        // iq_balance_set_enabled - /api/settings
 #include "rx_audio.h"          // live AGC/clip tuning - /api/cmd "rxaudio"
+#include "webradio.h"          // /api/cmd "webradio_play" - a stream without the directory
 #include "util/mic_probe.h"    // /api/cmd "mic_probe" - GitHub #17
 #include "spur_map.h"          // spur_map_set_enabled - /api/settings
 #include "mem_channels.h"      // memory channels - /api/memory
@@ -807,7 +809,7 @@ static esp_err_t status_handler(httpd_req_t *req)
                  * page draw four rows while the decoder wrapped over two -
                  * two of them permanently blank. */
                 cJSON_AddNumberToObject(c, "rows", cw_decode_rows());
-                cJSON_AddNumberToObject(c, "cols", CW_LINE_COLS);
+                cJSON_AddNumberToObject(c, "cols", cw_decode_cols());
                 cJSON_AddItemToObject(root, "cw", c);
             }
         }
@@ -835,7 +837,8 @@ static esp_err_t status_handler(httpd_req_t *req)
      * page cannot be reported as "panadapter" just because FT8 is not up. */
     cJSON_AddStringToObject(root, "screen",
         ui_mode_get() == UI_MODE_FT8  ? "ft8"  :
-        ui_mode_get() == UI_MODE_WSPR ? "wspr" : "panadapter");
+        ui_mode_get() == UI_MODE_WSPR ? "wspr" :
+        ui_mode_get() == UI_MODE_CW   ? "cw"   : "panadapter");
     /* ⚠ ALSO IN /api/settings, AND BOTH ARE NEEDED. The web UI shows or hides
      * the whole WSPR card from THIS field, on the 1 Hz status poll - it never
      * reads /api/settings. Adding it only there (which is what shipped first)
@@ -843,6 +846,10 @@ static esp_err_t status_handler(httpd_req_t *req)
      * host test could see it: the bug is which endpoint serves the field, not
      * what the field contains. */
     cJSON_AddBoolToObject(root, "wspr_en", wspr_feature_enabled());
+    /* So the browser can grey its own "Switch to CW" rather than offering a
+     * door that answers 403 - the refusal below is the authority, this is
+     * only the menu agreeing with it in advance. */
+    cJSON_AddBoolToObject(root, "cw_en", settings_get_cw_page_en());
     // #218: firmware version + whether a newer release exists. The update check
     // has run since v1.1 but announced itself ONLY inside the on-device Reader,
     // so anyone who never opened the manual was never told - which is how people
@@ -2420,6 +2427,27 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                  * a menu entry that does nothing. */
                 ui_request_base_mode_m(UI_MODE_WSPR);
             }
+            else if (!strcmp(scr, "cw")) {
+                /* ⛔ REFUSED ON THE CHANNEL THE CALLER USED. ui_set_base_mode()
+                 * already turns this away, but it does it by returning - and a
+                 * silent return here would answer {"ok":true} while nothing
+                 * moved, which is the T67 shape this action exists to avoid.
+                 *
+                 * NOT self-enabling, unlike the "wspr" branch above: WSPR is a
+                 * finished page whose flag is vestigial, the CW page is not.
+                 * It keys the radio over CAT KY with no way to abort a message
+                 * in flight, so asking for the page is not consent to that. */
+                if (!settings_get_cw_page_en()) {
+                    cJSON_Delete(root);
+                    httpd_resp_set_type(req, "application/json");
+                    httpd_resp_set_status(req, "403 Forbidden");
+                    httpd_resp_sendstr(req,
+                        "{\"ok\":false,\"error\":\"the CW page is off - "
+                        "enable it with {\\\"action\\\":\\\"cw_enable\\\",\\\"on\\\":true}\"}");
+                    return ESP_OK;
+                }
+                ui_request_base_mode_m(UI_MODE_CW);
+            }
             else if (!strcmp(scr, "pan") || !strcmp(scr, "panadapter")) {
                 ui_request_base_mode_m(UI_MODE_PANADAPTER);
             }
@@ -2430,7 +2458,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_sendstr(req,
-                    "{\"ok\":false,\"error\":\"screen must be pan, ft8, ft4, js8 or wspr\"}");
+                    "{\"ok\":false,\"error\":\"screen must be pan, cw, ft8, ft4, js8 or wspr\"}");
                 return ESP_OK;
             }
         } else {
@@ -2438,7 +2466,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_sendstr(req,
-                "{\"ok\":false,\"error\":\"screen required (pan, ft8, ft4, js8 or wspr)\"}");
+                "{\"ok\":false,\"error\":\"screen required (pan, cw, ft8, ft4, js8 or wspr)\"}");
             return ESP_OK;
         }
     } else if (action && strcmp(action, "reply") == 0) {
@@ -2509,6 +2537,21 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         ft8_screen_view_request_js8_macro(0);
     } else if (action && strcmp(action, "js8_grid") == 0) {
         ft8_screen_view_request_js8_macro(1);
+    } else if (action && strcmp(action, "js8_cmd") == 0) {
+        /* {"action":"js8_cmd","cmd":"GRID?"} - the macro sheet's directives,
+         * the same twelve the Tab5 shows and by the same worker.
+         *
+         * ⛔ NOT VALIDATED HERE. js8_cmd_from_text() is the authority on
+         * what has a directed form; a list in this file would be a second
+         * copy of it and the two would drift. An unknown word comes back as
+         * the encoder's own refusal, which is what the page should show. */
+        const char *cmd = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cmd"));
+        if (!cmd || !cmd[0]) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"cmd required\"}");
+            return ESP_OK;
+        }
+        ft8_screen_view_request_js8_directive(cmd);
     } else if (action && strcmp(action, "js8_flush") == 0) {
         /* The browser's Flush. Ryan KK6DZB, 2026-10-14: "No flush button in
          * the webUI?" - the Tab5's JS8 tab bar has had one all along. It
@@ -3451,6 +3494,45 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             "log. The QMX will need a power cycle.\"}");
         mic_probe_request();      /* does not return */
         return ESP_OK;
+    } else if (action && strcmp(action, "webradio_play") == 0) {
+        /* ⭐ DEV: play a URL WITHOUT THE DIRECTORY.
+         *
+         * The decode measurement needs a stream, and until now the only way
+         * to start one was to tap a station on the glass - so a transient
+         * radio-browser.info failure blocked a bench measurement that has
+         * nothing to do with the directory. That happened on field
+         * 2026-11-01 ("Directory unreachable", a TLS reset, while the same
+         * host answered the PC in 128 ms). It also means a stream can be
+         * repeated EXACTLY, which comparing two decoder arms needs.
+         *
+         * {"action":"webradio_play","url":"http://...","name":"..."}
+         * {"action":"webradio_stop"}
+         *
+         * No guard beyond a URL: this touches no transmit path, only the
+         * speaker, and it is already reachable from the drawer. */
+        const cJSON *ju = cJSON_GetObjectItem(root, "url");
+        const cJSON *jn = cJSON_GetObjectItem(root, "name");
+        if (!cJSON_IsString(ju) || !ju->valuestring[0]) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"url is required\"}");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "webradio: play '%s' over /api/cmd", ju->valuestring);
+        bool ok = webradio_play(ju->valuestring,
+                                cJSON_IsString(jn) ? jn->valuestring : "dev");
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, ok ? "{\"ok\":true,\"note\":\"see the webradio loop: lines\"}"
+                                   : "{\"ok\":false,\"err\":\"could not start\"}");
+        return ESP_OK;
+    } else if (action && strcmp(action, "webradio_stop") == 0) {
+        ESP_LOGW(TAG, "webradio: stop over /api/cmd");
+        webradio_stop();
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
     } else if (action && strcmp(action, "cpu_owners") == 0) {
         // TEMP INSTRUMENT (#284) - dev only. Names the task eating a core.
         // The rotation was measured OUT as the panadapter's core-0 hog (7% ->
@@ -3903,6 +3985,37 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         }
         char buf[96];
         snprintf(buf, sizeof(buf), "{\"ok\":true,\"wspr_en\":%s}",
+                 want ? "true" : "false");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, buf);
+        cJSON_Delete(root);
+        return ESP_OK;
+    } else if (action && strcmp(action, "cw_enable") == 0) {
+        /* The CW page's master switch. Same shape as wspr_enable above and
+         * logged for the same measured reason - a route that writes NVS and
+         * says nothing leaves a user's "I cannot get to the CW page" report
+         * with no evidence in it.
+         *
+         * {"action":"cw_enable","on":true}   - and it persists in NVS.
+         *
+         * ⚠ The page is UNFINISHED, and that is why this switch exists rather
+         * than being vestigial like wspr_en: CAT KY has no abort, so a sent
+         * message runs to the end of the radio's 80-character buffer. Default
+         * OFF ships the firmware without offering that to anyone who did not
+         * go looking for it.
+         *
+         * Turning it OFF while the page is up also leaves it, or the operator
+         * is standing on a page whose door has just been removed. */
+        cJSON *on = cJSON_GetObjectItem(root, "on");
+        bool want = on ? (cJSON_IsTrue(on) || on->valueint) : true;
+        ESP_LOGW(TAG, "CW page master switch -> %s (over /api/cmd)",
+                 want ? "ENABLED" : "DISABLED - the page loses its drawer door");
+        settings_set_cw_page_en(want);
+        if (!want && ui_mode_get() == UI_MODE_CW) {
+            ui_request_base_mode_m(UI_MODE_PANADAPTER);
+        }
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"ok\":true,\"cw_en\":%s}",
                  want ? "true" : "false");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, buf);
@@ -6165,7 +6278,6 @@ static esp_err_t js8_get_handler(httpd_req_t *req)
         /* The same grid the glass draws, including the submode mark in
          * column 1 - one renderer, both surfaces. See js8_page.h. */
         int used = js8_page_render(sc->msgs, have, now_utc,
-                                   (uint8_t)ft8_op_mode_protocol(),
                                    sc->lines, sc->row_msg);
 
         cJSON_AddNumberToObject(root, "used", used);
@@ -6578,6 +6690,21 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
      * whatever it was when the link came up. */
     cat_query_keyer_wpm();
     cJSON_AddNumberToObject(root, "keyer_wpm",       (double)cat_get_keyer_wpm());
+    /* T139 CW monitor (Michael KZ4LY). Live from the radio for the same reason
+     * as the keyer speed, and NOT persisted here: both values live in the
+     * QMX's own EEPROM, and a copy on this side would be a second answer to
+     * "what is the monitor level" - which is the half of his report that was
+     * about not knowing who owned the value.
+     *
+     * cw_mon_max is the range the RADIO reported during MM discovery, and 0
+     * means it never answered. The page must render 0 as "no control", never
+     * as a 0-100 slider: the operation manual documents the default and no
+     * range, so any scale invented on this side would be a fiction shown as
+     * the radio's. cw_mon_vol is -1 and cw_mon_abs is -1 until it answers. */
+    cat_query_sidetone();
+    cJSON_AddNumberToObject(root, "cw_mon_vol",      (double)cat_get_sidetone_vol());
+    cJSON_AddNumberToObject(root, "cw_mon_abs",      (double)cat_get_sidetone_absolute());
+    cJSON_AddNumberToObject(root, "cw_mon_max",      (double)cat_sidetone_vol_max());
     /* CW PROFILES (#359, Uwe DL8UG). Four slots of {name, centre, filter mask}.
      * An empty slot is centre 0 and is sent as such, so the page renders it as
      * empty rather than inventing a default the operator never chose.
@@ -6985,6 +7112,38 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
                 SET_WARN("CW keyer speed was not sent - no CAT link to the radio");
             else
                 cat_request_keyer_wpm((uint16_t)wpm);
+        }
+    }
+
+    {
+        /* T139 CW monitor -> the radio, over CAT, never stored here.
+         *
+         * Both halves accepted in one POST and drained together, which is also
+         * how the Tab5 sends them: an MM write needs MU; to take effect and
+         * MU; drops IQ mode, so two separate writes would flatten the spectrum
+         * twice for one change of mind.
+         *
+         * ⛔ A WARNING, NOT A 400, for the same reason as the keyer speed
+         * above (Randy N4OPI): no CAT link says nothing about the rest of the
+         * save, and there is nothing stored on this side to keep for later.
+         *
+         * An out-of-range level is clamped by cat_request_sidetone_vol()
+         * against the range the RADIO reported, not against one named here. */
+        cJSON *itv = cJSON_GetObjectItem(root, "cw_mon_vol");
+        cJSON *ita = cJSON_GetObjectItem(root, "cw_mon_abs");
+        bool want_v = cJSON_IsNumber(itv) && itv->valueint >= 0;
+        bool want_a = cJSON_IsNumber(ita) && ita->valueint >= 0;
+        if (want_v || want_a) {
+            if (!cat_is_ready()) {
+                SET_WARN("CW monitor was not sent - no CAT link to the radio");
+            } else if (want_v && cat_sidetone_vol_max() == 0) {
+                SET_WARN("CW monitor level was not sent - this radio has not "
+                         "reported the setting over CAT");
+                if (want_a) cat_request_sidetone_absolute(ita->valueint != 0);
+            } else {
+                if (want_a) cat_request_sidetone_absolute(ita->valueint != 0);
+                if (want_v) cat_request_sidetone_vol((uint16_t)itv->valueint);
+            }
         }
     }
 

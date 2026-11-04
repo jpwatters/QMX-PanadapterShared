@@ -1,4 +1,4 @@
-From bc5ff2b55d1e844798338e37a147b6cd8e853f91 Mon Sep 17 00:00:00 2001
+From c3881aa2f6b4d14d118fab925a66e6e9aca8fee4 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 17:12:57 -0500
 Subject: [PATCH 17/42] nas-relay: pause I/Q to the Tab5 from TX; to RX;

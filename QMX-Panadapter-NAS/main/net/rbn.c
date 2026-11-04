@@ -413,8 +413,14 @@ static void session(int fd, const char *mycall)
     uint32_t lines = 0, spots = 0;
 
     for (;;) {
-        qmx_settings_t st;
-        settings_load_all(&st);
+        /* ⛔ NARROW, never settings_load_all(): session() is called BY
+           rbn_task(), so a qmx_settings_t in each puts two 3888-byte copies
+           on one 10240-byte stack. That is the shape that overflowed
+           dxcluster at 110 s on 2026-09-30 - same two frames, same struct,
+           a bigger stack. Only two fields are wanted here. */
+        char my_call[16] = {0};
+        settings_get_my_callsign(my_call, sizeof(my_call));
+        const bool rbn_en = settings_get_rbn_en();
         // net_quiet: hold off RECONNECTING during an OTA - a fresh session is
         // exactly the internal-heap churn the verify cannot afford. (Left as it
         // was - the OTA fix was verified with this read loop pausing.)
@@ -424,7 +430,7 @@ static void session(int fd, const char *mycall)
          * SelfSpotter was open RBN delivered NOTHING, including the CW
          * self-spots that screen exists to show. */
 
-        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
+        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
 
         // The operator can change callsign in the web UI while this session
         // is still happily connected - an RBN session can run for hours with
@@ -436,9 +442,9 @@ static void session(int fd, const char *mycall)
         // name only affects the banner/attribution, not which spots this
         // socket receives, so updating s_mycall in place is enough to start
         // matching the new call on the very next line.
-        if (st.my_callsign[0] && strcasecmp(st.my_callsign, s_mycall) != 0) {
-            ESP_LOGI(TAG, "callsign changed (%s -> %s) - self-spot buffer cleared", s_mycall, st.my_callsign);
-            snprintf(s_mycall, sizeof(s_mycall), "%s", st.my_callsign);
+        if (my_call[0] && strcasecmp(my_call, s_mycall) != 0) {
+            ESP_LOGI(TAG, "callsign changed (%s -> %s) - self-spot buffer cleared", s_mycall, my_call);
+            snprintf(s_mycall, sizeof(s_mycall), "%s", my_call);
             rbn_self_spots_clear();
         }
 
@@ -495,8 +501,10 @@ static void rbn_task(void *arg)
     (void)arg;
     int backoff_s = 5;
     for (;;) {
-        qmx_settings_t st;
-        settings_load_all(&st);
+        /* Narrow, same reason as in session() below. */
+        char my_call[16] = {0};
+        settings_get_my_callsign(my_call, sizeof(my_call));
+        const bool rbn_en = settings_get_rbn_en();
 
         // net_quiet: hold off RECONNECTING during an OTA - a fresh session is
         // exactly the internal-heap churn the verify cannot afford. A live
@@ -505,13 +513,13 @@ static void rbn_task(void *arg)
         // holding its reconnect while an overlay is up starves that very screen.
         if (net_quiet_active() || rx_audio_any_listener()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
 
-        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
+        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
             // Drop anything we were showing: stale RBN spots are worse than none.
             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_RBN, NULL, 0); s_pub_count = 0; }
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
-        if (!st.my_callsign[0]) {
+        if (!my_call[0]) {
             ESP_LOGW(TAG, "no callsign set - RBN needs one to log in");
             vTaskDelay(pdMS_TO_TICKS(60000));
             continue;
@@ -524,7 +532,7 @@ static void rbn_task(void *arg)
             continue;
         }
         backoff_s = 5;
-        session(fd, st.my_callsign);
+        session(fd, my_call);
         close(fd);
         vTaskDelay(pdMS_TO_TICKS(5000));
     }

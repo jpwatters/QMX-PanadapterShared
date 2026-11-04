@@ -1,4 +1,4 @@
-From 5c8ff3cf272f236a758e1bf1286d2ac9f911aaee Mon Sep 17 00:00:00 2001
+From fe136dc186c4035b0eeecc9d5b1ae01efe358939 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 15:00:00 -0500
 Subject: [PATCH 37/42] README: build steps for a new upstream release
@@ -11,10 +11,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/README.md b/README.md
-index 6a187025..78a9d3c4 100644
+index 2be25df2..8f689773 100644
 --- a/README.md
 +++ b/README.md
-@@ -61,20 +61,37 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
+@@ -61,20 +61,37 @@ The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-che
  Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
  ________________________________________________________________________________________________________________________________________________
  

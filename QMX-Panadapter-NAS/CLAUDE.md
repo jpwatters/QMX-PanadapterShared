@@ -178,6 +178,39 @@ Detailed sections moved to memory for session speed:
 - [Release process](../../../memory/project_release_process.md)
 - [Internal RAM audit](../../../memory/project_internal_ram_bss_audit.md) — where the 445 KB goes, what may and may NOT move to PSRAM
 
+## CW page is ON MAIN, and `cw_page_en` defaults ON from v1.24.0
+
+Merged 2026-11-02 (fast-forward, 104 commits). `feat/cw-page` is gone; do
+not recreate it - CW work is ordinary main work from here.
+
+⭐ **It ships ON as v1.24.0's own beta** (operator, 2026-11-03: "I want it
+turned on NOW and it just carries the beta status" - re-cut same version,
+see memory for the full exchange). The gate is still firmware, same four
+surfaces as before, just flipped: the drawer shows `MODE: CW`, `set_screen
+"cw"` works, boot restore honours a saved CW page, `ui_set_base_mode()`
+allows it. Turn it OFF with `{"action":"cw_enable","on":false}` or
+`cw_page_enabled = no` in a config file. The no-abort gap (`KY` cannot be
+cancelled - see memory/project_cw_ky_abort_rx_does_not_work.md) is why it is
+still "beta" everywhere it's documented, not why it is off.
+
+⚠ **Why it stays dark: `KY` has no abort.** The CAT manual documents none in
+TS480-compat-OFF mode, so a sent message runs to the end of the radio's
+80-character buffer. That is the open hardware question, and the gate comes
+off when it is answered - not before.
+
+⭐ **CW TRANSMIT WORKS - CAT `KY` KEYS THE RADIO**, confirmed off air by the
+operator 2026-09-30: *"the cw is keyed clearly on the antenna - i have tried
+it and it works"*. ⛔ Two bench evenings in August concluded the opposite on
+the strength of no sidetone and no LCD `M` - **practice mode suppresses both
+for message sending**, so the evidence for "it does not key" was two
+instruments that were switched off. Do not reinstate an "unverified" caveat.
+Generalise it: a negative result needs its instruments proved alive just as
+much as a positive one.
+
+`TB`'s t-field is the honest counter for what the radio is sending, and
+`KY;` GET readings depend on buffer state - baseline only after a QMX power
+cycle. Full history in `docs/cw-page-design.md`.
+
 See MEMORY.md index for complete topic list.
 
 ## Context management

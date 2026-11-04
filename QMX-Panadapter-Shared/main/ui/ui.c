@@ -4,6 +4,7 @@
 #include "util/pan_view.h"
 #include "util/format_freq.h"   // #302: ONE frequency format
 #include "util/freq_gridlines.h"
+#include "webradio_modal.h"
 #include "ui_theme.h"
 #include "gps_status_view.h"   // tapping the UTC field opens the GPS page
 #include "cw_decode.h"   /* the QMX decodes CW itself; this just shows it */
@@ -82,6 +83,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "js8_submode.h"   /* the submode table and the one refusal rule */
 #include "js8_alt.h"       /* T132 alternate-submode decode (RX only) */
 #include "ft8_screen_view.h"
+#include "cw_screen_view.h"
 #include "wspr_screen_view.h"
 #include "wspr_rx.h"
 #include "net/reader_net.h"
@@ -225,10 +227,24 @@ static lv_obj_t *s_zoom_popup  = NULL;  // zoom preset dropdown panel
 // whatever's actually underneath it (FT8 rows, the Preset button, etc).
 #define N_TOPBAR_HIT_ZONES 5
 /* Index into s_topbar_hit_zones[] / hit_zones[] - Band, Mode, BW, Freq, Zoom in
- * that order. Named because the WSPR page keeps this one live and disables the
- * other four; see sync_nav_affordances(). */
+ * that order. Named because the WSPR page keeps FREQ live and disables the
+ * other four, and the CW page does the reverse to MODE; see
+ * top_bar_apply_mode(). */
+#define TOPBAR_ZONE_MODE   1
 #define TOPBAR_ZONE_FREQ   3
 static lv_obj_t *s_topbar_hit_zones[N_TOPBAR_HIT_ZONES] = {0};
+/* ⛔ THE DEEP DEPTH IS COMPUTED ONCE AND MUST BE REMEMBERED, NOT RE-STATED.
+ * top_bar_set_hit_depth() used to write a literal 200 here, which SILENTLY
+ * UNDID the 2026-08-05 spots fix above: ui_init() derives the depth from
+ * spots_lane_top_hit_y(), and a second owner then overwrote it - at 1 Hz,
+ * because top_bar_apply_mode() re-asserts it. On the Tab5 the two agreed by
+ * coincidence (the clamp makes the computed value ui_sy(200) = 200); on the
+ * Waveshare 7B the computed value is 83 and the literal put the zones back
+ * over the whole spots lane - callsigns AND the "< spots (n)" counters, which
+ * opened the Band and Zoom dropdowns instead (operator-reported 2026-09-11).
+ * Same bug class as v1.12.1's CLICKABLE disagreement: two functions owning one
+ * property, the 1 Hz one winning. One owner now. */
+static int       s_topbar_zone_deep_h = 0;
 
 float ui_get_zoom_factor(void)    { return s_zoom_factor; }
 int   ui_get_pan_offset_bins(void){ return s_pan_offset_bins; }
@@ -293,6 +309,74 @@ bool ui_validate_band_freq_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out)
     return legal_band_edges(hz, lo_out, hi_out);
 }
 
+// CW band-plan discipline (defined further down, used from here on).
+static uint32_t  cw_segment_center_hz(uint32_t hz);
+static esp_err_t ui_tune_commit(uint32_t hz, bool forced);
+
+// Roaming edges for the drag/stroll gestures. On the CW page the roamable
+// window is the band's CW SEGMENT, not the whole band - the drag-clamp half
+// of the "honour the band plan" rule (operator, 2026-08-01); everywhere else
+// it's the plain band edges. Falls back to band edges when the band has no
+// known CW segment.
+/* The CW page's operating range: the band's CW segment AND the DiGi segment.
+ *
+ * ⭐ CW IS LEGAL INSIDE THE DIGITAL SUB-BAND, BUT NOT THE REVERSE (operator,
+ * 2026-09-11), so a CW operator who is clamped to the CW segment alone is being
+ * denied half the spectrum he may actually use. Phone is never included - that
+ * one really is off limits for CW.
+ *
+ * It exists because FIVE places each hand-rolled "walk the segments and take
+ * the BP_CW one": the stroll clamp, the segment centre, the tune clamp, the
+ * band-plan drag and the strip render. Widening the rule meant changing all
+ * five in step, which is exactly the shape of bug this file keeps recording -
+ * so there is one rule now and the five call it.
+ *
+ * Returns false when the frequency is not in a known band, or the band has
+ * neither segment; callers then leave the frequency alone. */
+static bool cw_page_range_hz(uint32_t hz, uint32_t *lo, uint32_t *hi)
+{
+    uint8_t bp_region; char bp_grid[8];
+    settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
+    const bp_seg_t *segs = NULL;
+    int n = bandplan_get_segments(hz,
+                bandplan_effective_region((bandplan_region_t)bp_region,
+                                          bp_grid), &segs);
+    if (n <= 0 || !segs) return false;
+    bool found = false;
+    uint32_t l = 0, h = 0;
+    for (int i = 0; i < n; i++) {
+        if (segs[i].type != BP_CW && segs[i].type != BP_DIGI) continue;
+        if (!found) { l = segs[i].lo_hz; h = segs[i].hi_hz; found = true; }
+        else {
+            if (segs[i].lo_hz < l) l = segs[i].lo_hz;
+            if (segs[i].hi_hz > h) h = segs[i].hi_hz;
+        }
+    }
+    if (!found) return false;
+    *lo = l; *hi = h;
+    return true;
+}
+
+static bool effective_drag_edges(uint32_t center_hz, uint32_t *lo, uint32_t *hi)
+{
+    if (!legal_band_edges(center_hz, lo, hi)) return false;
+    if (ui_mode_get() != UI_MODE_CW) return true;
+    uint32_t cl, ch;
+    if (cw_page_range_hz(center_hz, &cl, &ch)) { *lo = cl; *hi = ch; }
+    return true;
+}
+
+/* The range the CURRENT PAGE lets the operator reach - the band on the
+ * panadapter, the CW+DiGi segments on the CW page. Exported for the spots
+ * lane, whose off-screen counters must not point past it: they did, and on the
+ * CW page they counted phone spots the tune clamp would never let him reach
+ * (operator, 2026-09-11: "the edge spots counter go beyond the band-plan - not
+ * allowed"). Same function as the drag clamp, so the two cannot disagree. */
+bool ui_page_range_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out)
+{
+    return effective_drag_edges(hz, lo_out, hi_out);
+}
+
 static void band_preset_cb(lv_event_t *e)
 {
     uint32_t center_hz = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
@@ -312,6 +396,15 @@ static void band_preset_cb(lv_event_t *e)
         } else {
             target = last;                                  // unknown band -> recall as before
         }
+    }
+    // On the CW page a band change goes to the MIDDLE of that band's CW
+    // segment, by request (operator, 2026-08-04) - not the per-band recall,
+    // which on this page would often be a spot the operator has no interest
+    // in returning to. The recall feature itself is untouched everywhere
+    // else; see [[feedback_per_band_freq_recall]].
+    if (ui_mode_get() == UI_MODE_CW) {
+        uint32_t c = cw_segment_center_hz(center_hz);
+        if (c) target = c;
     }
     // Changing band with auto-answer running would transmit into an antenna
     // that is almost certainly not tuned for the new band - few operators have
@@ -663,7 +756,9 @@ static void freq_apply_key(char key, lv_obj_t *target_btn)
             }
             if (s_freq_buf[0]) {
                 uint32_t target_hz = freq_buf_to_hz(s_freq_buf);
-                esp_err_t err = cat_set_frequency(target_hz);
+                // Clamped on the CW page - typing a phone-band frequency
+                // there should still land in the CW segment.
+                esp_err_t err = ui_tune_commit(target_hz, false);
                 ESP_LOGI("ui", "Freq keypad: '%s' -> %lu Hz (err=0x%x)",
                          s_freq_buf, (unsigned long)target_hz, err);
                 if (err == ESP_OK) {
@@ -1031,15 +1126,32 @@ static void freq_popup_build(void)
     // Mode row: DiGi / USB / LSB / CW. Only for the Memory channel editor;
     // the top-bar keypad omits it (mode lives in the top bar there).
     if (show_mode) {
+        // Mode-pinned pages restrict the choice: a memory coded from the
+        // FT8/FT4 page can only be DiGi, from the CW page only CW (operator,
+        // 2026-08-01 — the FT8 half was a standing gap: recall was gated but
+        // this editor still offered every mode). The others are shown
+        // greyed and inert; the selection is forced to the pinned mode.
+        const char *req = (ui_mode_get() == UI_MODE_FT8) ? "DiGi"
+                        : (ui_mode_get() == UI_MODE_CW)  ? "CW" : NULL;
+        if (req) {
+            strncpy(s_freq_mode_sel, req, sizeof(s_freq_mode_sel) - 1);
+            s_freq_mode_sel[sizeof(s_freq_mode_sel) - 1] = '\0';
+        }
         int n_modes = freq_mode_count();
         int mode_w = (content_w - (n_modes - 1) * gap) / n_modes;
         for (int i = 0; i < n_modes; i++) {
+            bool allowed = (!req || strcmp(s_freq_modes[i], req) == 0);
             lv_obj_t *btn = lv_btn_create(panel);
             lv_obj_set_size(btn, mode_w, btn_h);
             lv_obj_set_pos(btn, i * (mode_w + gap), mode_y);
             lv_obj_set_style_bg_opa(btn, kp_opa, 0);
             lv_obj_set_style_radius(btn, 6, 0);
-            lv_obj_add_event_cb(btn, freq_mode_cb, LV_EVENT_CLICKED, (void *)s_freq_modes[i]);
+            if (allowed) {
+                lv_obj_add_event_cb(btn, freq_mode_cb, LV_EVENT_CLICKED, (void *)s_freq_modes[i]);
+            } else {
+                lv_obj_set_style_opa(btn, LV_OPA_30, 0);
+                lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+            }
             lv_obj_t *lbl = lv_label_create(btn);
             lv_label_set_text(lbl, s_freq_modes[i]);
             lv_obj_set_style_text_font(lbl, font_key, 0);
@@ -1636,7 +1748,9 @@ static void mode_popup_open(void)
 static void mode_label_clicked_cb(lv_event_t *e)
 {
     (void)e;
-    if (ui_mode_get() == UI_MODE_FT8) return;
+    // FT8 dims the whole top bar; the CW page keeps it live but the mode is
+    // pinned to CW - a one-entry dropdown is noise, so no popup at all there.
+    if (ui_mode_get() != UI_MODE_PANADAPTER) return;
     mode_popup_open();
 }
 
@@ -1746,6 +1860,15 @@ static void zoom_popup_open(void)
 // Re-center the passband-centered pan offset (zoom > x1) and push it to the
 // DSP zoom-FFT. No LVGL calls - safe to call from non-LVGL tasks (e.g. the
 // CAT task, when mode/passband width changes).
+/* ⛔ cw_visible_center_shift_bins() WAS HERE, AND MUST NOT COME BACK.
+ *
+ * It faked a centred view by panning the zoom window a further span/8 down, so
+ * that the passband landed in the middle of the part of a FULL-WIDTH spectrum
+ * the CW pane did not cover. That was a workaround for drawing a 1280 px view
+ * into 960 px of glass. The view is now genuinely drawn into [ui_spec_x0(),
+ * 1280), so the centre is really the centre - and applying the old shift on top
+ * would move the view half a pane-width off for no reason. */
+
 static void recompute_zoom_pan(void);
 
 /* ---- still display (#298) ------------------------------------------------
@@ -2252,19 +2375,12 @@ static void recompute_zoom_pan(void)
     dsp_set_zoom(s_zoom_factor, s_pan_offset_bins, ui_get_if_bin_shift(DSP_FFT_SIZE));
 }
 
-void ui_set_zoom(float zoom, int pan_bins)
+/* Shared tail of ui_set_zoom()/ui_set_zoom_pan() - everything except the
+ * decision of whether pan_bins survives or gets overwritten by a passband
+ * recentre. Splitting it out is what lets the pinch gesture keep the pan ITS
+ * OWN midpoint tracking computed, below. */
+static void ui_set_zoom_apply(float zoom, int pan_bins)
 {
-    if (zoom < 1.0f)  zoom = 1.0f;
-    if (zoom > 24.0f) zoom = 24.0f;
-    // Above x1, center the passband (not the VFO) on screen: pan to the
-    // passband's center-frequency bin offset from the VFO.
-    if (zoom > 1.0f) {
-        int32_t pb_low_hz, pb_high_hz;
-        compute_passband_edges_hz(&pb_low_hz, &pb_high_hz);
-        int32_t pb_center_hz = (pb_low_hz + pb_high_hz) / 2;
-        float bin_width_hz = (float)DSP_SAMPLE_RATE_HZ / (float)DSP_FFT_SIZE;
-        pan_bins = (int)lroundf((float)pb_center_hz / bin_width_hz);
-    }
     s_zoom_factor     = zoom;
     s_pan_offset_bins = pan_bins;
     sv_sync_pan_from_bins();
@@ -2282,6 +2398,38 @@ void ui_set_zoom(float zoom, int pan_bins)
             lv_label_set_text(s_zoom_label, b);
         }
     }
+}
+
+void ui_set_zoom(float zoom, int pan_bins)
+{
+    if (zoom < 1.0f)  zoom = 1.0f;
+    if (zoom > 24.0f) zoom = 24.0f;
+    // Above x1, center the passband (not the VFO) on screen: pan to the
+    // passband's center-frequency bin offset from the VFO.
+    if (zoom > 1.0f) {
+        int32_t pb_low_hz, pb_high_hz;
+        compute_passband_edges_hz(&pb_low_hz, &pb_high_hz);
+        int32_t pb_center_hz = (pb_low_hz + pb_high_hz) / 2;
+        float bin_width_hz = (float)DSP_SAMPLE_RATE_HZ / (float)DSP_FFT_SIZE;
+        pan_bins = (int)lroundf((float)pb_center_hz / bin_width_hz);
+    }
+    ui_set_zoom_apply(zoom, pan_bins);
+}
+
+/* 2026-11-03: the two-finger pinch gesture computes its OWN pan from how far
+ * the midpoint has moved (pan_delta_bins below), and used to hand it to
+ * ui_set_zoom() like everyone else - which, above x1, THROWS AWAY ANY pan_bins
+ * it is given and recentres on the passband instead. That recentre is right
+ * for every other caller (a button picking a zoom level has no pan opinion of
+ * its own) and wrong for exactly this one, which does: the result was a pinch
+ * that could zoom but never, visibly, pan - "not on the CW page... and not on
+ * the Panadapter page either" (operator). This is the same clamp-and-apply
+ * tail with that one recentre skipped. */
+static void ui_set_zoom_pan(float zoom, int pan_bins)
+{
+    if (zoom < 1.0f)  zoom = 1.0f;
+    if (zoom > 24.0f) zoom = 24.0f;
+    ui_set_zoom_apply(zoom, pan_bins);
 }
 
 #define WATERFALL_H     (DISPLAY_V_RES - TOP_BAR_H - SPECTRUM_H - LABEL_BAR_H - BANDPLAN_H - BOTTOM_BAR_H)
@@ -2453,6 +2601,49 @@ void ui_screen_view_hz(int64_t *lo_out, int32_t *span_out)
     if (span_out) *span_out = span;
 }
 
+/* ---- the on-device spectrum viewport ------------------------------------
+ *
+ * The CW page overlays a 320 px keyer pane on the LEFT of a full-width
+ * spectrum canvas, so a quarter of the trace used to be drawn underneath it -
+ * present in the buffer, invisible on the glass, and the axis had to hide the
+ * labels that fell there. The operator's call, 2026-09-02: "the spectrum is
+ * still like in panadapter mode - please adapt to this more narrow window."
+ *
+ * So on-device drawing maps the view into columns [x0, DISPLAY_H_RES) instead
+ * of [0, DISPLAY_H_RES). Only pixels-per-Hz changes: pan_view_resolve() takes
+ * the span from sample_rate/zoom and never looks at screen_w, so the frequency
+ * window the operator is tuned across is IDENTICAL either way.
+ *
+ * ⛔ THE WEB UI MUST NOT NARROW. The browser has no pane, and it consumes the
+ * same viewport through ui_pan_view_current() (webserver.c, webserver_ws.c).
+ * That function therefore stays full-width and the DISPLAY consumers - the
+ * spectrum canvas, the waterfall, the frequency axis, the spots lane - use
+ * ui_pan_view_current_disp() instead. Keep that split: giving the web a
+ * 960-wide viewport would put every browser-side frequency 25% out.
+ *
+ * The canvases stay DISPLAY_H_RES wide on purpose. Narrowing the LVGL objects
+ * would mean reallocating canvas buffers and changing every stride in the
+ * drawing code; painting the unused columns black costs nothing and the pane
+ * covers them anyway. */
+int ui_spec_x0(void)
+{
+    return (ui_mode_get() == UI_MODE_CW) ? CW_PANE_W : 0;
+}
+
+int ui_spec_w(void)
+{
+    return DISPLAY_H_RES - ui_spec_x0();
+}
+
+/* The viewport as the Tab5 DRAWS it - narrowed on the CW page. */
+bool ui_pan_view_current_disp(pan_view_cfg_t *c, pan_view_t *v, int n_bins)
+{
+    if (!ui_pan_view_current(c, v, n_bins)) return false;
+    c->screen_w = ui_spec_w();
+    pan_view_resolve(c, ui_view_lo_now(NULL), v);
+    return v->ok;
+}
+
 bool ui_pan_view_current(pan_view_cfg_t *c, pan_view_t *v, int n_bins)
 {
     if (!c || !v) return false;
@@ -2536,6 +2727,7 @@ static bool s_rit_pill_show = true;       // show the RIT pill in the panadapter
 static bool s_ft8_early_decode = true;    // FT8 fast-pounce early-decode toggle (NVS-backed)
 static const bool s_ft8_sync_lines = false;  // FT8 sync-line diagnostic removed (drawer toggle gone); overlay/3x-WF never engage
 static bool s_sim_mode_en = false;     // FT8 simulation mode toggle (NVS-backed)
+static bool s_cw_sim_en   = false;     // CW phantom practice - separate flag (NVS-backed)
 
 // ---- Sticky per-mode settings (v0.16.0) --------------------------------
 // Snapshot of freq/mode/passband/zoom taken on leaving a mode, restored
@@ -2552,6 +2744,7 @@ typedef struct {
 
 static ui_mode_snapshot_t s_pan_snapshot = {0};
 static ui_mode_snapshot_t s_ft8_snapshot = {0};
+static ui_mode_snapshot_t s_cw_snapshot  = {0};   // CW page (v1.4): sticky freq, mode always "CW"
 
 // CAT writes share a 200 ms TX rate-limiter; restoring freq+mode+bw
 // back-to-back would drop all but the first. Stagger them on a 250 ms
@@ -2811,6 +3004,17 @@ static lv_obj_t *s_bp_knob       = NULL;  // bordered box framing the marker so 
 // the top of pinch_poll_cb, so a touch that starts on the band-plan strip
 // never reaches the spectrum gesture code at all.
 static bool      s_touch_on_bandplan   = false;
+/* Same contract as s_touch_on_bandplan, for the CW page's left pane
+ * (WPM/Park/NEXT/macros/toggle, x < CW_PANE_W). pinch_poll_cb reads the raw
+ * panel with no idea which LVGL object is under a touch, so once CW mode
+ * is allowed to pan/pinch the spectrum (2026-11-03), a touch that starts on
+ * one of those buttons would otherwise ALSO be read as a spectrum gesture -
+ * the same class of bug the band-plan strip and the drawer already hit.
+ * Latched for the whole touch session in pinch_poll_cb itself (there is no
+ * single LVGL object to hang a PRESSED handler on - the pane is many
+ * buttons), not re-evaluated every poll, so a drag that starts on a macro
+ * button and strays sideways mid-hold still cannot wake the spectrum. */
+static bool      s_touch_on_cw_pane    = false;
 static bool      s_bp_dragging         = false;
 /* Where the visible-span window will BE once the drag is committed. Held for
  * the duration of the drag so update_bandplan_strip() draws the box at its
@@ -3235,6 +3439,11 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
 #define DRAWER_SEC_BRIGHTNESS 9
 #define DRAWER_SEC_CMAP       10
 #define DRAWER_SEC_RESMON     11  // resource-monitor floating overlay toggle (slot was unused)
+/* T139, Michael KZ4LY: the CW monitor (sidetone) level and whether it is
+ * Absolute or Relative to the main volume. 12 was the one free slot below
+ * N_DRAWER_SECTIONS - see tools/check_drawer_sections.py, which prints the
+ * free list and refuses the build on a duplicate. */
+#define DRAWER_SEC_CWMON      12
 /* 12 retired 2026-09-23: the RX audio section moved to Resource Management.
  * The number is left unused rather than reassigned, so nothing silently
  * inherits a section id that used to mean something else. */
@@ -3284,8 +3493,19 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
 #define DRAWER_SEC_DISTANCE   17  // distance unit (km/miles) - shown in FT8 AND WSPR,
                                   // since both decode lists honour it
 #define DRAWER_SEC_FT8SYNC    18  // panadapter-only: FT8 sync lines + 3x waterfall (diagnostic)
-#define DRAWER_SEC_SIMMODE    19  // FT8-only: phantom-station simulation mode (practice/testing, never keys the radio)
+#define DRAWER_SEC_SIMMODE    19  // FT8 PAGE, every sub-mode: phantom-station simulation (practice/testing, never keys the radio). FT8/FT4 are ft8_sim.c, JS8 is js8_sim.c - one toggle, the protocol picks
 #define DRAWER_SEC_SLEEP      20  // display sleep: idle-timeout backlight-off (#34)
+/* ⛔ 55, AND IT WAS 22 UNTIL 2026-11-02 - THE SAME ID AS DRAWER_SEC_QMXVOL.
+ * s_drawer_sections[] / _y[] / _h[] are all indexed BY this id, so on the CW
+ * page - the only page that builds CWSIM, and QMXVOL falls through the mode
+ * gate to `return true` so it is built on every page - both blocks wrote slot
+ * 22 and the second build won. One row was then positioned twice and the
+ * other's object was never positioned or hidden at all.
+ *
+ * The _Static_asserts below guard the BOUND, which is the overrun that cost a
+ * Guru Meditation in October. They cannot see a DUPLICATE, which is why
+ * tools/check_drawer_sections.py now refuses the build on either fault. */
+#define DRAWER_SEC_CWSIM      55  // CW-page-only: CW phantom practice (own flag, NOT sim_mode_en)
 #define DRAWER_SEC_TUNE2      21  // Antenna Tune (1_04+ only) - own section right above
                                    // WiFi setup; the panadapter layout closes its slot
                                    // when hidden on <1_04 firmware and reopens it in
@@ -3426,14 +3646,18 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  * Activation in the Station group: the two are one job in the field -
  * start the activation, then log the people you work by hand. */
 #define DRAWER_SEC_MANLOG     53
-#define N_DRAWER_SECTIONS     56
+/* The web-radio player. Not a radio setting and not tied to a page - it
+ * is an amusement that plays while the panadapter runs, so it lives in
+ * its own group and is visible everywhere. */
+#define DRAWER_SEC_WEBRADIO   54
+#define N_DRAWER_SECTIONS     57   /* ids 0..56; 12 is free, 55 is CWSIM, 56 RADIOSRC */
 // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 // or one plugged into a NAS running tools/nas-relay. Same effect as the web
 // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 // cat_reconnect), so the switch no longer needs a computer.
-// (55: upstream uses 0..53 and left 54 spare under N_DRAWER_SECTIONS 56.)
-#define DRAWER_SEC_RADIOSRC   55
-// ⛔ IDs are 0..55 now. The next one raises N_DRAWER_SECTIONS AND gets an
+// (56: upstream uses 0..55 in v1.24.1, with 12 free; N_DRAWER_SECTIONS was 56.)
+#define DRAWER_SEC_RADIOSRC   56
+// ⛔ IDs are 0..56 now. The next one raises N_DRAWER_SECTIONS AND gets an
 // assert below - see the 2026-10-03 note above.
 
 /* Catches the mistake above at COMPILE time instead of as a crash minutes into
@@ -3446,7 +3670,10 @@ _Static_assert(DRAWER_SEC_PORTA   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
 _Static_assert(DRAWER_SEC_KEYER   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_JS8SUB  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_SERVER < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
 static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
@@ -3476,6 +3703,12 @@ typedef struct { int id; const char *label; bool basic; } drawer_item_t;
 typedef struct { const char *title; const drawer_item_t *items; int n; } drawer_group_t;
 
 static const drawer_item_t GRP_STATION[] = {
+    /* ⭐ FIRST, AND IN BASIC TOO (operator, 2026-11-01). It was filed last and
+     * Advanced-only on the argument that it is an amusement and Basic is for
+     * the controls somebody needs to operate. He reaches for it more than
+     * that argument assumed, and a thing you open often belongs at the top of
+     * the group rather than under four setup rows you touch once. */
+    { DRAWER_SEC_WEBRADIO, "Web radio", true },
     { DRAWER_SEC_IDENTITY, "Callsign & Grid square", false },
     { DRAWER_SEC_MANLOG, "Log a contact (CW/SSB)", true },
     { DRAWER_SEC_ACTIVATION, "Activation (POTA/SOTA)", true },
@@ -3485,6 +3718,11 @@ static const drawer_item_t GRP_RADIO[] = {
     { DRAWER_SEC_RADIOSRC, "Radio source (USB / NAS)", true },
     { DRAWER_SEC_QMXVOL, "QMX volume", true },
     { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
+    /* T139: under the two gains because it only makes sense read against them
+     * - while the radio is Relative, the QMX volume row above moves this one.
+     * Basic, because setting the monitor level is ordinary CW operating, not
+     * setup. */
+    { DRAWER_SEC_CWMON, "CW monitor level", true },
     /* Above CW centre (operator, 2026-09-07). It was filed under Spectrum with
      * the drawing controls, but it is not one: it trims the 12 kHz IF offset so
      * a signal lands where the dial says it is, which is the same conversation
@@ -3558,6 +3796,13 @@ static const drawer_item_t GRP_FT8[] = {
     { DRAWER_SEC_JS8SUB, "JS8 submode", true },
     { DRAWER_SEC_SIMMODE, "Simulation mode", false },
 };
+/* The CW page's own practice toggle. Filed in its own group rather than in
+ * GRP_FT8 because the two simulators are deliberately independent settings
+ * (cw_sim_en vs sim_mode_en) - see settings.h. Advanced, matching how FT8's
+ * simulation toggle is filed. */
+static const drawer_item_t GRP_CW[] = {
+    { DRAWER_SEC_CWSIM, "Simulation mode", false },
+};
 static const drawer_item_t GRP_SPECTRUM[] = {
     /* Basic (true): this is not a tweak, it decides how the main screen reads,
      * and an operator who dislikes the still display must be able to find it
@@ -3605,6 +3850,7 @@ static const drawer_group_t s_drawer_groups[] = {
     GRP_DEF("Network",  GRP_NETWORK),
     GRP_DEF("Display",  GRP_DISPLAY),
     GRP_DEF("FT8",      GRP_FT8),
+    GRP_DEF("CW",       GRP_CW),
     GRP_DEF("WSPR",     GRP_WSPR),
     GRP_DEF("Spectrum", GRP_SPECTRUM),
 };
@@ -3826,6 +4072,9 @@ static bool drawer_sec_visible(int id, ui_mode_t mode, bool tune_ok)
         return ft8 && ft8_op_mode_get() == FT8_OP_MODE_JS8;
     if (id == DRAWER_SEC_SIMMODE) return ft8;
     if (id == DRAWER_SEC_DISTANCE) return ft8;
+    /* CW practice has its own flag and its own page: showing it anywhere else
+     * offers a toggle whose phantoms nothing on that page would render. */
+    if (id == DRAWER_SEC_CWSIM) return (mode == UI_MODE_CW);
     if (id == DRAWER_SEC_FT8SYNC) return ft8;
     /* ⛔ THE FALL-THROUGH AT THE BOTTOM OF THIS FUNCTION IS `return true`, so a
      * section nobody names here appears on EVERY page. Three were doing that and
@@ -3858,8 +4107,11 @@ static bool drawer_sec_visible(int id, ui_mode_t mode, bool tune_ok)
      * the `return true` below and appeared on every page. (RX audio used to be
      * named here too; its whole drawer section moved to Resource Management on
      * 2026-09-23, so there is nothing left to hide.) */
+    /* T139's monitor level joins the line below for exactly the reason given
+     * there: the sidetone exists in CW/CW-R, and both decode pages force the
+     * radio to DiGi on entry, so there would be nothing to monitor. */
     if (id == DRAWER_SEC_BPREGION || id == DRAWER_SEC_CW ||
-        id == DRAWER_SEC_CWPROF) return !ft8 && !wspr;
+        id == DRAWER_SEC_CWPROF || id == DRAWER_SEC_CWMON) return !ft8 && !wspr;
     /* The WSPR settings belong to the WSPR page and nowhere else - duty cycle
      * and band hopping mean nothing on a panadapter. */
     if (id == DRAWER_SEC_WSPRTX || id == DRAWER_SEC_WSPRDUTY ||
@@ -3882,6 +4134,12 @@ static lv_obj_t *s_slider_qmx_vol = NULL;
 static lv_obj_t *s_lbl_qmx_vol    = NULL;
 static lv_obj_t *s_slider_qmx_rf  = NULL;
 static lv_obj_t *s_lbl_qmx_rf     = NULL;
+/* T139 CW monitor: the level slider, its label, and the Absolute checkbox. */
+static lv_obj_t *s_slider_cw_mon  = NULL;
+static lv_obj_t *s_lbl_cw_mon     = NULL;
+static lv_obj_t *s_check_cw_mon_abs = NULL;
+static lv_obj_t *s_lbl_cw_mon_abs   = NULL;
+static lv_obj_t *s_lbl_cw_mon_note  = NULL;
 static lv_obj_t *s_lbl_pause_btn  = NULL;
 /* Flat mode does not use the dB range AT ALL - it draws dB above the measured
  * noise floor over a fixed 30 dB window, with gridlines hardcoded {10,20,30}.
@@ -3943,6 +4201,7 @@ static lv_obj_t *s_check_rit_pill = NULL;  // "Show RIT button" checkbox (panada
 static lv_obj_t *s_check_ft8_early = NULL;       // FT8 fast-pounce early-decode checkbox
 static lv_obj_t *s_check_sim_mode = NULL;        // FT8 simulation mode checkbox
 static lv_obj_t *s_check_wspr_test = NULL;       // the same setting, WSPR page ("Test station")
+static lv_obj_t *s_check_cw_sim = NULL;          // CW practice mode checkbox (own flag, cw_sim_en)
 static lv_obj_t *s_lbl_sim_mode   = NULL;        // its label (dimmed alongside the checkbox)
 static bool      s_sim_mode_locked = false;      // NEVER true since #256 - kept with the
                                                   // guard pattern apply_sim_mode_lock()
@@ -3995,7 +4254,6 @@ void ui_raise_edge_strips(void)
     if (s_bottom_edge_strip) lv_obj_move_foreground(s_bottom_edge_strip);
     if (s_right_edge_strip)  lv_obj_move_foreground(s_right_edge_strip);
 }
-static void ui_advance_page(void);
 static void left_drawer_open(void);   /* the page picker - see its block below */
 static void drawer_slider_db_min_cb(lv_event_t *e);
 static void drawer_slider_db_max_cb(lv_event_t *e);
@@ -4215,6 +4473,9 @@ static lv_obj_t *s_check_wspr_net;
 static void drawer_refresh_checkboxes(void);
 static void drawer_slider_qmx_rf_cb(lv_event_t *e);
 static void drawer_refresh_qmx_rf(void);
+static void drawer_slider_cw_mon_cb(lv_event_t *e);
+static void drawer_check_cw_mon_abs_cb(lv_event_t *e);
+static void drawer_refresh_cw_mon(void);
 static void gain_resolve_start(void);   // repaint a read-back that answers late
 static void gain_resolve_stop(void);
 static void drawer_pause_btn_cb(lv_event_t *e);
@@ -4326,6 +4587,16 @@ static void user_manual_cb(lv_event_t *e)
 static void drawer_set_mode(ui_mode_t mode);
 static void drawer_open(void);
 static void drawer_close(void);
+
+/* The drawer closes behind it: the modal is 940 px wide and the drawer
+ * would sit on top of its station list. Same handoff manual logging uses. */
+static void drawer_webradio_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    drawer_close();
+    webradio_modal_show();
+}
+
 static void drawer_anim_x_cb(void *obj, int32_t v);
 static void drawer_touch_cb(lv_event_t *e);
 static void drawer_scrim_cb(lv_event_t *e);
@@ -4602,7 +4873,18 @@ void ui_set_sim_mode_indicator(bool active)
 // preset dropdown (ft8_screen_view.c's apply_freq_preset()).
 void ui_refresh_sim_mode_indicator(void)
 {
-    ui_set_sim_mode_indicator(s_sim_mode_en);
+    // The breathing red bezel warns "nothing transmitted is real". Both sim
+    // flags are PAGE-scoped (operator, 2026-08-02): FT8 sim shows it only on
+    // the FT8/FT4 page, CW practice only on the CW page, the panadapter
+    // never - each page's own phantoms are the only thing the flags drive.
+    //
+    // ⚠ apply_sim_mode_lock() takes no argument since main's own change; the
+    // branch passed it an ft4 flag it no longer wants, and the local that
+    // computed it went with the call. Kept the CW-aware indicator, took main's
+    // signature - see the merge commit.
+    ui_mode_t m = ui_mode_get();
+    ui_set_sim_mode_indicator((s_sim_mode_en && m == UI_MODE_FT8) ||
+                              (s_cw_sim_en   && m == UI_MODE_CW));
     apply_sim_mode_lock();
 }
 
@@ -4625,6 +4907,7 @@ static void sim_border_keepalive_cb(lv_timer_t *t)
     {
         qmx_settings_t s;
         settings_load_all(&s);
+        bool changed = false;
         if (s.sim_mode_en != s_sim_mode_en) {
             s_sim_mode_en = s.sim_mode_en;
             ESP_LOGI(TAG, "FT8 simulation mode changed elsewhere: %s",
@@ -4636,8 +4919,23 @@ static void sim_border_keepalive_cb(lv_timer_t *t)
                 if (s_sim_mode_en) lv_obj_add_state(boxes[i], LV_STATE_CHECKED);
                 else               lv_obj_remove_state(boxes[i], LV_STATE_CHECKED);
             }
-            ui_refresh_sim_mode_indicator();
+            changed = true;
         }
+        // Same staleness class as sim_mode_en above, for CW's own flag: a
+        // cw_sim_en write from anywhere other than this drawer checkbox (none
+        // exists yet - see the sim_mode_en comment and T142) would otherwise
+        // leave the CW bezel breathing, or not breathing, on a stale state.
+        if (s.cw_sim_en != s_cw_sim_en) {
+            s_cw_sim_en = s.cw_sim_en;
+            ESP_LOGI(TAG, "CW simulation mode changed elsewhere: %s",
+                     s_cw_sim_en ? "ON (radio not keyed)" : "off");
+            if (s_check_cw_sim) {
+                if (s_cw_sim_en) lv_obj_add_state(s_check_cw_sim, LV_STATE_CHECKED);
+                else             lv_obj_remove_state(s_check_cw_sim, LV_STATE_CHECKED);
+            }
+            changed = true;
+        }
+        if (changed) ui_refresh_sim_mode_indicator();
     }
     // Reconcile the microSD-mounted bottom-bar dot here (LVGL thread, no lock
     // needed) - ui_set_sd_active() only records the wanted state. See s_sd_want.
@@ -5179,7 +5477,14 @@ static void cw_strip_tick_cb(lv_timer_t *t)
      * LVGL 9.2 has no label recolour, and the existing comment below already
      * chose separate labels over colour markup to keep the column arithmetic
      * honest. This follows it. */
-    const int cells = rows * CW_LINE_COLS;
+    /* ⛔ cw_decode_cols(), NOT the constant. The grid's wrap modulus is runtime
+     * since 2026-11-02 because the CW page's ticker is narrower than this one -
+     * and slicing a 64-column grid as if it were 72 garbles every row. Exactly
+     * the fault the web's own `rows` field already records for the row count:
+     * "sending the constant would have the page draw four rows while the
+     * decoder wrapped over two". */
+    const int cols  = cw_decode_cols();
+    const int cells = rows * cols;
 
     char now_s[CW_LINE_ROWS][CW_LINE_COLS + 1], prev_s[CW_LINE_ROWS][CW_LINE_COLS + 1];
     char tx_s[CW_LINE_ROWS][CW_LINE_COLS + 1];
@@ -5195,8 +5500,8 @@ static void cw_strip_tick_cb(lv_timer_t *t)
      * write position runs straight through, so the wrap down to line two is the
      * same event as any other character. */
     for (int r = 0; r < rows; r++) {
-        for (int i = 0; i < CW_LINE_COLS; i++) {
-            int  g = r * CW_LINE_COLS + i;
+        for (int i = 0; i < cols; i++) {
+            int  g = r * cols + i;
             char c = disp[g] ? disp[g] : ' ';
             /* TX wins the cell and is blanked from the other two, so the
              * three layers remain disjoint. The this-pass/previous-pass
@@ -5206,7 +5511,7 @@ static void cw_strip_tick_cb(lv_timer_t *t)
             prev_s[r][i] = (!tx && g >= col) ? c : ' ';
             tx_s[r][i]   = ( tx)             ? c : ' ';
         }
-        now_s[r][CW_LINE_COLS] = prev_s[r][CW_LINE_COLS] = tx_s[r][CW_LINE_COLS] = '\0';
+        now_s[r][cols] = prev_s[r][cols] = tx_s[r][cols] = '\0';
     }
 
     /* The slots above `base` are not in use - see the note where base is
@@ -5390,10 +5695,13 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
     bool hidden = lv_obj_has_flag(s_qmx_wait_overlay, LV_OBJ_FLAG_HIDDEN);
     // Never show the "turn on your QMX" breathing overlay over the docs Reader —
     // it's an operational cue irrelevant while reading, and its 1 Hz
-    // re-foreground would draw on top of the Reader page. Same in FT8
-    // Simulation Mode: the simulator runs entirely on phantom stations and
-    // ft8_tx.c's interlock never keys a radio, so a QMX is not required —
-    // prompting for one is misleading (and the prompt covers the sim bezel).
+    // re-foreground would draw on top of the Reader page. Same in EITHER
+    // simulation mode: both simulators run entirely on phantom stations and
+    // never key a radio, so a QMX is not required — prompting for one is
+    // misleading (and the prompt covers the sim bezel). Both flags must be
+    // checked, not just the FT8 one: CW practice has its own deliberately
+    // independent toggle, and gating on FT8's alone left the overlay pulsing
+    // through the whole CW simulation (operator-reported 2026-08-04).
     // ... and equally: not over the settings drawer or the "What's wrong?" panel.
     // This overlay re-foregrounds itself every second (the keepalive at the end of
     // this function), so without standing down it climbs on top of anything opened
@@ -5401,7 +5709,7 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
     // button over the triage panel's own choices. Hiding it is right rather than
     // just skipping the keepalive: the prompt is an operational cue, and the
     // operator reading a panel is not looking at the radio.
-    if (reader_view_is_active() || s_sim_mode_en || s_drawer_open ||
+    if (reader_view_is_active() || s_sim_mode_en || s_cw_sim_en || s_drawer_open ||
         help_triage_is_open() || any_modal_open()) {
         if (!hidden) {
             lv_anim_delete(s_qmx_wait_lbl, qmx_wait_breathe_anim_cb);
@@ -5460,8 +5768,8 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
         lv_obj_clear_flag(s_qmx_wait_overlay, LV_OBJ_FLAG_HIDDEN);
         qmx_wait_start_breathing(s_qmx_wait_lbl);
     }
-    // Mode-dependent placement: +150 px in FT8 mode so the text clears the
-    // 320 px left pane; plain screen-center in Panadapter mode (no pane to
+    // Mode-dependent placement: +150 px in FT8 and CW mode so the text clears
+    // their (equally wide, 320 px) left pane; plain screen-center in Panadapter mode (no pane to
     // avoid); and ON the waterfall in WSPR mode (operator, 2026-09-11: "move
     // the breathing 'Now turn on....' + Need help? button into wf space centred
     // on the wf") - at screen centre it sat half over the left pane and half
@@ -5472,7 +5780,7 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
         static bool s_cur_wspr = false;
         const ui_mode_t m = ui_mode_get();
         const bool wspr = (m == UI_MODE_WSPR);
-        int want_x = (m == UI_MODE_FT8) ? 150 : 0, want_ly = 0, want_hy = 90;
+        int want_x = (m == UI_MODE_FT8 || m == UI_MODE_CW) ? 150 : 0, want_ly = 0, want_hy = 90;
         if (wspr) {
             int cx, cy, w;
             wspr_screen_view_wf_geometry(&cx, &cy, &w);
@@ -6136,6 +6444,35 @@ static uint8_t *s_label_canvas_buf = NULL;
 // can update them with actual MHz when the VFO changes.
 static lv_obj_t *s_tick_labels[5] = { NULL, NULL, NULL, NULL, NULL };
 
+// Draw the freq-axis tick marks. On the CW page the whole grid spans only
+// the VISIBLE window (x 320..1280 - the pane hides the rest) with the same
+// arrangement as the panadapter's full-width grid: a major tick under each
+// of the five labels (quarters), three minors between (operator,
+// 2026-08-02: "a center tick mark and whatever makes sense left and right").
+static void draw_label_ticks(void)
+{
+    if (!s_label_canvas_buf) return;
+    uint16_t *px = (uint16_t *)s_label_canvas_buf;
+    memset(px, 0, (size_t)DISPLAY_H_RES * LABEL_BAR_H * 2);
+    const uint16_t major_color = 0xC618;  // light grey
+    const uint16_t minor_color = 0x8410;  // medium grey
+    const int x0 = ui_spec_x0();   /* CW_PANE_W on the CW page, 0 elsewhere */
+    const int w  = DISPLAY_H_RES - x0;
+    for (int i = 0; i <= 16; i++) {       // 16 steps = 4 minors per quarter
+        int x = x0 + (w * i) / 16;
+        if (x >= DISPLAY_H_RES) x = DISPLAY_H_RES - 1;
+        int is_major = (i % 4 == 0);
+        int h = is_major ? 10 : 5;
+        uint16_t color = is_major ? major_color : minor_color;
+        for (int y = 0; y < h; y++) px[y * DISPLAY_H_RES + x] = color;
+    }
+    // Thin separator line where the freq-axis band meets the waterfall,
+    // matching the dB scale grid-line colour in the spectrum above.
+    for (int x = 0; x < DISPLAY_H_RES; x++)
+        px[(LABEL_BAR_H - 1) * DISPLAY_H_RES + x] = 0x4208;
+    if (s_label_canvas) lv_obj_invalidate(s_label_canvas);
+}
+
 static void build_label_bar(lv_obj_t *parent)
 {
     lv_obj_t *bar = lv_obj_create(parent);
@@ -6148,33 +6485,13 @@ static void build_label_bar(lv_obj_t *parent)
     lv_obj_set_style_pad_all(bar, 0, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Tick canvas: DISPLAY_H_RES x LABEL_BAR_H, drawn once
+    // Tick canvas: DISPLAY_H_RES x LABEL_BAR_H. Redrawn on page change (the
+    // CW page's tick grid spans only the visible window - see
+    // draw_label_ticks below), so the drawing lives in its own function.
     size_t buf_size = LV_CANVAS_BUF_SIZE(DISPLAY_H_RES, LABEL_BAR_H, 16, LV_DRAW_BUF_STRIDE_ALIGN);
     s_label_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
     if (s_label_canvas_buf) {
-        memset(s_label_canvas_buf, 0, buf_size);
-        // Draw ticks: major at multiples of 12 kHz (top-aligned, taller),
-        // minor at multiples of 3 kHz (top-aligned, shorter)
-        uint16_t *px = (uint16_t *)s_label_canvas_buf;
-        const uint16_t major_color = 0xC618;  // light grey
-        const uint16_t minor_color = 0x8410;  // medium grey
-        const int center_x = DISPLAY_H_RES / 2;
-        const float px_per_khz = (float)DISPLAY_H_RES / 48.0f;  // 26.67 at 1280 / 15 at 720
-        for (int khz = -24; khz <= 24; khz += 3) {
-            int x = center_x + (int)(khz * px_per_khz);
-            if (x < 0 || x >= DISPLAY_H_RES) continue;
-            int is_major = (khz % 12 == 0);
-            int h = is_major ? 10 : 5;
-            uint16_t color = is_major ? major_color : minor_color;
-            for (int y = 0; y < h; y++) {
-                px[y * DISPLAY_H_RES + x] = color;
-            }
-        }
-        // Thin separator line where the freq-axis band meets the waterfall,
-        // matching the dB scale grid-line colour in the spectrum above.
-        for (int x = 0; x < DISPLAY_H_RES; x++) {
-            px[(LABEL_BAR_H - 1) * DISPLAY_H_RES + x] = 0x4208;
-        }
+        draw_label_ticks();
         s_label_canvas = lv_canvas_create(bar);
         lv_canvas_set_buffer(s_label_canvas, s_label_canvas_buf,
                              DISPLAY_H_RES, LABEL_BAR_H, LV_COLOR_FORMAT_RGB565);
@@ -6434,11 +6751,45 @@ static void update_bandplan_strip(uint32_t freq_hz)
         return;
     }
 
+    // CW page: the strip shows the band's CW segment AND the DiGi one beside
+    // it, stretched across the full width - never Phone. Roaming is clamped to
+    // the same pair (cw_page_range_hz), so rendering the phone remainder would
+    // be dead space, and at whole-band scale the strip read as a copy of the
+    // panadapter page (operator, 2026-08-01).
+    //
+    // ⭐ DiGi was added 2026-09-11: CW is legal inside the digital sub-band but
+    // digital modes are not legal inside the CW one, so CW-only was denying the
+    // operator spectrum he is allowed to use - and the off-screen spot counters,
+    // which are mapped across the visible span, kept pointing at spots the
+    // clamp would not let him reach. Both segments are kept SEPARATE rather
+    // than merged into one block so each keeps its own colour and label.
+    bp_seg_t cw_digi[2];
+    if (ui_mode_get() == UI_MODE_CW) {
+        int cd = 0;
+        for (int i = 0; i < n && cd < 2; i++)
+            if (segs[i].type == BP_CW || segs[i].type == BP_DIGI)
+                cw_digi[cd++] = segs[i];
+        if (cd > 0) { segs = cw_digi; n = cd; }
+    }
+
     uint32_t band_lo = segs[0].lo_hz;
     uint32_t band_hi = segs[n - 1].hi_hz;
     double   span    = (double)(band_hi - band_lo);
     if (span < 1.0) span = 1.0;
-    const int W = DISPLAY_H_RES;
+    // CW page: the strip spans only the spectrum width, to the right of the
+    // 320 px left pane - full-width ran under the panel and covered its
+    // status text (operator, 2026-08-01). Everywhere else: full width.
+    // (LVGL no-ops unchanged coords, so re-asserting per tick is cheap.)
+    const int strip_x = (ui_mode_get() == UI_MODE_CW) ? 320 : 0;
+    const int W = DISPLAY_H_RES - strip_x;
+    /* ⛔ DISPLAY_V_RES, not a literal 720. This said 720 - the Tab5's height -
+     * and on the Waveshare's 600 px panel that is y=672, i.e. the whole strip
+     * (and the knob, which is its child) parked 72 px BELOW the screen. It is
+     * created at the right place from DISPLAY_V_RES at build time and this
+     * re-assert, which runs on every band-plan update, then threw it off. The
+     * strip was simply absent on that board and nothing logged a thing. */
+    lv_obj_set_pos(s_bandplan_obj, strip_x, DISPLAY_V_RES - BOTTOM_BAR_H - BANDPLAN_H);
+    lv_obj_set_width(s_bandplan_obj, W);
 
     for (int i = 0; i < BANDPLAN_MAX_SEG; i++) {
         if (i >= n) {
@@ -6972,9 +7323,11 @@ static void update_freq_axis_labels(uint32_t center_hz)
         uint16_t *px = (uint16_t *)s_label_canvas_buf;
         for (int y = 0; y < 12; y++)
             for (int x = 0; x < DISPLAY_H_RES; x++) px[y * DISPLAY_H_RES + x] = 0x0000;
+        const int tx0 = ui_spec_x0();
+        const int tvw = DISPLAY_H_RES - tx0;
         for (int i = 0; i < n; i++) {
-            int x = (int)(((tick[i] - lo) * DISPLAY_H_RES) / span_hz);
-            if (x < 0 || x >= DISPLAY_H_RES) continue;
+            int x = tx0 + (int)(((tick[i] - lo) * tvw) / span_hz);
+            if (x < tx0 || x >= DISPLAY_H_RES) continue;
             for (int y = 0; y < 10; y++) px[y * DISPLAY_H_RES + x] = 0xC618;
         }
         lv_obj_invalidate(s_label_canvas);
@@ -6995,8 +7348,15 @@ static void update_freq_axis_labels(uint32_t center_hz)
             format_freq_mhz_khz((uint32_t)hz, g_freq_style, buf, sizeof(buf));
         lv_label_set_text(s_tick_labels[i], buf);
 
-        int x = (int)(((hz - lo) * DISPLAY_H_RES) / span_hz) - 44;
-        if (x < 2) x = 2;
+        /* The view is DRAWN into [X0, DISPLAY_H_RES) (the CW page's keyer pane
+         * covers the rest), so a tick's column is measured across that window -
+         * the same mapping the trace uses. An earlier version left the trace
+         * full-width and merely hid the labels that fell behind the pane; the
+         * operator's answer was to narrow the drawing instead. */
+        const int X0 = ui_spec_x0();
+        const int VW = DISPLAY_H_RES - X0;
+        int x = X0 + (int)(((hz - lo) * VW) / span_hz) - 44;
+        if (x < X0 + 2) x = X0 + 2;
         if (x > DISPLAY_H_RES - 92) x = DISPLAY_H_RES - 92;
         lv_obj_align(s_tick_labels[i], LV_ALIGN_BOTTOM_LEFT, x, -3);
     }
@@ -8137,6 +8497,13 @@ static void stroll_apply_offset(int off);
 
 static bool mouse_over_spectrum(lv_coord_t x, lv_coord_t y)
 {
+    // The canvases stay DISPLAY_H_RES wide on every page (see ui_spec_x0()'s
+    // own comment) - on the CW page the left CW_PANE_W of that width is the
+    // macro pane drawn ON TOP of them, which point_in_obj() cannot see since
+    // it only checks the canvas's own geometry, not z-order. Without this a
+    // right-drag started on a macro button would pan the spectrum underneath
+    // it instead of doing nothing.
+    if (x < ui_spec_x0()) return false;
     return point_in_obj(s_spec_canvas, x, y) ||
            point_in_obj(s_wf_canvas,   x, y) ||
            point_in_obj(s_waterfall_obj, x, y);
@@ -8167,11 +8534,13 @@ static bool mouse_pan_tick(void)
 
     if (!s_mouse_pan_active) {
         if (!right_down) return false;
-        /* Start only on the spectrum, only on the panadapter, and only when
-         * there is a window to move - with the still view off the spectrum
-         * follows the dial and a pan has no meaning. Same three conditions the
-         * API's set_pan refuses on. */
-        if (ui_mode_get() != UI_MODE_PANADAPTER) return false;
+        /* Start only on the spectrum, only on the panadapter OR the CW page
+         * (both show the live spectrum - CW's left pane is excluded by
+         * mouse_over_spectrum()'s own x0 check), and only when there is a
+         * window to move - with the still view off the spectrum follows the
+         * dial and a pan has no meaning. Same three conditions the API's
+         * set_pan refuses on. */
+        if (ui_mode_get() != UI_MODE_PANADAPTER && ui_mode_get() != UI_MODE_CW) return false;
         if (!mouse_over_spectrum(lx, ly))        return false;
         if (!ui_pan_is_available())              return false;
         s_mouse_pan_active   = true;
@@ -8454,6 +8823,7 @@ void ui_init(lv_display_t *disp)
     drawer_build();
 
     ft8_screen_view_init(scr);
+    cw_screen_view_init(scr);   // CW page overlays (hidden until UI_MODE_CW)
     wspr_screen_view_init(scr);   // WSPR page overlay (hidden until UI_MODE_WSPR)
 
     // Docs Reader page (third page of the left-swipe cycle). Built here, BEFORE
@@ -8498,6 +8868,7 @@ void ui_init(lv_display_t *disp)
         int zone_h = spots_lane_top_hit_y() - 4;
         if (zone_h < TOP_BAR_H + 20) zone_h = TOP_BAR_H + 20;   // never smaller than the bar
         if (zone_h > 200)            zone_h = 200;              // never deeper than before
+        s_topbar_zone_deep_h = zone_h;   /* the ONE owner - see the note by s_topbar_zone_deep_h */
         ESP_LOGI(TAG, "top-bar hit zones: %d px deep (spots labels start at y=%d)",
                  zone_h, spots_lane_top_hit_y());
         static const struct {
@@ -9066,6 +9437,108 @@ static void pinch_poll_cb(lv_timer_t *t)
     esp_lcd_touch_read_data(s_tp);
     uint8_t npts = s_tp->data.points;
 
+    // CW page: a touch that starts on the left pane (macro buttons, toggle,
+    // WPM/Park/NEXT - x < CW_PANE_W) must never be read as a spectrum
+    // gesture once CW is allowed to pan/pinch below - same contract as
+    // s_touch_on_bandplan, latched for the whole session rather than
+    // re-checked every poll, so a drag that strays sideways mid-hold still
+    // cannot wake the spectrum.
+    {
+        static uint8_t s_prev_npts = 0;
+        if (npts > 0 && s_prev_npts == 0) {
+            int first_x = (int)s_tp->data.coords[0].y;   // landscape x = panel y
+            s_touch_on_cw_pane = (ui_mode_get() == UI_MODE_CW) && (first_x < CW_PANE_W);
+        } else if (npts == 0) {
+            s_touch_on_cw_pane = false;
+        }
+        s_prev_npts = npts;
+    }
+    if (s_touch_on_cw_pane) {
+        stroll_cancel();
+        s_pinch_active = false;
+        return;
+    }
+
+    /* ⭐ THREE FINGERS HELD -> SIMULATION MODE ON/OFF, on the FT8 page in any
+     * sub-mode (FT8, FT4 and JS8 share one sim_mode_en), and on the CW page
+     * (its own cw_sim_en - SEPARATE flag, separate phantom-QSO engine,
+     * operator 2026-11-03: "should also work on the CW page").
+     *
+     * Operator, 2026-10-31: "It takes a lot of resources and the scrolling
+     * down in the drawer is REALY slow". The toggle is near the bottom of a
+     * long drawer, and simulation is the one setting that gets turned on and
+     * off repeatedly in a testing session - so it is the one that should not
+     * cost a scroll.
+     *
+     * ⛔ THREE, NOT TWO. Two fingers are already spoken for twice over on this
+     * page: pinch-zooms the spectrum, and a two-finger double-tap sleeps the
+     * display. Three is the first count with nothing on it.
+     *
+     * ⛔ THE WHOLE TOUCH SESSION IS SWALLOWED, not just the moment it fires.
+     * Fingers never land or lift together, so a three-finger press passes
+     * through npts==2 on the way in AND on the way out. Without the latch the
+     * way in starts a spectrum pinch and the way out reads as a two-finger
+     * tap - two of those put the display to sleep, which is exactly the wrong
+     * answer to a gesture meant to toggle a setting. So: once three fingers
+     * are seen, every poll returns here until the panel reports zero, and the
+     * two-finger trackers are cleared rather than left mid-gesture.
+     *
+     * The setting is written and nothing else: the 1 Hz sim_border_keepalive
+     * already follows it and repaints both drawer checkboxes and the red
+     * bezel, so there is one path that reacts to a change whatever made it -
+     * the drawer, the web API, or this. */
+    {
+        static uint64_t s_3f_down_us = 0;
+        static bool     s_3f_fired   = false;
+        static bool     s_3f_lock    = false;   /* swallow until ALL fingers lift */
+        const uint64_t  HOLD_US      = 1200000; /* a deliberate press, not a rest */
+        uint64_t now_us = esp_timer_get_time();
+
+        ui_mode_t m_3f = ui_mode_get();
+        if (npts >= 3 && (m_3f == UI_MODE_FT8 || m_3f == UI_MODE_CW)) {
+            if (!s_3f_lock) {
+                s_3f_lock    = true;
+                s_3f_down_us = now_us;
+                s_3f_fired   = false;
+                /* Whatever the first two fingers started, end it now. */
+                stroll_cancel();
+                s_2f_down_us     = 0;
+                s_2f_last_tap_us = 0;
+                s_2f_moved       = true;
+            }
+            if (!s_3f_fired && now_us - s_3f_down_us >= HOLD_US) {
+                s_3f_fired = true;
+                /* ⛔ THE NARROW ACCESSOR. settings_load_all() puts 3636 bytes on
+                 * taskLVGL's stack and this runs on it every 50 ms. */
+                if (m_3f == UI_MODE_CW) {
+                    bool want = !settings_get_cw_sim_en();
+                    settings_set_cw_sim_en(want);
+                    ui_toast(want ? "Simulation ON - the radio is not keyed"
+                                  : "Simulation off");
+                    ESP_LOGI(TAG, "three-finger hold: CW simulation %s",
+                             want ? "ON (radio not keyed)" : "off");
+                } else {
+                    bool want = !settings_get_sim_mode_en();
+                    settings_set_sim_mode_en(want);
+                    ui_toast(want ? "Simulation ON - the radio is not keyed"
+                                  : "Simulation off");
+                    ESP_LOGI(TAG, "three-finger hold: simulation %s",
+                             want ? "ON (radio not keyed)" : "off");
+                }
+            }
+        }
+
+        if (s_3f_lock) {
+            s_multi_lockout_us = now_us + MULTI_LOCKOUT_MS * 1000;
+            if (npts == 0) {
+                s_3f_lock    = false;
+                s_3f_down_us = 0;
+                s_3f_fired   = false;
+            }
+            return;
+        }
+    }
+
     // While the freq pad is open, raw touch handling belongs to it alone -
     // a two-finger pinch toggles its size; nothing else from this function
     // (spectrum pan/zoom) should fire underneath a popup the user can't
@@ -9146,12 +9619,15 @@ static void pinch_poll_cb(lv_timer_t *t)
         }
     }
 
-    // Everything below is SPECTRUM pan/zoom/tune, and the spectrum exists on
-    // the panadapter page only. This function reads the raw panel on every
-    // page, so on FT8 or WSPR a horizontal swipe used to start a pan of the
-    // hidden spectrum and put its tooltip over the page (and a two-finger
-    // pinch zoomed it). The sleep double-tap above stays global on purpose.
-    if (ui_mode_get() != UI_MODE_PANADAPTER) {
+    // Everything below is SPECTRUM pan/zoom/tune. The spectrum is LIVE on
+    // the panadapter AND the CW page (cw_screen_view.c's own header: "the
+    // panadapter spectrum/waterfall stay LIVE underneath") - CW was added
+    // 2026-11-03, having been left out when this exclusion was written
+    // because the CW page did not exist yet. FT8 and WSPR hide the
+    // spectrum entirely, so a horizontal swipe there must still not start a
+    // pan of it (and a two-finger pinch must not zoom it) - the sleep
+    // double-tap above stays global on purpose regardless of mode.
+    if (ui_mode_get() != UI_MODE_PANADAPTER && ui_mode_get() != UI_MODE_CW) {
         stroll_cancel();
         s_pinch_active = false;
         return;
@@ -9224,7 +9700,7 @@ static void pinch_poll_cb(lv_timer_t *t)
 
             uint32_t tgt = (uint32_t)s_stroll_target_hz;
             uint32_t lo, hi;
-            if (!legal_band_edges(tgt, &lo, &hi) || tgt < lo || tgt > hi) {
+            if (!effective_drag_edges((uint32_t)s_stroll_start_hz, &lo, &hi) || tgt < lo || tgt > hi) {
                 ESP_LOGI("pinch", "stroll settle: out of bounds %lu, rejecting", (unsigned long)tgt);
                 stroll_apply_offset(0);
                 if (s_tune_tooltip) lv_obj_add_flag(s_tune_tooltip, LV_OBJ_FLAG_HIDDEN);
@@ -9346,13 +9822,15 @@ static void pinch_poll_cb(lv_timer_t *t)
          * needs the right scale anyway, and leaving two different ones in one
          * function would be worse than fixing it. */
         const float hz_per_px = (float)DSP_SAMPLE_RATE_HZ
-                              / (s_zoom_factor * (float)DISPLAY_H_RES);
+                              / (s_zoom_factor * (float)ui_spec_w());
         int64_t tgt = s_stroll_start_hz - (int64_t)lroundf((float)off * hz_per_px);
         uint32_t lo, hi;
         /* Band edges bound a TUNE. A still-display pan is not going near the
          * radio, so it is bounded by what the radio can hear instead, and that
-         * is applied once on release rather than per tick. */
-        if (!sv_effective() && legal_band_edges(s_stroll_start_hz, &lo, &hi)) {
+         * is applied once on release rather than per tick.
+         * effective_drag_edges() narrows those edges to the band's CW segment
+         * while the CW page is up, and is the plain band edges everywhere else. */
+        if (!sv_effective() && effective_drag_edges((uint32_t)s_stroll_start_hz, &lo, &hi)) {
             if (tgt < (int64_t)lo) tgt = lo;
             if (tgt > (int64_t)hi) tgt = hi;
         }
@@ -9428,7 +9906,7 @@ static void pinch_poll_cb(lv_timer_t *t)
     int max_pan = (N - window_bins) / 2;
     if (new_pan < -max_pan) new_pan = -max_pan;
     if (new_pan >  max_pan) new_pan =  max_pan;
-    ui_set_zoom(new_zoom, new_pan);
+    ui_set_zoom_pan(new_zoom, new_pan);
     // Live-update the band-plan visible-span block as the pinch tracks -
     // ui_set_zoom() doesn't touch it itself (most of its other callers
     // already refresh the strip via ui_update_frequency right after), but
@@ -9837,6 +10315,8 @@ static void topbar_reconcile_cb(lv_timer_t *t)
  * THE RULE THE OPERATOR ASKED FOR, and it is now uniform: greyed means inert,
  * bright means it works. A bright control that does nothing is the same broken
  * promise as a green mouse pointer over dead pixels. */
+static void top_bar_set_hit_depth(bool deep);   /* defined below; used by top_bar_apply_mode() */
+
 static void top_bar_apply_mode(void)
 {
     const bool owned = reader_view_is_active() || help_triage_is_open()
@@ -9846,7 +10326,12 @@ static void top_bar_apply_mode(void)
     /* ⛔ NOT "is this FT8" - "is this the panadapter". Band, Mode, BW and Zoom
      * are all the panadapter's idea of the radio; every other page owns the
      * dial itself. */
-    const bool inert = owned || (m != UI_MODE_PANADAPTER);
+    /* ⭐ CW IS A TUNING PAGE, so unlike FT8 and WSPR its Band/Mode/BW/Zoom stay
+     * LIVE - the operator is expected to move the dial there. Derived here,
+     * not set at the mode transition: a per-mode state applied at the
+     * transition is NOT applied on the path that has no transition, and a
+     * board that BOOTS into CW has none (the v1.12.1 finding). */
+    const bool inert = owned || (m != UI_MODE_PANADAPTER && m != UI_MODE_CW);
 
     /* ⭐ FREQ STAYS LIVE ON THE WSPR PAGE, and nothing else does (operator,
      * 2026-09-08: "from the top bar i should not be able to activate any of the
@@ -9860,13 +10345,28 @@ static void top_bar_apply_mode(void)
      * starts lower and has nothing underneath. */
     const bool freq_live = (m == UI_MODE_WSPR) && !owned;
 
+    /* ⛔ AND MODE IS DEAD ON THE CW PAGE, which is the same rule running the
+     * other way. The CW page is a tuning page, so the line above keeps all
+     * five controls live - but the mode there is PINNED to CW, and
+     * mode_label_clicked_cb() has always returned without opening a popup
+     * because a one-entry dropdown is noise. That left the one bright control
+     * on this board that does nothing when pressed: the exact broken promise
+     * the block above says it removed by construction.
+     *
+     * Derived here rather than dimmed at the transition, for the v1.12.1
+     * reason restated above: a board that BOOTS into CW has no transition.
+     * Operator, 2026-10-31: "Mode on top bar should be dimmed as it cannot be
+     * changed here". */
+    const bool mode_dead = (m == UI_MODE_CW);
+
     /* Same order as the hit_zones[] table this indexes - Band, Mode, BW, Freq,
      * Zoom - so TOPBAR_ZONE_FREQ addresses the label and its zone together. */
     lv_obj_t *labels[N_TOPBAR_HIT_ZONES] = { s_band_label, s_mode_label, s_bw_label,
                                              s_freq_label, s_zoom_label };
 
     for (int i = 0; i < N_TOPBAR_HIT_ZONES; i++) {
-        const bool live = !inert || (i == TOPBAR_ZONE_FREQ && freq_live);
+        bool live = !inert || (i == TOPBAR_ZONE_FREQ && freq_live);
+        if (i == TOPBAR_ZONE_MODE && mode_dead) live = false;
 
         /* The LABELS are clickable in their own right, with 90-110 px click
          * halos (ext_click_area, so they are hittable on glass) that between
@@ -9890,6 +10390,14 @@ static void top_bar_apply_mode(void)
             else      lv_obj_clear_flag(s_topbar_hit_zones[i], LV_OBJ_FLAG_CLICKABLE);
         }
     }
+
+    /* ⛔ HIT DEPTH IS DERIVED HERE, NOT SET AT THE TRANSITION - same reason as
+     * `inert` above. Only the panadapter gets the deep dropdown zones: on CW
+     * they swallow the keyer pane's top memory buttons (hardware-observed
+     * 2026-08-01), and on FT8/WSPR the decode rows and Preset button sit under
+     * them. Because sync_nav_affordances() calls this at 1 Hz, any path that
+     * forgets is self-healing within a second. */
+    top_bar_set_hit_depth(m == UI_MODE_PANADAPTER);
 }
 
 // Show or hide the Panadapter's navigation affordances. Split out of
@@ -10001,6 +10509,97 @@ void ui_help_overlay_changed(void)
     qmx_wait_poll_cb(NULL);
     ESP_LOGI(TAG, "help overlay: reader=%d triage=%d",
              (int)reader_view_is_active(), (int)help_triage_is_open());
+}
+
+// CW page: keep the VFO inside the band's CW segment (operator, 2026-08-01:
+// "the spectrum should honour the band-plan CW only"). If the frequency the
+// page is entered/restored with sits outside every CW segment of its band,
+// retune into the band's first CW segment (CW lives at the bottom of every
+// HF band) - a little way in, so the 48 kHz window isn't half out-of-band.
+// Inside a CW segment already: leave the operator's frequency alone.
+// Centre of the CW segment of whatever band `hz` falls in, snapped to a whole
+// kHz. 0 when the band is unknown or has no CW segment. This is where a band
+// change lands in CW mode (operator, 2026-08-04: "when changing band I would
+// like the centre freq always to be the middle of the CW portion").
+// Opening CW filter width. The QMX's CW passband is a 54-entry menu list
+// (MMCW|CW passband=), and 300 Hz is the standard narrow CW setting.
+#define CW_DEFAULT_BW_HZ 300
+
+static uint32_t cw_segment_center_hz(uint32_t hz)
+{
+    uint8_t bp_region; char bp_grid[8];
+    settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
+    const bp_seg_t *segs = NULL;
+    int n = bandplan_get_segments(hz,
+                bandplan_effective_region((bandplan_region_t)bp_region,
+                                          bp_grid), &segs);
+    if (n <= 0 || !segs) return 0;
+    (void)segs; (void)n;
+    uint32_t cl, ch;
+    if (!cw_page_range_hz(hz, &cl, &ch)) return 0;
+    uint32_t f = cl + (ch - cl) / 2;
+    return (f / 1000) * 1000;
+}
+
+// Keep a frequency inside the CW page's range - the band's CW segment AND the
+// DiGi one (cw_page_range_hz; CW is legal in the digital sub-band, digital is
+// not legal in the CW one). In-range frequencies pass through untouched;
+// anything else moves to the range centre. Applied to EVERY tuning path while
+// the CW page is up (tap-to-tune, keypad, band change, page entry) - the page
+// only lets you operate where CW is allowed, so it should not be possible to
+// leave it (operator, 2026-08-04; widened to DiGi 2026-09-11).
+static uint32_t cw_bandplan_clamp_hz(uint32_t hz)
+{
+    uint8_t bp_region; char bp_grid[8];
+    settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
+    const bp_seg_t *segs = NULL;
+    int n = bandplan_get_segments(hz,
+                bandplan_effective_region((bandplan_region_t)bp_region,
+                                          bp_grid), &segs);
+    if (n <= 0 || !segs) return hz;   // not in a known band: leave alone
+    (void)segs; (void)n;
+    uint32_t cl, ch;
+    if (cw_page_range_hz(hz, &cl, &ch) && hz >= cl && hz <= ch) return hz;
+    uint32_t c = cw_segment_center_hz(hz);
+    return c ? c : hz;
+}
+
+// The one tuning entry point for UI paths that can run on the CW page: it
+// applies the CW-segment clamp and then commits. Every user-initiated tune
+// must go through this, or the page can be walked out of its own band
+// segment (which is exactly what tap-to-tune and the keypad used to do).
+static esp_err_t ui_tune_commit(uint32_t hz, bool forced)
+{
+    if (ui_mode_get() == UI_MODE_CW) {
+        uint32_t c = cw_bandplan_clamp_hz(hz);
+        if (c != hz) {
+            ESP_LOGI(TAG, "CW: %lu Hz is outside the CW segment -> %lu Hz",
+                     (unsigned long)hz, (unsigned long)c);
+            hz = c;
+            ui_update_frequency(hz);   // keep the label honest about the move
+        }
+    }
+    return forced ? cat_set_frequency_forced(hz) : cat_set_frequency(hz);
+}
+
+// CW page: the top bar stays fully ACTIVE (unlike FT8), but the deep 200 px
+// dropdown hit-zones - foregrounded above every sibling - would swallow taps
+// and long-presses on the CW pane's top memory buttons, which sit under
+// y=200 (hardware-observed 2026-08-01: M1-M3 opened the Band/Mode dropdowns
+// instead of sending/editing). In CW mode the zones shrink to the bar itself;
+// the panadapter keeps the deep zones - which are NOT 200 px and never were
+// after 2026-08-05, they stop just above the live-spot callsigns.
+static void top_bar_set_hit_depth(bool deep)
+{
+    /* ⛔ NOT a literal 200/60 - see the note by s_topbar_zone_deep_h. The deep
+     * value is whatever ui_init() derived from the spots lane; the shallow one
+     * is the bar itself, which is 50 px on the Waveshare and 60 on the Tab5. */
+    int h = deep ? s_topbar_zone_deep_h : TOP_BAR_H;
+    if (h <= 0) h = TOP_BAR_H;          /* called before ui_init() got there */
+    for (int i = 0; i < N_TOPBAR_HIT_ZONES; i++) {
+        lv_obj_t *hit = s_topbar_hit_zones[i];
+        if (hit) lv_obj_set_height(hit, h);
+    }
 }
 
 // Phase 5.10G: receive passband width from CAT (FW response) or
@@ -11204,6 +11803,12 @@ void ui_push_spectrum(const float *bins, int n_bins)
      * render_push_spacing()'s push_max_us looking like a slow draw. */
     if (!display_lock(RENDER_PATH_LOCK_MS)) { s_spec_lock_fail++; return; }
 
+    /* The CW page's keyer pane covers columns [0, X0); the view is drawn into
+     * [X0, DISPLAY_H_RES). X0 is 0 on every other page, so the panadapter path
+     * is byte-identical. See the ui_spec_x0() comment. */
+    const int X0 = ui_spec_x0();
+    const int VW = DISPLAY_H_RES - X0;
+
     uint16_t *px = (uint16_t *)s_spec_canvas_buf;
     static int s_prev_y_top = 0;
 
@@ -11378,8 +11983,8 @@ void ui_push_spectrum(const float *bins, int n_bins)
          * at x=641.5 - 8.5 px, and the operator saw it as "the center freq is
          * not in the middle of the bw". Pre-existing; zoom is what exposed it. */
         int32_t pb_res = ui_get_if_residual_hz();
-        int edge_x_lo = (int)((int64_t)(pb_low_hz  + pb_res - pan_hz_pb) * DISPLAY_H_RES / span_hz_pb) + DISPLAY_H_RES / 2;
-        int edge_x_hi = (int)((int64_t)(pb_high_hz + pb_res - pan_hz_pb) * DISPLAY_H_RES / span_hz_pb) + DISPLAY_H_RES / 2;
+        int edge_x_lo = X0 + (int)((int64_t)(pb_low_hz  + pb_res - pan_hz_pb) * VW / span_hz_pb) + VW / 2;
+        int edge_x_hi = X0 + (int)((int64_t)(pb_high_hz + pb_res - pan_hz_pb) * VW / span_hz_pb) + VW / 2;
         if (edge_x_lo > edge_x_hi) { int t = edge_x_lo; edge_x_lo = edge_x_hi; edge_x_hi = t; }
         /* ⛔ OFF-VIEW MEANS GONE, NOT SQUASHED ONTO THE EDGE.
          *
@@ -11392,10 +11997,10 @@ void ui_push_spectrum(const float *bins, int n_bins)
          *
          * An empty range makes the fill loop below a no-op, which is the whole
          * fix: clamp only when there is something to clamp INTO. */
-        if (edge_x_hi < 0 || edge_x_lo >= DISPLAY_H_RES) {
+        if (edge_x_hi < X0 || edge_x_lo >= DISPLAY_H_RES) {
             edge_x_lo = 1; edge_x_hi = 0;          /* empty: nothing is drawn */
         } else {
-            if (edge_x_lo < 0) edge_x_lo = 0;
+            if (edge_x_lo < X0) edge_x_lo = X0;
             if (edge_x_hi >= DISPLAY_H_RES) edge_x_hi = DISPLAY_H_RES - 1;
         }
         SPEC_SIG(pb_low_hz); SPEC_SIG(pb_high_hz); SPEC_SIG(rit_pb_hz);
@@ -11455,7 +12060,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
             int gy = gys[g];
             if (gy >= 0 && gy < SPECTRUM_H) {
                 uint16_t *row = px + gy * DISPLAY_H_RES;
-                for (int x = 0; x < DISPLAY_H_RES; x++) row[x] = grid_color;
+                for (int x = X0; x < DISPLAY_H_RES; x++) row[x] = grid_color;
             }
         }
     }
@@ -11540,7 +12145,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
     if (pv_ok) {
         pvc.sample_rate_hz = DSP_SAMPLE_RATE_HZ;
         pvc.n_bins         = N;
-        pvc.screen_w       = DISPLAY_H_RES;
+        pvc.screen_w       = VW;
         pvc.dial_hz        = (int64_t)s_last_qmx_freq_hz;
         pvc.if_offset_hz   = ui_get_if_offset_hz();
         pvc.zoom           = eff_zoom;
@@ -11666,10 +12271,11 @@ void ui_push_spectrum(const float *bins, int n_bins)
         }
     }
 
-    for (int x = 0; x < DISPLAY_H_RES; x++) {
+    for (int x = X0; x < DISPLAY_H_RES; x++) {
+        const int wx = x - X0;          /* column within the drawn view */
         int bin;
         if (pv_ok) {
-            bin = pan_view_x_to_bin(&pvc, &pv, x);
+            bin = pan_view_x_to_bin(&pvc, &pv, wx);
             if (bin == PAN_VIEW_NO_DATA) {
                 if (nodata_from < 0) nodata_from = x;
                 nodata_to = x;
@@ -11688,7 +12294,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
             }
         } else {
             int b = bin_start + zoom_res_bins
-                    + (int)((float)x * (float)window_bins / (float)DISPLAY_H_RES);
+                    + (int)((float)wx * (float)window_bins / (float)VW);
             bin = ((b % N) + N) % N;
         }
 
@@ -11699,14 +12305,14 @@ void ui_push_spectrum(const float *bins, int n_bins)
             int   cnt = 0;
             for (int dx = -2; dx <= 2; dx++) {
                 int xn = x + dx;
-                if (xn < 0 || xn >= DISPLAY_H_RES) continue;
+                if (xn < X0 || xn >= DISPLAY_H_RES) continue;
                 int bn;
                 if (pv_ok) {
-                    bn = pan_view_x_to_bin(&pvc, &pv, xn);
+                    bn = pan_view_x_to_bin(&pvc, &pv, xn - X0);
                     if (bn == PAN_VIEW_NO_DATA) continue;   /* never average in a wrap */
                 } else {
                     int sn = bin_start + zoom_res_bins
-                             + (int)((float)xn * (float)window_bins / (float)DISPLAY_H_RES);
+                             + (int)((float)(xn - X0) * (float)window_bins / (float)VW);
                     bn = ((sn % N) + N) % N;
                 }
                 sum += s_flat_smooth[bn] - s_flat_floor[bn];
@@ -11872,14 +12478,14 @@ void ui_push_spectrum(const float *bins, int n_bins)
                 int32_t edge_hz = ((side == 0) ? pb_low_hz : pb_high_hz) + rit_edge_hz;
                 /* Same residual as the tint above and the cursor below - all three
                  * must agree or the edges sit off the block they bound. */
-                pb_x[side] = (int)((int64_t)(edge_hz + ui_get_if_residual_hz() - pan_hz)
-                                   * DISPLAY_H_RES / span_hz_pb) + DISPLAY_H_RES / 2;
+                pb_x[side] = X0 + (int)((int64_t)(edge_hz + ui_get_if_residual_hz() - pan_hz)
+                                        * VW / span_hz_pb) + VW / 2;
             }
             if (pb_x[0] > pb_x[1]) { int t = pb_x[0]; pb_x[0] = pb_x[1]; pb_x[1] = t; }
         }
         for (int side = 0; side < 2; side++) {
             int edge_x = pb_x[side];
-            if (edge_x < 0 || edge_x >= DISPLAY_H_RES) continue;
+            if (edge_x < X0 || edge_x >= DISPLAY_H_RES) continue;
             for (int y = 0; y < SPECTRUM_H; y++) {
                 px[y * DISPLAY_H_RES + edge_x] = faded_pb_color;
                 if (edge_x + 1 < DISPLAY_H_RES) px[y * DISPLAY_H_RES + edge_x + 1] = faded_pb_color;
@@ -11907,8 +12513,8 @@ void ui_push_spectrum(const float *bins, int n_bins)
         // rotated by a whole number of bins, so it sits at (dial - residual).
         // Drawing the marker at +residual puts it on the signal rather than up to
         // ~23 Hz beside it, and keeps it agreeing with where a tap now tunes.
-        int cx = (int)((int64_t)(ui_get_if_residual_hz() - pan_hz_vfo) * DISPLAY_H_RES / span_hz_vfo) + DISPLAY_H_RES / 2;
-        if (cx >= 0 && cx < DISPLAY_H_RES) {
+        int cx = X0 + (int)((int64_t)(ui_get_if_residual_hz() - pan_hz_vfo) * VW / span_hz_vfo) + VW / 2;
+        if (cx >= X0 && cx < DISPLAY_H_RES) {
             for (int y = 0; y < SPECTRUM_H; y++) {
                 px[y * DISPLAY_H_RES + cx] = center_color;
             }
@@ -11933,8 +12539,8 @@ void ui_push_spectrum(const float *bins, int n_bins)
          * arrow". So the test is the marker AND the whole passband, and the
          * passband test is an INTERSECTION - a filter wider than the span has
          * both edges off screen while covering every column of it. */
-        const bool vfo_off = (cx < 0 || cx >= DISPLAY_H_RES);
-        const bool pb_off  = (pb_x[1] < 0 || pb_x[0] >= DISPLAY_H_RES);
+        const bool vfo_off = (cx < X0 || cx >= DISPLAY_H_RES);
+        const bool pb_off  = (pb_x[1] < X0 || pb_x[0] >= DISPLAY_H_RES);
         if (vfo_off && pb_off) {
             const int th = 22;                       /* half-height of the arrow */
             const int tw = 14;                       /* how far it juts inwards  */
@@ -11946,7 +12552,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
                  * saying WHICH WAY the dial went, so getting it backwards makes
                  * it worse than no marker at all. */
                 int half = (th * i) / tw;
-                int x = (cx < 0) ? i : (DISPLAY_H_RES - 1 - i);
+                int x = (cx < X0) ? (X0 + i) : (DISPLAY_H_RES - 1 - i);
                 for (int y = mid - half; y <= mid + half; y++)
                     if (y >= 0 && y < SPECTRUM_H) px[y * DISPLAY_H_RES + x] = center_color;
             }
@@ -11964,11 +12570,19 @@ void ui_push_spectrum(const float *bins, int n_bins)
          * that matters on core 0. */
         {
             static int s_arrow_shown = -1;           /* -1 none, 0 left, 1 right */
-            int want = (vfo_off && pb_off) ? ((cx < 0) ? 0 : 1) : -1;
+            int want = (vfo_off && pb_off) ? ((cx < X0) ? 0 : 1) : -1;
             if (want != s_arrow_shown) {
                 if (s_vfo_arrow_hit_l) {
-                    if (want == 0) lv_obj_clear_flag(s_vfo_arrow_hit_l, LV_OBJ_FLAG_HIDDEN);
-                    else           lv_obj_add_flag(s_vfo_arrow_hit_l, LV_OBJ_FLAG_HIDDEN);
+                    if (want == 0) {
+                        /* The arrow is drawn at X0, which is CW_PANE_W on the CW
+                         * page - the target is built at x=0 and would sit behind
+                         * the pane, where no tap can reach it. Move it with the
+                         * drawn edge rather than trusting the build-time x. */
+                        lv_obj_set_x(s_vfo_arrow_hit_l, X0);
+                        lv_obj_clear_flag(s_vfo_arrow_hit_l, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        lv_obj_add_flag(s_vfo_arrow_hit_l, LV_OBJ_FLAG_HIDDEN);
+                    }
                 }
                 if (s_vfo_arrow_hit_r) {
                     if (want == 1) lv_obj_clear_flag(s_vfo_arrow_hit_r, LV_OBJ_FLAG_HIDDEN);
@@ -11997,9 +12611,9 @@ void ui_push_spectrum(const float *bins, int n_bins)
         // exactly what you want to keep seeing.
         int rit_hz_now = cat_get_rit_hz();
         if (rit_hz_now != 0) {
-            int rx = (int)((int64_t)(rit_hz_now - pan_hz_vfo) * DISPLAY_H_RES / span_hz_vfo)
-                     + DISPLAY_H_RES / 2;
-            if (rx >= 0 && rx < DISPLAY_H_RES) {
+            int rx = X0 + (int)((int64_t)(rit_hz_now - pan_hz_vfo) * VW / span_hz_vfo)
+                     + VW / 2;
+            if (rx >= X0 && rx < DISPLAY_H_RES) {
                 for (int y = 0; y < SPECTRUM_H; y++) {
                     if ((y / 6) & 1) continue;   // 6 on, 6 off
                     px[y * DISPLAY_H_RES + rx] = UI_RIT_COLOR_565;
@@ -12012,7 +12626,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
             // reason s_wf_cursor is one: rows scroll, so a drawn line would trail.
             // Positioned from this same pass so the two can never disagree.
             if (s_rit_wf_marker) {
-                if (rx >= 0 && rx < DISPLAY_H_RES) {
+                if (rx >= X0 && rx < DISPLAY_H_RES) {
                     lv_obj_set_x(s_rit_wf_marker, rx);
                     lv_obj_clear_flag(s_rit_wf_marker, LV_OBJ_FLAG_HIDDEN);
                 } else {
@@ -13094,10 +13708,10 @@ static void touch_event_cb(lv_event_t *e)
         s_bp_drag_start_view_hz = (int64_t)s_last_qmx_freq_hz + s_bp_preview_pan_hz;
         s_bp_drag_view_hz       = s_bp_drag_start_view_hz;
 
-        qmx_settings_t s;
-        settings_load_all(&s);
+        uint8_t bp_region; char bp_grid[8];
+        settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
         bandplan_region_t reg =
-            bandplan_effective_region((bandplan_region_t)s.bandplan_region, s.my_grid);
+            bandplan_effective_region((bandplan_region_t)bp_region, bp_grid);
         const bp_seg_t *segs = NULL;
         int n = bandplan_get_segments(s_last_qmx_freq_hz, reg, &segs);
         s_bp_oob_drag      = false;
@@ -13105,6 +13719,16 @@ static void touch_event_cb(lv_event_t *e)
         if (n > 0) {
             s_bp_drag_band_lo = segs[0].lo_hz;
             s_bp_drag_band_hi = segs[n - 1].hi_hz;
+            // CW page: roaming is clamped to the CW+DiGi range, same rule as
+            // the stroll gesture and the tune clamp - all four call
+            // cw_page_range_hz() so they cannot drift apart.
+            if (ui_mode_get() == UI_MODE_CW) {
+                uint32_t cl, ch;
+                if (cw_page_range_hz(s_last_qmx_freq_hz, &cl, &ch)) {
+                    s_bp_drag_band_lo = cl;
+                    s_bp_drag_band_hi = ch;
+                }
+            }
         } else {
             // Outside a known band: no absolute map exists, so this press drives
             // the centre-detented coarse tune instead (see BP_OOB_KNOB_W_PX).
@@ -13198,7 +13822,7 @@ static void touch_event_cb(lv_event_t *e)
                     if (s_bp_seg_lbl[i]) lv_obj_add_flag(s_bp_seg_lbl[i], LV_OBJ_FLAG_HIDDEN);
                 }
             }
-            double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) / (double)DISPLAY_H_RES;
+            double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) / (double)ui_spec_w();
             /* What moves is the WINDOW CENTRE - see bp_solve_view(). The dial
              * comes with it only when the radio cannot reach that far. */
             int64_t cwant = s_bp_drag_start_view_hz + (int64_t)lround((double)dx * hz_per_px);
@@ -13279,7 +13903,8 @@ static void touch_event_cb(lv_event_t *e)
                 // frequency right as the finger left the glass (same fix as the
                 // spectrum tune — the drag path already uses the last stable
                 // PRESSING value via s_bp_drag_target_hz).
-                double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) / (double)DISPLAY_H_RES;
+                double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) /
+                               (double)ui_spec_w();
                 int64_t tap_hz = (int64_t)s_bp_drag_band_lo + (int64_t)lround((double)s_bp_drag_start_pt.x * hz_per_px);
                 tap_hz = ((tap_hz + 500) / 1000) * 1000;   // snap centre to whole kHz (xx.xxx.000 Hz)
                 if (tap_hz < (int64_t)s_bp_drag_band_lo) tap_hz = (int64_t)s_bp_drag_band_lo;
@@ -13342,8 +13967,13 @@ static void touch_event_cb(lv_event_t *e)
         // so the line jumps from snap to snap and shows exactly where the
         // freq will land.
         {
-            int dx = (int)p.x - DISPLAY_H_RES / 2;
-            int32_t offset_hz = (int32_t)((int64_t)dx * UAC_SAMPLE_RATE / (int)(DISPLAY_H_RES * s_zoom_factor));
+            /* Measured from the centre of the DRAWN view, across its width -
+             * the same mapping ui_push_spectrum uses. Getting this wrong does
+             * not look wrong, it just tunes somewhere else (see #297). */
+            const int tt_x0 = ui_spec_x0();
+            const int tt_w  = DISPLAY_H_RES - tt_x0;
+            int dx = (int)p.x - (tt_x0 + tt_w / 2);
+            int32_t offset_hz = (int32_t)((int64_t)dx * UAC_SAMPLE_RATE / (int)(tt_w * s_zoom_factor));
             /* Exact, like the cursor and passband it must land on: a
              * bin-rounded pan puts the tune target up to 23 Hz from the line
              * the operator is actually looking at. */
@@ -13416,8 +14046,8 @@ static void touch_event_cb(lv_event_t *e)
                                 - ui_get_if_residual_hz();
             int64_t rounded_target = ((target_hz + (target_hz >= 0 ? snap/2 : -snap/2)) / snap) * snap;
             int32_t rounded = (int32_t)(rounded_target - (int64_t)s_last_qmx_freq_hz);
-            int32_t snapped_dx = (int32_t)((int64_t)(rounded - pan_hz) * (int)(DISPLAY_H_RES * s_zoom_factor) / UAC_SAMPLE_RATE);
-            s_target_x = DISPLAY_H_RES / 2 + snapped_dx;
+            int32_t snapped_dx = (int32_t)((int64_t)(rounded - pan_hz) * (int)(tt_w * s_zoom_factor) / UAC_SAMPLE_RATE);
+            s_target_x = tt_x0 + tt_w / 2 + snapped_dx;
             s_target_freq_hz = rounded_target;
         }
         s_target_until_us = esp_timer_get_time() + 200000;
@@ -13545,7 +14175,10 @@ static void touch_event_cb(lv_event_t *e)
             return;
         }
 
-        esp_err_t err = cat_set_frequency(target_hz);
+        // Via ui_tune_commit so a tap-to-tune on the CW page cannot land
+        // outside the CW segment (it was the one gesture that still could).
+        // Outside CW mode it is a straight pass-through to cat_set_frequency.
+        esp_err_t err = ui_tune_commit(target_hz, false);
         ESP_LOGI("ui_touch", "RELEASED tune -> %lu Hz (cursor value; release x=%d ignored) err=0x%x",
                  (unsigned long)target_hz, (int)p.x, err);
         // Optimistically update the on-screen freq label immediately so the user
@@ -13647,10 +14280,10 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             int margin  = 40;   // expanded touch area on each side of the head
             bool on_head = (int)p.x >= knob_x0 - margin && (int)p.x <= knob_x1 + margin;
             if (on_head) {
-                qmx_settings_t s;
-                settings_load_all(&s);
+                uint8_t bp_region; char bp_grid[8];
+                settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
                 bandplan_region_t reg =
-                    bandplan_effective_region((bandplan_region_t)s.bandplan_region, s.my_grid);
+                    bandplan_effective_region((bandplan_region_t)bp_region, bp_grid);
                 const bp_seg_t *segs = NULL;
                 int n = bandplan_get_segments(s_last_qmx_freq_hz, reg, &segs);
                 if (n > 0) {
@@ -13685,7 +14318,8 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             }
         }
         if (be_decided == 2 && be_bp_ok) {
-            double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) / (double)DISPLAY_H_RES;
+            double hz_per_px = (double)(s_bp_drag_band_hi - s_bp_drag_band_lo) /
+                               (double)ui_spec_w();
             int64_t target = s_bp_drag_start_freq + (int64_t)lround((double)dx * hz_per_px);
             target = ((target + 500) / 1000) * 1000;              // snap centre to whole kHz
             if (target < (int64_t)s_bp_drag_band_lo) target = (int64_t)s_bp_drag_band_lo;
@@ -14324,6 +14958,23 @@ static void drawer_check_sim_mode_cb(lv_event_t *e)
     }
     ui_refresh_sim_mode_indicator();
     ESP_LOGI(TAG, "simulation mode: %s", s_sim_mode_en ? "ON (radio not keyed)" : "off");
+}
+
+// CW phantom practice - its OWN flag, deliberately not sim_mode_en: turning
+// on CW practice must not arm the FT8 phantoms when swiping to that page,
+// and vice versa (operator, 2026-08-02).
+static void drawer_check_cw_sim_cb(lv_event_t *e)
+{
+    lv_obj_t *cb = lv_event_get_target(e);
+    s_cw_sim_en = lv_obj_has_state(cb, LV_STATE_CHECKED);
+    settings_set_cw_sim_en(s_cw_sim_en);
+    ui_refresh_sim_mode_indicator();
+    // Leaving practice: wipe the phantom's copy, hint, station card and
+    // ladder, so a simulated QSO never lingers looking like real decode
+    // (operator-reported 2026-08-04). Entering practice clears too - a
+    // session should start from a clean ticker either way.
+    cw_screen_clear_decode();
+    ESP_LOGI(TAG, "CW simulation mode: %s", s_cw_sim_en ? "ON (radio not keyed)" : "off");
 }
 
 // Create a transparent, full-width, non-scrollable container for one
@@ -15341,6 +15992,7 @@ static void drawer_refresh_checkboxes(void)
     sync_cb(s_check_pskrep,         c.pskreporter_en);
     sync_cb(s_check_sim_mode,       c.sim_mode_en);
     sync_cb(s_check_wspr_test,      c.sim_mode_en);
+    sync_cb(s_check_cw_sim,         c.cw_sim_en);
     sync_cb(s_check_spots,          c.spots_en);
     sync_cb(s_check_rbn,            c.rbn_en);
     sync_cb(s_check_cluster,        c.cluster_en);
@@ -15674,7 +16326,11 @@ static void drawer_build(void)
         qmx_settings_t vcfg;
         settings_load_all(&vcfg);
 
-        lv_obj_t *sec = drawer_section(DRAWER_SEC_QMXVOL, y, 96);
+        /* 152: the caption added 2026-11-02 wraps to two 24 px lines from
+         * y=76, so it ends at 124 in what was a 126 px box - flush, with 2 px
+         * to spare, which is not margin. Same measurement as DRAWER_SEC_CWMON
+         * below. */
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_QMXVOL, y, 152);
         s_lbl_qmx_vol = lv_label_create(sec);
         char vbuf[32];
         snprintf(vbuf, sizeof(vbuf), "QMX volume: %u dB", (unsigned)vcfg.qmx_vol_db);
@@ -15692,7 +16348,21 @@ static void drawer_build(void)
         lv_slider_set_value(s_slider_qmx_vol, vcfg.qmx_vol_db, LV_ANIM_OFF);
         lv_obj_align(s_slider_qmx_vol, LV_ALIGN_TOP_LEFT, 0, 40);
         lv_obj_add_event_cb(s_slider_qmx_vol, drawer_slider_qmx_vol_cb, LV_EVENT_VALUE_CHANGED, NULL);
-        y += 96;
+
+        /* ⭐ T139's SECOND HALF, and it is a labelling fault not a code one.
+         * Michael KZ4LY could not tell that this row is the radio's own main
+         * volume control - the one his "Sidetone abs/rel = Relative" setting
+         * ties his CW monitor to. So it says so, and names the row below that
+         * breaks the tie. 96 -> 126 for the line. */
+        lv_obj_t *vcap = lv_label_create(sec);
+        lv_label_set_long_mode(vcap, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(vcap, DRAWER_W - 32);
+        lv_label_set_text(vcap, "The radio's main volume - moves the CW monitor too "
+                                "unless that is set Absolute below");
+        lv_obj_set_style_text_font(vcap, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(vcap, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_align(vcap, LV_ALIGN_TOP_LEFT, 0, 76);
+        y += 152;
     }
 
     // QMX RF gain (Stan's suggestion via Samuel W7STF, 2026-08-07), directly
@@ -15741,6 +16411,101 @@ static void drawer_build(void)
         lv_obj_set_style_text_color(cap, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
         lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 0, 76);
         y += 126;
+    }
+
+    /* CW monitor level (T139, Michael KZ4LY), directly under the two gain
+     * controls it has to be read against.
+     *
+     * ⭐ WHAT HE ACTUALLY HIT. He reported that "the Tab5 overwrites the CW
+     * monitor volume", so he could not run the receive audio down and his own
+     * keying monitor up for a binaural QMX-headphones/Tab5-earbuds setup.
+     * Nothing overwrites anything: the radio ships with "Sidetone abs/rel" set
+     * to Relative, where the main volume scales the sidetone along with the
+     * received signals (operation manual, CW menu). The QMX volume slider two
+     * rows up IS that main volume. So the fix he needs is the Absolute
+     * checkbox here, and then a level that stays put.
+     *
+     * ⭐ AND THE OTHER HALF OF HIS REPORT WAS "nothing says the Tab5 owns that
+     * value" - so this row says who owns it, in words, and stores NOTHING on
+     * the Tab5. Both parameters live in the radio's EEPROM and are read back
+     * from it; there is no NVS shadow to disagree with the radio later.
+     *
+     * ⛔ RELEASED, NOT VALUE_CHANGED, and for a harder reason than RF gain's.
+     * An MM write needs MU; to take effect, MU; drops IQ mode, and the
+     * spectrum is flat until the handshake re-asserts Q9 - about 0.6 s. A drag
+     * that streamed writes would strobe the panadapter.
+     *
+     * ⛔⛔ THE WIDGETS ARE ALWAYS BUILT, AND HIDDEN UNTIL THE RADIO ANSWERS.
+     * The first version of this block chose its SHAPE from
+     * cat_sidetone_vol_max() at construction time, and that was dead on
+     * arrival: drawer_build() runs inside ui_init() at boot, ~17 s before CAT
+     * link-up (357 s on the boot that found this, because the radio was down
+     * after the flash), so the range is ALWAYS 0 here. The row therefore said
+     * "this radio does not offer it over CAT" for the whole session while the
+     * radio was answering 255 - and drawer_set_mode() positions sections but
+     * never rebuilds them, so nothing ever corrected it. Flashed and measured
+     * before it was found, which is why it is written down rather than
+     * quietly fixed.
+     *
+     * So the shape is fixed and the VISIBILITY is resolved later, which is the
+     * same bargain the RF gain row above already makes for its value. The
+     * range is still never invented: the slider carries no usable range until
+     * cw_mon_apply_range() sets the one the radio reported. */
+    {
+        /* ⛔ 190, NOT 162, AND THE 162 WAS MEASURED WRONG BY ME. The note at
+         * y=126 wraps to TWO lines of montserrat_20 in DRAWER_W-32 = 488 px,
+         * and a montserrat_20 line is 24 px on the glass (read off the
+         * operator's screenshot, 2026-11-02: the two lines sit at y 347 and
+         * 371). 126 + 48 = 174, so 162 clipped the second line - "too. Tick
+         * the box above." was cut by the row below it. 190 leaves 16 px.
+         *
+         * ⚠ The rule this broke is the project's own: a label's fit is
+         * PIXELS, not characters. I sized this section by eye from the rows
+         * around it instead of from the text it has to hold. */
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_CWMON, y, 190);
+
+        s_lbl_cw_mon = lv_label_create(sec);
+        lv_obj_set_style_text_color(s_lbl_cw_mon, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_lbl_cw_mon, &lv_font_montserrat_28, 0);
+        lv_obj_align(s_lbl_cw_mon, LV_ALIGN_TOP_LEFT, 0, 10);
+        lv_label_set_text(s_lbl_cw_mon, cat_is_ready() ? "CW monitor: reading..."
+                                                       : "CW monitor: radio not connected");
+
+        s_slider_cw_mon = lv_slider_create(sec);
+        lv_obj_set_size(s_slider_cw_mon, DRAWER_W - 32, 30);
+        /* 0..1 and HIDDEN, deliberately. Not a scale - a placeholder that
+         * cannot be dragged into a wrong value if it ever became visible
+         * before the radio answered. cw_mon_apply_range() installs the real
+         * top and unhides. */
+        lv_slider_set_range(s_slider_cw_mon, 0, 1);
+        lv_slider_set_value(s_slider_cw_mon, 0, LV_ANIM_OFF);
+        lv_obj_align(s_slider_cw_mon, LV_ALIGN_TOP_LEFT, 0, 40);
+        lv_obj_add_flag(s_slider_cw_mon, LV_OBJ_FLAG_HIDDEN);
+        /* Label under the finger on every tick; the radio hears about it
+           once, on release. */
+        lv_obj_add_event_cb(s_slider_cw_mon, drawer_slider_cw_mon_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(s_slider_cw_mon, drawer_slider_cw_mon_cb, LV_EVENT_RELEASED, NULL);
+
+        s_lbl_cw_mon_abs = lv_label_create(sec);
+        lv_label_set_text(s_lbl_cw_mon_abs, "Independent of QMX volume");
+        lv_obj_set_style_text_color(s_lbl_cw_mon_abs, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_lbl_cw_mon_abs, &lv_font_montserrat_24, 0);
+        lv_obj_align(s_lbl_cw_mon_abs, LV_ALIGN_TOP_LEFT, 0, 84);
+        lv_obj_add_flag(s_lbl_cw_mon_abs, LV_OBJ_FLAG_HIDDEN);
+
+        s_check_cw_mon_abs = make_drawer_checkbox(sec, false,
+                                                  drawer_check_cw_mon_abs_cb, NULL);
+        lv_obj_align(s_check_cw_mon_abs, LV_ALIGN_TOP_RIGHT, 0, 80);
+        lv_obj_add_flag(s_check_cw_mon_abs, LV_OBJ_FLAG_HIDDEN);
+
+        s_lbl_cw_mon_note = lv_label_create(sec);
+        lv_label_set_long_mode(s_lbl_cw_mon_note, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_lbl_cw_mon_note, DRAWER_W - 32);
+        lv_obj_set_style_text_font(s_lbl_cw_mon_note, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(s_lbl_cw_mon_note,
+                                    lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_align(s_lbl_cw_mon_note, LV_ALIGN_TOP_LEFT, 0, 126);
+        y += 190;
     }
 
     // "Let me use the QMX menus" - Stan's pause button, via Samuel W7STF.
@@ -16306,6 +17071,24 @@ static void drawer_build(void)
     // Log a contact by hand (Brian KB9WFS). The quickest route he has to a
     // CW or SSB contact: one swipe, one tap, then the callsign. Everything
     // else the record needs is already on the device.
+    /* The web radio. One button; everything else is in its own modal,
+     * because a station list does not fit a 320 px drawer and the player
+     * keeps running after the drawer closes. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_WEBRADIO, y, 72);
+        lv_obj_t *btn = lv_btn_create(sec);
+        lv_obj_set_size(btn, DRAWER_W - 32, 56);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(UI_COLOR_PRIMARY), 0);
+        lv_obj_add_event_cb(btn, drawer_webradio_btn_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(btn);
+        lv_label_set_text(l, LV_SYMBOL_AUDIO " Web radio");
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
+        lv_obj_center(l);
+        y += 72;
+    }
+
     {
         lv_obj_t *sec = drawer_section(DRAWER_SEC_MANLOG, y, 72);
         lv_obj_t *btn = lv_btn_create(sec);
@@ -17422,6 +18205,23 @@ static void drawer_build(void)
         ui_refresh_sim_mode_indicator();   // also re-asserts the checkbox (apply_sim_mode_lock)
         y += 56;
     }
+    // CW simulation mode: the CW page's phantom practice partner. Its own
+    // flag (cw_sim_en) so FT8 practice and CW practice arm independently;
+    // shown only while the CW page is up (drawer_set_ft8_mode).
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_CWSIM, y, 56);
+        lv_obj_t *lbl = lv_label_create(sec);
+        lv_label_set_text(lbl, "CW Simulation Mode");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 10);
+        qmx_settings_t scfg_cwsim;
+        settings_load_all(&scfg_cwsim);
+        s_cw_sim_en = scfg_cwsim.cw_sim_en;
+        s_check_cw_sim = make_drawer_checkbox(sec, s_cw_sim_en, drawer_check_cw_sim_cb, NULL);
+        lv_obj_align(s_check_cw_sim, LV_ALIGN_TOP_RIGHT, 0, 6);
+        y += 56;
+    }
     // The km/miles switch alone, for the WSPR page (DRAWER_SEC_WSPRDIST). Same
     // row geometry as "Show RIT button". Its state is whatever s_distance_in_miles
     // was just loaded as by the FT8 section above.
@@ -17831,7 +18631,7 @@ static void drawer_build(void)
         s_slider_db_min, s_slider_db_max, s_slider_alpha, s_slider_cwpitch,
         s_slider_ifcal, s_slider_brightness,
         s_slider_wf_black, s_slider_wf_contrast,
-        s_slider_charge_limit_pct, s_slider_qmx_vol, s_slider_qmx_rf,
+        s_slider_charge_limit_pct, s_slider_qmx_vol, s_slider_qmx_rf, s_slider_cw_mon,
         s_slider_cwtxoff, s_outpwr_slider,
         /* ⛔ A SLIDER LEFT OUT OF THIS LIST LOOKS WRONG AND NOTHING SAYS SO.
            The keyer row was added without it and rendered a 30 px track
@@ -17961,6 +18761,7 @@ static void drawer_open(void)
     drawer_refresh_keyer();     // same: the QMX's own encoder moves this too
     drawer_refresh_activation();
     drawer_refresh_qmx_rf();    // and its per-band RF gain, which changes with the band
+    drawer_refresh_cw_mon();    // T139: and the CW monitor, which he may have set on the radio
     gain_resolve_start();       // ...and repaint whichever of those answers late
     // A Bluetooth restart can be owed from an earlier visit to the drawer, or
     // from the web settings page, so the offer is re-tested on every open
@@ -18072,6 +18873,8 @@ static void drawer_close(void)
     qmx_wait_poll_cb(NULL);   // prompt may come back now the drawer is gone
     ESP_LOGI(TAG, "Settings drawer closed");
 }
+
+
 
 // FT8 mode keeps the Flip-display toggle (top), the
 // distance-unit (km/miles) toggle (only meaningful on the FT8 decode list),
@@ -18632,6 +19435,104 @@ static void drawer_refresh_qmx_rf(void)
     cat_query_rf_gain();   // ask again for next time the drawer opens
 }
 
+/* ---- T139 CW monitor ------------------------------------------------------
+ * The note line says who owns the value, which is the half of Michael's report
+ * that was not about a number. It changes with the Absolute checkbox because
+ * the answer does: while the radio is Relative, the QMX volume slider really
+ * does move his monitor level, and saying so is the difference between a
+ * control that looks broken and one that explains itself. */
+static void paint_cw_mon_note(void)
+{
+    if (!s_lbl_cw_mon_note) return;
+    int a = cat_get_sidetone_absolute();
+    lv_label_set_text(s_lbl_cw_mon_note,
+        a == 1 ? "Held by the radio. QMX volume no longer moves it."
+      : a == 0 ? "The radio is Relative: QMX volume moves this too. Tick the box above."
+               : "Stored in the radio, not on the Tab5.");
+}
+
+/* ⛔⛔ THE RANGE ARRIVES AFTER THE WIDGETS DO, so this is the one place that
+ * installs it. drawer_build() runs at boot, CAT link-up is ~17 s later, and
+ * the first version of this row chose its shape at construction time and was
+ * therefore permanently stuck saying the radio does not offer the setting.
+ *
+ * Returns true once the row is live. Idempotent - called from the refresh and
+ * from the resolve timer, and setting the same range twice costs nothing. */
+static bool cw_mon_apply_range(void)
+{
+    if (!s_slider_cw_mon) return false;
+    uint16_t top = cat_sidetone_vol_max();
+    if (!top) {
+        /* Still unknown. Say which kind of unknown it is rather than one word
+         * that reads as a conversation in progress whether or not there is a
+         * radio - the fault Samuel W7STF found on the RF gain row. */
+        if (s_lbl_cw_mon)
+            lv_label_set_text(s_lbl_cw_mon, cat_is_ready() ? "CW monitor: reading..."
+                                                           : "CW monitor: radio not connected");
+        return false;
+    }
+    if (lv_slider_get_max_value(s_slider_cw_mon) != (int32_t)top)
+        lv_slider_set_range(s_slider_cw_mon, 0, top);
+    lv_obj_clear_flag(s_slider_cw_mon, LV_OBJ_FLAG_HIDDEN);
+    if (s_lbl_cw_mon_abs)   lv_obj_clear_flag(s_lbl_cw_mon_abs,   LV_OBJ_FLAG_HIDDEN);
+    if (s_check_cw_mon_abs) lv_obj_clear_flag(s_check_cw_mon_abs, LV_OBJ_FLAG_HIDDEN);
+    return true;
+}
+
+static void paint_cw_mon(int v)
+{
+    if (!s_slider_cw_mon || v < 0) return;
+    lv_slider_set_value(s_slider_cw_mon, v, LV_ANIM_OFF);
+    if (s_lbl_cw_mon) {
+        char b[48];
+        snprintf(b, sizeof(b), "CW monitor: %d", v);
+        lv_label_set_text(s_lbl_cw_mon, b);
+    }
+    if (s_check_cw_mon_abs) {
+        /* Re-assert from the RADIO, not from what the box was left showing: a
+         * refused write has to be visible, and the read-back is the only thing
+         * that knows. */
+        if (cat_get_sidetone_absolute() == 1)
+            lv_obj_add_state(s_check_cw_mon_abs, LV_STATE_CHECKED);
+        else
+            lv_obj_clear_state(s_check_cw_mon_abs, LV_STATE_CHECKED);
+    }
+    paint_cw_mon_note();
+}
+
+static void drawer_slider_cw_mon_cb(lv_event_t *e)
+{
+    int v = (int)lv_slider_get_value(lv_event_get_target(e));
+    if (s_lbl_cw_mon) {
+        char b[48];
+        snprintf(b, sizeof(b), "CW monitor: %d", v);
+        lv_label_set_text(s_lbl_cw_mon, b);
+    }
+    if (lv_event_get_code(e) != LV_EVENT_RELEASED) return;
+    /* Skip a write that changes nothing. Every one of these costs MU; and ~0.6 s
+     * of flat spectrum, and a tap that lands on the current value is common. */
+    if (v == cat_get_sidetone_vol()) return;
+    cat_request_sidetone_vol((uint16_t)v);
+    ESP_LOGI(TAG, "CW monitor level -> %d (radio EEPROM, needs MU; to apply)", v);
+}
+
+static void drawer_check_cw_mon_abs_cb(lv_event_t *e)
+{
+    bool want = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    if ((cat_get_sidetone_absolute() == 1) == want) return;
+    cat_request_sidetone_absolute(want);
+    ESP_LOGI(TAG, "CW monitor -> %s", want ? "Absolute" : "Relative");
+}
+
+static void drawer_refresh_cw_mon(void)
+{
+    if (!s_lbl_cw_mon) return;
+    cw_mon_apply_range();
+    paint_cw_mon(cat_get_sidetone_vol());
+    paint_cw_mon_note();
+    cat_query_sidetone();   // ask again for next time the drawer opens
+}
+
 // --- Resolving a gain read-back that has not answered YET -------------------
 // Both refresh functions above ask the radio and paint whatever answer arrived
 // BEFORE the ask. On the first drawer open after boot there is no previous
@@ -18654,6 +19555,10 @@ static lv_timer_t *s_gain_resolve_timer = NULL;
 static int  s_gain_resolve_ticks = 0;
 static bool s_rf_unresolved = false;
 static bool s_af_unresolved = false;
+/* T139 joins this timer rather than growing a third copy of the same wait.
+ * Same fault to avoid: the first open after boot is before CAT link-up, so the
+ * row would say "reading..." for the whole session on one lost query. */
+static bool s_mon_unresolved = false;
 
 static void gain_resolve_stop(void)
 {
@@ -18689,7 +19594,18 @@ static void gain_resolve_cb(lv_timer_t *t)
         int ag = cat_get_af_gain();
         if (ag >= 0) { paint_qmx_vol(ag); s_af_unresolved = false; }
     }
-    if (!s_rf_unresolved && !s_af_unresolved) {
+    if (s_mon_unresolved) {
+        /* The RANGE first: it is what reveals the row at all, and it cannot be
+         * known at drawer_build() time. Then the value. */
+        bool live = cw_mon_apply_range();
+        int  mv   = cat_get_sidetone_vol();
+        if (live && mv >= 0) { paint_cw_mon(mv); s_mon_unresolved = false; }
+        else if (live && s_lbl_cw_mon)
+            lv_label_set_text(s_lbl_cw_mon, cat_up ? "CW monitor: reading..."
+                                                   : "CW monitor: radio not connected");
+        /* !live: cw_mon_apply_range() has already written the right words. */
+    }
+    if (!s_rf_unresolved && !s_af_unresolved && !s_mon_unresolved) {
         gain_resolve_stop();
         return;
     }
@@ -18704,6 +19620,10 @@ static void gain_resolve_cb(lv_timer_t *t)
 
     if (++s_gain_resolve_ticks >= GAIN_RESOLVE_MAX_TICKS) {
         if (s_rf_unresolved) paint_qmx_rf_unknown("no answer from radio");
+        if (s_mon_unresolved && s_lbl_cw_mon)
+            lv_label_set_text(s_lbl_cw_mon, cat_sidetone_vol_max()
+                ? "CW monitor: no answer from radio"
+                : "CW monitor: not offered over CAT - set it in the radio's CW menu");
         gain_resolve_stop();
         return;
     }
@@ -18712,6 +19632,7 @@ static void gain_resolve_cb(lv_timer_t *t)
     if ((s_gain_resolve_ticks % GAIN_RESOLVE_REASK_EVERY) == 0) {
         if (s_rf_unresolved) cat_query_rf_gain();
         if (s_af_unresolved) cat_query_af_gain();
+        if (s_mon_unresolved) cat_query_sidetone();
     }
 }
 
@@ -18719,8 +19640,15 @@ static void gain_resolve_start(void)
 {
     s_rf_unresolved = (s_slider_qmx_rf  != NULL) && (cat_get_rf_gain() < 0);
     s_af_unresolved = (s_slider_qmx_vol != NULL) && (cat_get_af_gain() < 0);
+    /* Unresolved while EITHER is missing: the range reveals the row, the
+     * value fills it. The slider object always exists now, so this is a
+     * question about the radio and not about the widget. */
+    s_mon_unresolved = (s_slider_cw_mon != NULL) &&
+                       (cat_get_sidetone_vol() < 0 || cat_sidetone_vol_max() == 0);
     s_gain_resolve_ticks = 0;
-    if (!s_rf_unresolved && !s_af_unresolved) { gain_resolve_stop(); return; }
+    if (!s_rf_unresolved && !s_af_unresolved && !s_mon_unresolved) {
+        gain_resolve_stop(); return;
+    }
     if (!s_gain_resolve_timer) {
         s_gain_resolve_timer = lv_timer_create(gain_resolve_cb,
                                                GAIN_RESOLVE_PERIOD_MS, NULL);
@@ -19821,6 +20749,37 @@ void ui_apply_saved_mode_view(void)
     ESP_LOGI(TAG, "restore: last_ui_mode from NVS = %u", (unsigned)s_saved_ui_mode);
     if (restore_declined("the view")) return;
 
+    /* CW page restore. Merged from feat/cw-page 2026-09-10 and SPLIT to match
+     * the two halves this function became upstream: the panadapter widgets are
+     * already up (boot default) and stay as the CW page's backdrop, so this
+     * half only overlays the pane and paints the bar. The RADIO write - pinning
+     * the rig to CW - needs CAT and therefore lives in
+     * ui_apply_saved_mode_start(), like FT8's DiGi write.
+     *
+     * ⛔ top_bar_apply_mode() replaces the branch's own
+     * top_bar_set_hit_depth(false): it derives both the liveness (CW is a
+     * tuning page, so the bar stays bright) and the shallow hit depth the
+     * pane's top memory buttons need. Telling the bar rather than letting it
+     * derive is exactly what v1.12.1 had to undo. */
+    /* Gated like WSPR's restore below, and for a sharper reason: turning the
+     * CW page off must not leave a unit booting into a page it no longer
+     * offers, with no door in the drawer to leave by. Falls through to the
+     * Panadapter, which is what last_ui_mode means when its page is gone. */
+    if (s_saved_ui_mode == UI_MODE_CW && settings_get_cw_page_en()) {
+        ui_mode_set(UI_MODE_CW);
+        drawer_set_mode(UI_MODE_CW);
+        ui_update_mode("CW");           /* optimistic - no MD; poll without a QMX */
+        if (s_last_qmx_freq_hz) update_bandplan_strip(s_last_qmx_freq_hz);
+        recompute_zoom_pan();
+        draw_label_ticks();
+        if (s_last_qmx_freq_hz) update_freq_axis_labels(s_last_qmx_freq_hz);
+        cw_screen_view_show();
+        top_bar_apply_mode();
+        apply_edge_grips_for_mode(UI_MODE_CW);
+        ESP_LOGI(TAG, "UI mode restored from NVS: CW");
+        return;
+    }
+
     /* WSPR resumes too, as of the 2026-08-28 launch. It used to fall through to
      * Panadapter on purpose - "a mode that ships dark should not be sticky
      * across a reboot" - and that reason ended when the page joined the swipe
@@ -19876,6 +20835,15 @@ void ui_apply_saved_mode_start(void)
         ESP_LOGI(TAG, "restore: WSPR receiver started");
         return;
     }
+    /* The CW page's radio write, split out of the view half - it needs CAT, and
+     * CAT does not exist when the view is composed. Same shape as FT8's DiGi
+     * write below: through the poll task, so it is retried rather than dropped
+     * by the 200 ms rate limit. */
+    if (s_saved_ui_mode == UI_MODE_CW && settings_get_cw_page_en()) {
+        cat_request_mode("CW");
+        ESP_LOGI(TAG, "restore: CW mode requested from the radio");
+        return;
+    }
     if (s_saved_ui_mode == UI_MODE_FT8) {
         // FT8 is a digital mode - force the radio into DiGi regardless of
         // whatever mode (e.g. CW) was active in Panadapter mode. Via the poll
@@ -19901,6 +20869,21 @@ static void hide_panadapter_widgets_instant(void)
     if (s_bandplan_obj)  { lv_obj_add_flag(s_bandplan_obj,  LV_OBJ_FLAG_HIDDEN); lv_obj_set_x(s_bandplan_obj,  0); }
     if (s_bp_catch)      lv_obj_add_flag(s_bp_catch, LV_OBJ_FLAG_HIDDEN);
     if (s_waterfall_obj) { lv_obj_add_flag(s_waterfall_obj, LV_OBJ_FLAG_HIDDEN); lv_obj_set_x(s_waterfall_obj, 0); }
+    if (spots_lane_obj()) lv_obj_set_x(spots_lane_obj(), 0);
+}
+
+/* ...and its inverse, for the CW page, which is the one overlay that keeps the
+ * panadapter widgets LIVE underneath it. Written as a pair with the hide above
+ * so the two cannot drift: the CW entry branch used to restore four objects by
+ * hand and had already fallen behind on s_bp_catch (the band-plan drag catch,
+ * which the CW page depends on) and the spots lane. */
+static void show_panadapter_widgets_instant(void)
+{
+    if (s_spectrum_obj)  { lv_obj_set_x(s_spectrum_obj,  0); lv_obj_clear_flag(s_spectrum_obj,  LV_OBJ_FLAG_HIDDEN); }
+    if (s_label_bar)     { lv_obj_set_x(s_label_bar,     0); lv_obj_clear_flag(s_label_bar,     LV_OBJ_FLAG_HIDDEN); }
+    if (s_bandplan_obj)  { lv_obj_set_x(s_bandplan_obj,  0); lv_obj_clear_flag(s_bandplan_obj,  LV_OBJ_FLAG_HIDDEN); }
+    if (s_bp_catch)      lv_obj_clear_flag(s_bp_catch, LV_OBJ_FLAG_HIDDEN);
+    if (s_waterfall_obj) { lv_obj_set_x(s_waterfall_obj, 0); lv_obj_clear_flag(s_waterfall_obj, LV_OBJ_FLAG_HIDDEN); }
     if (spots_lane_obj()) lv_obj_set_x(spots_lane_obj(), 0);
 }
 
@@ -19937,6 +20920,7 @@ static const char *mode_name(ui_mode_t m)
 {
     return m == UI_MODE_FT8  ? "FT8"
          : m == UI_MODE_WSPR ? "WSPR"
+         : m == UI_MODE_CW   ? "CW"
                              : "Panadapter";
 }
 
@@ -19944,6 +20928,10 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
 {
     ui_mode_t cur = ui_mode_get();
     if (next == cur) return;
+    // CW transitions are instant: the CW page shares the panadapter's live
+    // widgets as its backdrop, so there is nothing meaningful to slide. The
+    // animated path below stays exactly as it was for the P<->FT8 pair.
+    if (cur == UI_MODE_CW || next == UI_MODE_CW) animate = false;
     /* ⛔ CHOOSING THE PAGE IS WHAT ENABLES IT. wspr_en began life as a master
      * unlock for a page that was not finished (default off, plus the hidden
      * unlock in ota_modal.c). Once WSPR has a button in the left drawer and a
@@ -19960,6 +20948,23 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         ESP_LOGI(TAG, "WSPR selected - enabling the page (wspr_en was off)");
         settings_set_wspr_en(true);
     }
+    /* ⛔ CW IS THE OPPOSITE CASE, AND DELIBERATELY SO: asking for the page
+     * does NOT enable it. WSPR's unlock above is vestigial - the page is
+     * finished and has a door, so a separate switch could only produce a
+     * button that does nothing. The CW page is NOT finished: it keys the
+     * radio over CAT KY with no way to abort a message in flight, so the
+     * flag is a real gate and self-enabling would void it.
+     *
+     * It sits here for the same reason the WSPR unlock does - the one
+     * function the drawer, the boot restore and /api/cmd all pass through -
+     * so there is no arrangement in which the Tab5 and the browser disagree
+     * about which page is up. The surfaces each refuse on their OWN channel
+     * as well (set_screen answers an error; the drawer hides the button),
+     * because a silent no-op here reads exactly like a typo. */
+    if (next == UI_MODE_CW && !settings_get_cw_page_en()) {
+        ESP_LOGW(TAG, "CW page requested but cw_page_en is OFF - refused");
+        return;
+    }
     ESP_LOGI(TAG, "Base mode: %s -> %s%s",
              mode_name(cur), mode_name(next), animate ? "" : " (instant)");
     ui_mode_set(next);
@@ -19971,6 +20976,8 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
     drawer_set_mode(next);
     apply_edge_grips_for_mode(next);
 
+    ui_refresh_sim_mode_indicator();   // the CW-practice bezel is page-scoped
+
     /* STAND DOWN WHAT WE ARE LEAVING, before anything is shown.
      *
      * This used to live inside the two entry branches, which was fine while
@@ -19978,7 +20985,14 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
      * is a trap - leaving WSPR would have run the Panadapter branch and saved
      * the WSPR page's state into s_ft8_snapshot, corrupting where FT8 resumes.
      * Doing it by the mode we are actually leaving cannot make that mistake. */
-    if (cur == UI_MODE_WSPR) {
+    if (cur == UI_MODE_CW) {
+        ui_save_snapshot(&s_cw_snapshot);
+        /* The CW page is always mode CW - never let a drifted radio mode be
+         * carried back on the next entry (the FT8/DiGi rule, applied here). */
+        strncpy(s_cw_snapshot.mode, "CW", sizeof(s_cw_snapshot.mode) - 1);
+        s_cw_snapshot.mode[sizeof(s_cw_snapshot.mode) - 1] = '\0';
+        cw_screen_view_hide();
+    } else if (cur == UI_MODE_WSPR) {
         wspr_rx_stop();               /* frees 8.6 MB and releases the capture */
         wspr_screen_view_hide();
         /* WSPR no longer owns Max. PA voltage the instant wspr_rx_stop()
@@ -20009,6 +21023,79 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         wspr_rx_start();              /* sets nothing else - the mode is already WSPR */
         spots_lane_set_visible(false);
         apply_edge_grips_for_mode(UI_MODE_WSPR);
+        return;
+    }
+
+    if (next == UI_MODE_CW) {
+        // From Panadapter the widgets are already live and stay as the
+        // backdrop. From FT8 or WSPR they have to come back (instant - see
+        // above) and that page be put away. Which page we are LEAVING was
+        // already saved by the stand-down block above; doing it again here
+        // was how the pre-merge version worked, and with three pages that is
+        // exactly the double-save trap the block was written to close.
+        if (cur == UI_MODE_FT8) {
+            ft8_screen_view_hide();
+            if (ft8) lv_obj_set_x(ft8, 0);
+        }
+        if (cur != UI_MODE_PANADAPTER) show_panadapter_widgets_instant();
+        if (s_cw_snapshot.valid) {
+            ui_restore_snapshot(&s_cw_snapshot);
+        } else {
+            // First CW entry this boot: inherit the current frequency (you
+            // tune to a CW signal, then swipe here) - seed the snapshot so
+            // later toggles are sticky, with the mode pinned to CW and a
+            // deep default zoom: CW signals are ~200 Hz wide, so x8 (6 kHz
+            // visible) is a useful opening view where the panadapter's x1
+            // 48 kHz would render them as hairlines. Sticky from then on -
+            // whatever zoom the operator settles at becomes the CW zoom.
+            ui_save_snapshot(&s_cw_snapshot);
+            strncpy(s_cw_snapshot.mode, "CW", sizeof(s_cw_snapshot.mode) - 1);
+            s_cw_snapshot.mode[sizeof(s_cw_snapshot.mode) - 1] = '\0';
+            s_cw_snapshot.zoom_factor     = 8.0f;
+            s_cw_snapshot.pan_offset_bins = 0;
+            ui_restore_snapshot(&s_cw_snapshot);   // apply the seeded zoom
+        }
+        // The CW page IS a CW-mode page - force it on every entry via the
+        // poll task, same as FT8 forces DiGi. Optimistic label for the
+        // no-QMX case, same as the FT8 branch.
+        cat_request_mode("CW");
+        ui_update_mode("CW");
+        // 300 Hz is the CW default on this page (operator, 2026-08-04): a
+        // page dedicated to CW should open ready to copy CW, not at whatever
+        // width a previous phone/digi session left behind. Deferred through
+        // the poll task like every other CAT write, and the label is set
+        // optimistically for the no-QMX case.
+        cat_request_cw_passband(CW_DEFAULT_BW_HZ);
+        ui_update_passband_width(CW_DEFAULT_BW_HZ);
+        // ...and honour the band plan: an entry frequency outside the band's
+        // CW segment (inherited from a phone/digi tune) moves into it.
+        {
+            uint32_t f = cw_bandplan_clamp_hz(s_cw_snapshot.freq_hz);
+            if (f != s_cw_snapshot.freq_hz) {
+                ESP_LOGI(TAG, "CW entry: %lu Hz outside the CW segment -> %lu Hz",
+                         (unsigned long)s_cw_snapshot.freq_hz, (unsigned long)f);
+                s_cw_snapshot.freq_hz = f;
+                cat_set_frequency_forced(f);
+                ui_update_frequency(f);
+            }
+            // Re-render the strip in its CW-only view (a freq that didn't
+            // change wouldn't trigger a refresh on its own).
+            update_bandplan_strip(s_cw_snapshot.freq_hz);
+        }
+        // Re-anchor the zoom window on the VISIBLE center (the pane hides
+        // the left quarter) and redraw the axis grid + labels to match.
+        recompute_zoom_pan();
+        draw_label_ticks();
+        update_freq_axis_labels(s_cw_snapshot.freq_hz);
+        /* ⛔ The spots lane must be SHOWN here, not merely re-positioned.
+         * FT8 and WSPR hide it (spots_lane_set_visible(false)), and
+         * show_panadapter_widgets_instant() only restores its x - so every CW
+         * entry that came from one of those pages left the lane hidden, and the
+         * CW page showed no spots at any zoom while 122 were held (operator,
+         * 2026-09-11). From the panadapter it was already visible, which is why
+         * it looked like it worked. The panadapter branch below does the same. */
+        spots_lane_set_visible(true);
+        cw_screen_view_show();
         return;
     }
 
@@ -20056,6 +21143,10 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         // (reliable, retried) — the snapshot restore's mode step can lose the
         // race, which left FT8 stuck in the panadapter's mode (e.g. CW).
         cat_request_mode("DIGI");
+        // Optimistic label: with no QMX connected there is no MD; poll to
+        // correct it, so the top bar would keep showing the previous page's
+        // mode (hardware-observed: "CW" while on the FT8 page).
+        ui_update_mode("DiGi");
         ft8_screen_view_show();
         // Respawn the FT8 task; it self-deleted on previous exit.
         ft8_self_test();
@@ -20116,6 +21207,16 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
             wf_clear_all();
         }
         ui_restore_snapshot(&s_pan_snapshot);
+        // Optimistic mode label for the no-QMX case (see the FT8/CW branches),
+        // and re-render the band-plan strip back to its whole-band view.
+        if (s_pan_snapshot.valid && s_pan_snapshot.mode[0])
+            ui_update_mode(s_pan_snapshot.mode);
+        if (s_last_qmx_freq_hz) update_bandplan_strip(s_last_qmx_freq_hz);
+        // Undo the CW page's visible-center shift (screen-center anchoring)
+        // and put the axis grid + labels back to full width.
+        recompute_zoom_pan();
+        draw_label_ticks();
+        if (s_last_qmx_freq_hz) update_freq_axis_labels(s_last_qmx_freq_hz);
         int start_x = animate ? -DISPLAY_H_RES : 0;
         if (s_spectrum_obj)  { lv_obj_set_x(s_spectrum_obj,  start_x); lv_obj_clear_flag(s_spectrum_obj,  LV_OBJ_FLAG_HIDDEN); }
         if (s_label_bar)     { lv_obj_set_x(s_label_bar,     start_x); lv_obj_clear_flag(s_label_bar,     LV_OBJ_FLAG_HIDDEN); }
@@ -20207,7 +21308,13 @@ void ui_request_base_mode_m(ui_mode_t m)
 #define LD_MARGIN_X         40   /* halved from 80 on the glass - operator */
 #define LD_BTN_PAD_X        28   /* breathing room each side of the text */
 #define LD_BTN_H           104   /* a 48 pt line needs more than 72 */
-#define LD_BTN_GAP          14
+/* 14 until the CW button made six of them. 6*104 + 5*14 = 694 against 688 of
+ * padded height (720 - 2*16), so the stack overran its box and the centring
+ * below clamped to 0 - 16 px of margin at the top, 10 at the bottom. At 12 it
+ * is 684 and centres properly again. The button height and the 48 pt font are
+ * untouched: the gap is the only quantity here that was not measured from the
+ * text itself. */
+#define LD_BTN_GAP          12
 #define LD_PAD              16
 
 /* Filled by left_drawer_build() once the text has been measured. */
@@ -20258,8 +21365,8 @@ static void left_drawer_scrim_cb(lv_event_t *e)
     left_drawer_close();
 }
 
-static void left_drawer_add_btn(lv_obj_t *parent, int y, const char *txt,
-                                uint32_t hex, void *dest)
+static lv_obj_t *left_drawer_add_btn(lv_obj_t *parent, int y, const char *txt,
+                                     uint32_t hex, void *dest)
 {
     lv_obj_t *b = lv_btn_create(parent);
     lv_obj_set_size(b, s_ld_btn_w, LD_BTN_H);
@@ -20284,6 +21391,7 @@ static void left_drawer_add_btn(lv_obj_t *parent, int y, const char *txt,
     lv_obj_align(l, LV_ALIGN_LEFT_MID, 8, 0);
 
     lv_obj_add_event_cb(b, left_drawer_btn_cb, LV_EVENT_CLICKED, dest);
+    return b;
 }
 
 /* The labels, in the order they are stacked. Kept as one list so the
@@ -20291,8 +21399,49 @@ static void left_drawer_add_btn(lv_obj_t *parent, int y, const char *txt,
  * drawer - a width measured over a different set of strings than the one
  * drawn is a bug that looks like a font problem. */
 static const char *LD_LABELS[] = {
-    "PANADAPTER", "MODE: FT8", "MODE: FT4", "MODE: JS8", "MODE: WSPR",
+    "PANADAPTER", "MODE: CW", "MODE: FT8", "MODE: FT4", "MODE: JS8", "MODE: WSPR",
 };
+
+/* The buttons in LD_LABELS order, so the layout pass below can reach them.
+ * Built once; which of them are SHOWN can change while the drawer exists. */
+static lv_obj_t *s_ld_btn[sizeof(LD_LABELS) / sizeof(LD_LABELS[0])];
+
+/* Position and show only the doors this firmware is offering, and re-centre
+ * the stack over however many that is.
+ *
+ * ⛔ RUN ON EVERY OPEN, NOT ONCE AT BUILD. The drawer is built lazily and
+ * then lives for the rest of the boot, so a gate evaluated at build time is a
+ * belief that goes stale the moment the flag is written over /api/cmd - the
+ * operator would turn the CW page on and still find no way in until a reboot.
+ * Same failure the sim bezels had when they were evaluated during the drawer
+ * build and the page was restored afterwards.
+ *
+ * The drawer's WIDTH is deliberately NOT recomputed: left_drawer_measure()
+ * spans every label whether shown or not, so the chrome does not jump when a
+ * page is enabled or disabled. */
+static void left_drawer_layout(void)
+{
+    const int n_all = (int)(sizeof(LD_LABELS) / sizeof(LD_LABELS[0]));
+    bool show[sizeof(LD_LABELS) / sizeof(LD_LABELS[0])];
+    int  n_show = 0;
+    for (int i = 0; i < n_all; i++) {
+        /* Index 1 is MODE: CW - gated, default off. Everything else is a
+         * finished page and always has a door. */
+        show[i] = (i == 1) ? settings_get_cw_page_en() : true;
+        if (show[i]) n_show++;
+    }
+
+    const int stack_h = n_show * LD_BTN_H + (n_show - 1) * LD_BTN_GAP;
+    int y = (DISPLAY_V_RES - stack_h) / 2 - LD_PAD;
+    if (y < 0) y = 0;
+    for (int i = 0; i < n_all; i++) {
+        if (!s_ld_btn[i]) continue;
+        if (!show[i]) { lv_obj_add_flag(s_ld_btn[i], LV_OBJ_FLAG_HIDDEN); continue; }
+        lv_obj_clear_flag(s_ld_btn[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_y(s_ld_btn[i], y);
+        y += LD_BTN_H + LD_BTN_GAP;
+    }
+}
 
 static void left_drawer_measure(void)
 {
@@ -20344,39 +21493,61 @@ static void left_drawer_build(void)
     lv_obj_add_flag(s_left_drawer, UI_FLAG_NOT_HOT);
 
     /* Panadapter at the top, then the operating modes in the order he listed
-     * them. MODE: CW BELONGS DIRECTLY UNDER PANADAPTER when UI_MODE_CW
-     * arrives from the other branch (ui_mode.h reserves = 2) - his words, so
-     * insert there rather than appending. */
-    /* Centred vertically rather than hung from the top: with five buttons at
-     * 104 the stack is 576 of 720, so top-aligned it sat high with a long
-     * empty tail. Computed from the list length so adding MODE: CW re-centres
-     * itself instead of needing this number edited. */
-    const int n_btn   = (int)(sizeof(LD_LABELS) / sizeof(LD_LABELS[0]));
-    const int stack_h = n_btn * LD_BTN_H + (n_btn - 1) * LD_BTN_GAP;
-    int y = (DISPLAY_V_RES - stack_h) / 2 - LD_PAD;
-    if (y < 0) y = 0;
-    left_drawer_add_btn(s_left_drawer, y, LD_LABELS[0], 0xFFFFFF,
-                        LD_DEST(UI_MODE_PANADAPTER, 0xFF)); y += LD_BTN_H + LD_BTN_GAP;
-    left_drawer_add_btn(s_left_drawer, y, LD_LABELS[1], 0xFFDD00,
-                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT8)); y += LD_BTN_H + LD_BTN_GAP;
-    left_drawer_add_btn(s_left_drawer, y, LD_LABELS[2], FT4_ACCENT_HEX,
-                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT4)); y += LD_BTN_H + LD_BTN_GAP;
-    left_drawer_add_btn(s_left_drawer, y, LD_LABELS[3], JS8_ACCENT_HEX,
-                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_JS8)); y += LD_BTN_H + LD_BTN_GAP;
+     * them. MODE: CW sits DIRECTLY UNDER PANADAPTER - his words, and the slot
+     * this list was written to expect. Added 2026-10-28, when the CW page was
+     * merged up to v1.22.0: the 4-stop swipe carousel that used to reach it
+     * was replaced by this drawer on 2026-10-24, which left the page with no
+     * entrance at all on this branch. */
+    /* Centred vertically rather than hung from the top: with six buttons at
+     * 104 and a 12 gap the stack is 684 of 720, so top-aligned it would sit
+     * high with an empty tail. Computed from the list length, so the count
+     * can change without this number being edited. */
+    /* y is settled by left_drawer_layout() at the end, which knows which
+     * buttons are shown. Everything is created at 0 and then placed. */
+    int y = 0;
+    s_ld_btn[0] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[0], 0xFFFFFF,
+                        LD_DEST(UI_MODE_PANADAPTER, 0xFF));
+    /* CW takes no sub-mode: 0xFF is "leave the dial alone", the same value
+     * PANADAPTER and WSPR pass. The page itself picks up the band-plan CW
+     * segment on entry.
+     *
+     * UI_COLOR_MODE_CW_TEXT, NOT UI_COLOR_MODE_CW: the fill colour measured
+     * 2.9:1 as a label on this button and was the dimmest of the six. The
+     * fill is unchanged - see the note on the constant for why brightening
+     * the shared one only moves the problem onto the band-plan strip. */
+    s_ld_btn[1] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[1], UI_COLOR_MODE_CW_TEXT,
+                        LD_DEST(UI_MODE_CW, 0xFF));
+    /* UI_COLOR_ACCENT_GOLD, not the 0xFFDD00 that was written here: the FT8
+     * page's title is the theme constant (0xFFD700) and this button is meant
+     * to BE that title seen from outside. Six units of green apart is nothing
+     * on the glass, but it is a hand-copied colour in a block whose own
+     * comment says the colours are read out of the code - which is how the
+     * other three would have drifted too. */
+    s_ld_btn[2] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[2], UI_COLOR_ACCENT_GOLD,
+                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT8));
+    s_ld_btn[3] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[3], FT4_ACCENT_HEX,
+                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT4));
+    s_ld_btn[4] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[4], JS8_ACCENT_HEX,
+                        LD_DEST(UI_MODE_FT8, FT8_OP_MODE_JS8));
     /* ⛔ NO wspr_feature_enabled() GATE HERE, and the old cycle's gate was not
      * a reason to copy one. I wrote that WSPR was gated "because the page is
      * half-built"; the operator corrected it - it was disabled over a BUG, not
      * by design. A gate carried forward on a misremembered reason hides a
      * finished page from the operator who fixed it. WSPR is a peer mode and
      * gets a door like the rest. */
-    left_drawer_add_btn(s_left_drawer, y, LD_LABELS[4], UI_COLOR_MODE_WSPR,
+    /* _TEXT for the same reason CW uses it - see the constants. */
+    s_ld_btn[5] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[5], UI_COLOR_MODE_WSPR_TEXT,
                         LD_DEST(UI_MODE_WSPR, 0xFF));
+    left_drawer_layout();
 }
 
 static void left_drawer_open(void)
 {
     left_drawer_build();
     if (!s_left_drawer || s_left_drawer_open) return;
+    /* Re-evaluated here, not only at build: the CW door can be opened or
+     * closed over /api/cmd while this drawer already exists. */
+    left_drawer_layout();
 
     lv_obj_clear_flag(s_left_drawer_scrim, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_left_drawer_scrim);
@@ -20409,31 +21580,15 @@ static void left_drawer_close(void)
     s_left_drawer_open = false;
 }
 
-static void ui_advance_page(void)
-{
-    if (reader_view_is_active()) {
-        reader_view_hide();
-    } else {
-        /* Panadapter -> FT8 -> WSPR -> Panadapter. WSPR joins the cycle rather
-         * than hiding in the drawer because it is a peer operating mode, not a
-         * setting - the same reasoning that gave FT8 its own page. */
-        /* WSPR is in the cycle only when it has been enabled. It ships on the
-         * main track unfinished so the update path carries it, and this is
-         * what keeps an operator who never asked for it from swiping into a
-         * half-built page. With it off the cycle is the old Panadapter <-> FT8
-         * toggle exactly as before, which is the point: nothing about an
-         * existing user's device changes. */
-        ui_mode_t m = ui_mode_get();
-        const bool wspr_ok = wspr_feature_enabled();
-        ui_set_base_mode(m == UI_MODE_PANADAPTER ? UI_MODE_FT8
-                       : m == UI_MODE_FT8        ? (wspr_ok ? UI_MODE_WSPR
-                                                            : UI_MODE_PANADAPTER)
-                                                 : UI_MODE_PANADAPTER, true);
-    }
-    // Close the drawer (if open) after switching. UX nicety, and (4c.1 finding)
-    // an open drawer keeps LVGL busy enough to starve audio/fft tasks.
-    drawer_close();
-}
+/* ui_advance_page() - the 4-stop swipe carousel - WAS HERE AND IS GONE.
+ *
+ * The left-edge swipe stopped calling it on 2026-10-24 when the page picker
+ * replaced it (see left_drawer_build()); nothing has called it since, and
+ * every build said so with an -Wunused-function warning. It is deleted here
+ * rather than left standing because its cycle was the CW page's only
+ * entrance, so a reader finding it would reasonably conclude the CW page is
+ * still reachable by swiping. It is not. The drawer's MODE: CW button is the
+ * entrance, and it is the only one. */
 
 // Open the docs Reader as a full-screen overlay (from the Settings drawer's
 // "User Manual" button). It's orthogonal to the operating mode — whatever was

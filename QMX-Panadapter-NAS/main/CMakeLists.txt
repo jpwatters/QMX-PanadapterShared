@@ -22,11 +22,16 @@ idf_component_register(
         "ui/ui_mode.c"
         "ui/ft8_screen.c"
         "ui/ft8_screen_view.c"
+        "ui/cw_screen_view.c"
+        "cw_qso.c"
+        "cw_callsign.c"
         "ui/wspr_screen_view.c"
         "ui/ft8_tx_modal.c"
         "ui/ft8_cq_modal.c"
         "ui/ft8_filter_modal.c"
         "ui/js8_text_modal.c"
+        "ui/js8_macro_modal.c"
+        "ui/webradio_modal.c"
         "ui/manual_log_modal.c"
         "ui/sched_modal.c"
         "ui/ft8_time_modal.c"
@@ -44,6 +49,10 @@ idf_component_register(
         "ui/gps_status_view.c"
         "ui/qmx_term_view.c"
         "ui/font_qmx_mono_25.c"
+        "ui/font_ui_latin_20.c"
+        "ui/font_ui_latin_24.c"
+        "ui/font_ui_latin_28.c"
+        "ui/font_ui_pm_72.c"
         "ui/reader_diagram.c"
         "ui/watermark_img.c"
         "util/status.c"
@@ -153,6 +162,9 @@ idf_component_register(
         "ft8_directed_cq.c"
         "tx_band_guard.c"
         "ft8_sim.c"
+        "js8_sim.c"
+        "audio/webradio.c"
+        "net/radio_browser.c"
         "wspr_proto.c"
         "wspr_fano.c"
         "wspr_decode.c"
@@ -332,6 +344,38 @@ add_custom_command(
     TARGET ${COMPONENT_LIB} PRE_BUILD
     COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_dirty_bits.py"
     COMMENT "Checking settings dirty-bit indices are unique"
+    VERBATIM
+)
+
+# Refuse to build a T138 breadcrumb that is not balanced by its exit.
+#
+# panic_hook_crumb_enter() stamps RTC no-init RAM and the exit clears it. A
+# crumb still there at the next boot MEANS "the reset happened inside that
+# stretch", so a missing exit does not fail quietly - it makes the instrument
+# report a cache-off reset on every healthy boot, and its depth counter then
+# stops every later crumb from being recorded too. This project has already
+# lost a session to an instrument that returned confident wrong numbers.
+add_custom_command(
+    TARGET ${COMPONENT_LIB} PRE_BUILD
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_crumbs.py"
+    COMMENT "Checking T138 breadcrumbs are balanced"
+    VERBATIM
+)
+
+# Refuse to build a drawer whose section ids are not unique and in range.
+#
+# s_drawer_sections[] / _y[] / _h[] in ui.c are indexed BY the DRAWER_SEC_* id,
+# and the ids are hand-written #defines - the same shape as the dirty bits
+# above, with the same two failures. Out of range overruns all three arrays:
+# DRAWER_SEC_REBOOT went in as 46 against a bound of 46 and LVGL died minutes
+# later on a garbage object pointer. Duplicate is invisible to the
+# _Static_asserts in ui.c, because both ids are in range: DRAWER_SEC_CWSIM
+# went in as 22, which DRAWER_SEC_QMXVOL already held, and on the CW page the
+# second build silently took the slot.
+add_custom_command(
+    TARGET ${COMPONENT_LIB} PRE_BUILD
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_drawer_sections.py"
+    COMMENT "Checking drawer section ids are unique and in range"
     VERBATIM
 )
 

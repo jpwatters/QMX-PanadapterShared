@@ -52,7 +52,7 @@ ARCHIVE="$SRC/.qmx-panadapter-archive"
 KIT="$(cd "$(dirname "$0")" && pwd)"
 PATCHES="$KIT/patches"
 TESTED_BASE=""                  # release this patch series was hardware-tested on ("" = not yet)
-SERIES_BASE="v1.23.1"           # release the patches were made against (fetched too, for git am --3way)
+SERIES_BASE="v1.24.1"           # release the patches were made against (fetched too, for git am --3way)
 STAMP=".qmx-nas-build"          # in each tree: what it was built from
 TESTED=".qmx-nas-tested"        # in each tree: when it was marked tested
 BRANCH="network-radio"

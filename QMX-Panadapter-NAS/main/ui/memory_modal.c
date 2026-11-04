@@ -338,13 +338,22 @@ static void format_freq_hz(uint32_t hz, char *out, size_t out_sz)
 // In FT8/FT4 mode the QMX must stay in its DiGi data mode, so recalling a
 // non-DiGi memory (CW, USB, ...) makes no sense — it would knock the radio out
 // of data mode mid-session. Such slots are greyed out in the grid and their
-// recall (tap) is blocked. Both FT8 and FT4 run under UI_MODE_FT8. Editing,
-// deleting and drag-moving those slots is still allowed.
+// recall (tap) is blocked. Both FT8 and FT4 run under UI_MODE_FT8. The CW
+// page gets the same rule with "CW" (v1.4). Editing, deleting and
+// drag-moving those slots is still allowed.
+static const char *mem_required_mode(void)
+{
+    switch (ui_mode_get()) {
+        case UI_MODE_FT8: return "DiGi";
+        case UI_MODE_CW:  return "CW";
+        default:          return NULL;   // panadapter: any mode recalls
+    }
+}
+
 static bool mem_recall_blocked(const mem_slot_t *slot)
 {
-    return slot->occupied &&
-           ui_mode_get() == UI_MODE_FT8 &&
-           strcmp(slot->mode, "DiGi") != 0;
+    const char *req = mem_required_mode();
+    return slot->occupied && req && strcmp(slot->mode, req) != 0;
 }
 
 static void memory_modal_refresh(void)
@@ -513,10 +522,15 @@ static void cell_tap_cb(lv_event_t *e)
     }
 
     if (mem_recall_blocked(&slot)) {
-        // Non-DiGi memory tapped while the FT8/FT4 screen is up — recalling it
-        // would drop the radio out of data mode. Refuse (the cell is greyed).
-        ESP_LOGI(TAG, "recall slot %d blocked in FT8/FT4 (mode '%s' != DiGi)", idx, slot.mode);
-        ui_toast("FT8/FT4: only DiGi memories can be recalled");
+        // Wrong-mode memory tapped while a mode-pinned page (FT8/FT4 or CW)
+        // is up — recalling it would knock the radio out of that mode.
+        // Refuse (the cell is greyed).
+        const char *req = mem_required_mode();
+        ESP_LOGI(TAG, "recall slot %d blocked (mode '%s' != %s)", idx, slot.mode, req);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%s: only %s memories can be recalled",
+                 ui_mode_get() == UI_MODE_CW ? "CW page" : "FT8/FT4", req);
+        ui_toast(msg);
         return;
     }
 
@@ -1024,20 +1038,8 @@ static void modal_build(void)
      * hand-built button grid, not an lv_keyboard, and the five OTHER
      * lv_keyboards in this firmware (ft8_cq, ft8_filter, identity_config,
      * js8_text, adif_view, qmx_term) all share one look. Five against one
-     * makes the five the house style, so this now uses the same style_kb_btn
-     * the others do and leaves the main part to ui_theme_style_keyboard(). */
-    static lv_style_t style_kb_btn;
-    static bool kb_btn_style_inited = false;
-    if (!kb_btn_style_inited) {
-        lv_style_init(&style_kb_btn);
-        lv_style_set_bg_color(&style_kb_btn, lv_color_hex(UI_COLOR_KEY_BG));
-        lv_style_set_bg_opa(&style_kb_btn, LV_OPA_COVER);
-        lv_style_set_text_color(&style_kb_btn, lv_color_white());
-        lv_style_set_border_width(&style_kb_btn, 1);
-        lv_style_set_border_color(&style_kb_btn, lv_color_hex(0x505050));
-        kb_btn_style_inited = true;
-    }
-    lv_obj_add_style(s_action_kb, &style_kb_btn, LV_PART_ITEMS);
+     * makes the five the house style, so this now takes the whole look -
+     * keys included - from ui_theme_style_keyboard(). */
     ui_theme_style_keyboard(s_action_kb);
     lv_obj_set_size(s_action_kb, LV_PCT(100), 280);
     lv_obj_align(s_action_kb, LV_ALIGN_BOTTOM_MID, 0, 0);

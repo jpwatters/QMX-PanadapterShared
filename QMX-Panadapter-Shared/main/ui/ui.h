@@ -91,6 +91,9 @@ uint32_t ui_band_last_hz(uint32_t center_hz); // 0 if never visited      // CW s
 // or in a gap between bands - used to refuse saving an out-of-band memory
 // channel frequency.
 bool ui_validate_band_freq_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out);
+// The range the current PAGE lets the operator tune across: the band's edges,
+// or on the CW page its CW + DiGi segments. False when hz is in no band.
+bool ui_page_range_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out);
 int16_t  ui_get_if_cal_hz(void);         // per-unit IF calibration trim in Hz
 int   ui_get_pan_offset_bins(void);     // current pan offset in FFT bins
 void  ui_set_zoom(float zoom, int pan_bins); // set zoom+pan, persists zoom to NVS
@@ -152,6 +155,14 @@ bool ui_pan_view_current(pan_view_cfg_t *c, pan_view_t *v, int n_bins);
  * See ui.c for the four separate bug reports that came from the browser having
  * no viewport at all above zoom x1. */
 void ui_screen_view_hz(int64_t *lo_out, int32_t *span_out);
+/* The on-device spectrum viewport. The CW page's keyer pane covers columns
+ * [0, CW_PANE_W), so the Tab5 draws the view into [ui_spec_x0(), 1280) and the
+ * WEB keeps the full width - see the block comment in ui.c. Anything drawing on
+ * the spectrum, the waterfall or the axis must use these two and the _disp()
+ * viewport, or it will disagree with the trace about where a frequency is. */
+int  ui_spec_x0(void);
+int  ui_spec_w(void);
+bool ui_pan_view_current_disp(pan_view_cfg_t *c, pan_view_t *v, int n_bins);
 
 int  ui_get_if_bin_shift(int n_bins);  // Total bin shift = (IF_OFFSET_HZ + if_cal_hz) -> bins
 int  ui_get_if_offset_hz(void);        // Baseband Hz the dial maps to (12 kHz, +CW LO offset+trim in CW)

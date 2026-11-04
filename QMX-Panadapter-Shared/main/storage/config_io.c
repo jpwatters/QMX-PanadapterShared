@@ -76,6 +76,7 @@ char *config_io_export(size_t *out_len)
     APP("spot_map           = %s\n", yn(c.spotmap_en));
     APP("spots_sota         = %s\n", yn(c.sota_en));
     APP("wspr_enabled       = %s\n", yn(c.wspr_en));   /* the WSPR page master switch - default off */
+    APP("cw_page_enabled    = %s\n", yn(c.cw_page_en)); /* the CW page master switch - default OFF, see settings.h */
     APP("zoom               = %.2f\n", (double)c.zoom_factor);
     APP("colormap           = %u\n", (unsigned)c.colormap_idx);
     APP("brightness         = %u\n", (unsigned)c.brightness_pct);
@@ -114,6 +115,7 @@ char *config_io_export(size_t *out_len)
     APP("psk_rx_en          = %d\n", c.psk_rx_en ? 1 : 0);       // propagation feedback (who hears me)
     APP("bt_mouse_en        = %d\n", c.bt_mouse_en ? 1 : 0);     // BLE mouse
     APP("cluster_en         = %d\n", c.cluster_en ? 1 : 0);      // DX cluster feed (phone spots)
+    APP("binaural_en        = %d\n", c.binaural_en ? 1 : 0);     // panoramic CW split
     APP("rx_audio_vol       = %u\n", (unsigned)c.rx_audio_vol);
     APP("charge_limit       = %s\n", yn(c.charge_limit_en));
     APP("charge_limit_pct   = %u\n", (unsigned)c.charge_limit_pct);
@@ -228,6 +230,11 @@ char *config_io_export(size_t *out_len)
     APP("hound_mode = %u\n", (unsigned)c.hound_mode);     // 0 off, 1 guided, 2 auto
     APP("listen_every = %u\n", (unsigned)c.cq_listen_every);  // 0 = never pause to listen
 
+    APP("\n[cw]\n");
+    APP("# keyer memories 1-6; {MYCALL}, {PARK} and {CALL} expand at send time\n");
+    for (int i = 0; i < 6; i++) APP("%d = %s\n", i + 1, c.cw_msg[i]);
+    APP("park = %s\n", c.cw_park);
+
     APP("\n[ft8_filters]\n");
     APP("include1_on = %s\n", yn(c.ft8_filters.incl_en[0]));
     APP("include1    = %s\n", c.ft8_filters.incl_text[0]);
@@ -334,7 +341,7 @@ static bool to_bool(const char *v)
            strcasecmp(v, "yes") == 0  || strcasecmp(v, "on") == 0;
 }
 
-typedef enum { SEC_NONE, SEC_SETTINGS, SEC_CQ, SEC_FILTERS, SEC_MEM, SEC_WIFI_KNOWN,
+typedef enum { SEC_NONE, SEC_SETTINGS, SEC_CQ, SEC_CW, SEC_FILTERS, SEC_MEM, SEC_WIFI_KNOWN,
                SEC_PWR_CAL, SEC_PWR_TARGET } section_t;
 
 int config_io_import(char *text)
@@ -399,6 +406,7 @@ int config_io_import(char *text)
             char *name = trim(p + 1);
             if      (strcasecmp(name, "settings") == 0)    sec = SEC_SETTINGS;
             else if (strcasecmp(name, "cq") == 0)          sec = SEC_CQ;
+            else if (strcasecmp(name, "cw") == 0)          sec = SEC_CW;
             else if (strcasecmp(name, "ft8_filters") == 0) sec = SEC_FILTERS;
             else if (strcasecmp(name, "memories") == 0)    sec = SEC_MEM;
             else if (strcasecmp(name, "wifi_known") == 0)  sec = SEC_WIFI_KNOWN;
@@ -440,6 +448,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "spot_map"))          settings_set_spotmap_en(to_bool(val));
             else if (!strcasecmp(key, "spots_sota"))        settings_set_sota_en(to_bool(val));
             else if (!strcasecmp(key, "wspr_enabled"))      settings_set_wspr_en(to_bool(val));
+            else if (!strcasecmp(key, "cw_page_enabled"))  settings_set_cw_page_en(to_bool(val));
             /* ⛔ DEAD KEY, kept only so an old config file still imports without
                a surprise. The quiet auto-download was removed in v1.14.4 and
                settings_set_ota_autodl() now changes nothing that runs. It has
@@ -477,6 +486,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "psk_rx_en"))         settings_set_psk_rx_en(atoi(val) != 0);
             else if (!strcasecmp(key, "bt_mouse_en"))       settings_set_bt_mouse_en(atoi(val) != 0);
             else if (!strcasecmp(key, "cluster_en"))        settings_set_cluster_en(atoi(val) != 0);
+            else if (!strcasecmp(key, "binaural_en"))       settings_set_binaural_en(atoi(val) != 0);
             else if (!strcasecmp(key, "rx_audio_vol"))      settings_set_rx_audio_vol((uint8_t)atoi(val));
             else if (!strcasecmp(key, "charge_limit"))      settings_set_charge_limit_en(to_bool(val));
             else if (!strcasecmp(key, "charge_limit_pct"))  settings_set_charge_limit_pct((uint8_t)atoi(val));
@@ -582,6 +592,15 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "wspr_publish"))      settings_set_wspr_net_en(to_bool(val));
             else break;   // unknown key: ignore, don't count
             applied++;
+            break;
+
+        case SEC_CW:
+            if (!strcasecmp(key, "park")) {
+                settings_set_cw_park(val); applied++;
+            } else {
+                int idx = atoi(key) - 1;        // "1".."6"
+                if (idx >= 0 && idx <= 5) { settings_set_cw_msg((uint8_t)idx, val); applied++; }
+            }
             break;
 
         case SEC_CQ:

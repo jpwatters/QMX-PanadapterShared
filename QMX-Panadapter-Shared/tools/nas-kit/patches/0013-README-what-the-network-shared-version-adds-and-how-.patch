@@ -1,4 +1,4 @@
-From 832654111b9241916cd625a6bf6e03d98d1842b0 Mon Sep 17 00:00:00 2001
+From b52511de7892446efef6d6ac9e86fbc011e015ed Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 9 Oct 2026 07:15:23 +0000
 Subject: [PATCH 13/42] README: what the network-shared version adds, and how
@@ -15,7 +15,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
  1 file changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 95c0088a..7aa48d09 100644
+index a116a1e4..583a3868 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,9 +1,45 @@

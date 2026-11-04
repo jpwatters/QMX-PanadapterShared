@@ -416,6 +416,27 @@ typedef struct {
     char     cq_msg[3][28];    // 3 user-editable CQ message presets (FT8 TX)
     uint8_t  cq_sel;           // which CQ preset is active, 0..2 (default 0)
     uint8_t  cq_max_calls;     // auto-stop CQ after N unanswered calls, 0=never (default 0)
+    char     cw_msg[6][44];    // 6 CW macros, SET A "General" ({MYCALL}/{PARK} macros; see cw_screen_view.c)
+    char     cw_msg_b[6][44];  // 6 CW macros, SET B "Contest" - same slots, same ladder indices
+    uint8_t  cw_msg_set;       // which set is active/edited: 0 = General, 1 = Contest (default 0)
+    char     cw_park[16];      // POTA park reference for the {PARK} macro (e.g. "US-1211")
+    bool     cw_sim_en;        // CW phantom practice - SEPARATE from sim_mode_en (default false)
+    /* MASTER SWITCH FOR THE CW PAGE. It keys the radio over CAT KY and still
+     * has NO WAY TO ABORT a message once sent (tested on the bench: neither
+     * RX; nor a mode bounce stops one) - that has not changed.
+     *
+     * DEFAULT ON from v1.24.0 (operator, same release): the CW page ships as
+     * the release's own beta rather than hidden behind a config line nobody
+     * would find. "Beta" is carried everywhere the page is documented
+     * BECAUSE the abort gap is still open, not instead of saying so.
+     *
+     * ⚠ Off still does not mean "costs nothing" - the page's .bss is linked
+     * in either way, exactly as wspr_en's note says.
+     *
+     * Still no drawer control to switch it back off - turn it off with
+     * /api/cmd {"action":"cw_enable","on":false}, or cw_page_enabled = no in
+     * an imported config file. */
+    bool     cw_page_en;
     // FT8 Fox/Hound (DXpedition) mode - the HOUND side only. Fox is impossible on
     // this radio: it needs up to five simultaneous signals and we emit one CAT
     // "TA" tone per symbol. 0 = off, 1 = guided, 2 = automatic. See ft8_hound.h.
@@ -454,6 +475,17 @@ typedef struct {
     char     cloudlog_station[8];// station_profile_id, as text - it is an opaque id, not arithmetic
     uint32_t cloudlog_uploaded_n;// count of ADIF records already uploaded to Cloudlog
     bool     rx_audio_en;     // demodulated RX audio on Tab5 speaker/headphone, any supported mode (default false)
+    /* The web-radio player needs the codec, and the codec can only be
+     * opened at boot - so this decides at START-UP whether the player
+     * will have an output later. Default TRUE; see settings.c. */
+    bool     webradio_en;
+    /* Panoramic CW split on/off. ⭐ PERSISTED since 2026-11-02, and it was
+     * RAM-only before that for no reason anyone chose: the three pan sliders
+     * that SHAPE the split were already stored, so the one switch that turns
+     * it on was the only part of the feature that died on a power cycle. The
+     * operator's call - "it should not be a constraint for the user". Default
+     * false, so an upgrade changes nobody's audio. */
+    bool     binaural_en;
     uint8_t  rx_audio_vol;    // RX audio output volume 0..100 (default 60)
     float    wf_black_db;     // waterfall black level: dB above floor -> black (default 9)
     float    wf_contrast_db;  // waterfall contrast: dB span filling the colour ramp (default 45)
@@ -1031,6 +1063,34 @@ void settings_set_hound_mode(uint8_t m);    // 0 off, 1 guided, 2 automatic
 void settings_set_cq_listen_every(uint8_t n);
 uint8_t settings_get_cq_listen_every(void); // narrow, same reason (#409)
 
+// CW keyer memories (idx 0..5) and the POTA park reference for the {PARK}
+// macro. Defaults are pre-filled (CQ / CQ POTA / exchange / TU 73 / AGN / QRZ)
+// so the CW page is usable before anything is edited. Debounced flush.
+void settings_set_cw_msg(uint8_t idx, const char *text);          // set A ("General") only - config_io.c imports into this one
+void settings_set_cw_msg_for_set(uint8_t set, uint8_t idx, const char *text);  // explicit set, used by the CW editor
+void settings_set_cw_msg_set(uint8_t set);                        // 0 = General, 1 = Contest
+void settings_set_cw_park(const char *park);
+
+// The park reference alone, narrow - the CW page resolves {PARK} from its
+// 500 ms tick and cannot afford a qmx_settings_t local there. Writes "" when
+// none is set. NOT the whole answer to "which reference do we key": a running
+// activation outranks this one - see park_resolve() in cw_screen_view.c.
+void settings_get_cw_park(char *out, size_t out_sz);
+
+// Master switch for the CW page - default OFF. The getter is a NARROW read
+// (mutex + one bool), never settings_load_all(): it is called from the drawer
+// build, from boot restore and from the web API, and a 3.9 kB struct on any of
+// those stacks is the overflow this project has already paid for twice.
+void settings_set_cw_page_en(bool v);
+bool settings_get_cw_page_en(void);
+
+// CW phantom-practice toggle. Deliberately its OWN flag, not sim_mode_en:
+// enabling CW practice must not arm the FT8 phantoms when swiping to that
+// page, and vice versa (operator, 2026-08-02).
+void settings_set_cw_sim_en(bool v);
+bool settings_get_cw_sim_en(void);      // narrow: usb_stale_detect_task has a 4096 B
+                                       // stack and qmx_settings_t is 3888 B (see settings.c)
+
 
 // First-boot onboarding done: once true, the WiFi/identity prompts are never
 // shown again (debounced flush).
@@ -1043,6 +1103,10 @@ void settings_set_kbd_bindings(const kbd_bindings_t *b);
 // RX audio output: enable demodulated audio on the Tab5 speaker/headphone
 // (CW/CW-R/USB/LSB - see rx_audio.c), and its volume 0..100 (debounced flush).
 void settings_set_rx_audio_en(bool v);
+void settings_set_binaural_en(bool v);
+bool settings_get_binaural_en(void);
+void settings_set_webradio_en(bool v);
+bool settings_get_webradio_en(void);
 void settings_set_rx_audio_vol(uint8_t v);
 
 // Waterfall colorisation (debounced flush). Black level and contrast are in
@@ -1114,6 +1178,15 @@ uint32_t settings_get_last_unix_time(void);
  * ~1 KB qmx_settings_t copy. */
 uint8_t  settings_get_date_src(void);
 void     settings_get_wifi_creds(char ssid[33], char pass[65], bool *enabled_out);
+/* Band-plan region + grid without copying the whole struct. Same reason as
+ * settings_get_wifi_static() above: the callers are the band-plan strip and the
+ * CW-segment helpers, which run on the render task (4096 B) and the LVGL touch
+ * path - and cw_bandplan_clamp_hz() calls cw_segment_center_hz(), so the old
+ * settings_load_all() form put TWO 1192-byte structs on one stack. That
+ * overflowed "render" and rebooted the device on a page swipe (2026-09-01). */
+void settings_get_bandplan(uint8_t *region_out, char grid_out[8]);
+void settings_get_my_grid(char *out, size_t out_sz);  // narrow, feed tasks
+bool settings_get_psk_rx_en(void);                   // narrow, feed tasks
 void    settings_set_psk_rx_en(bool v);          // propagation feedback (who is hearing me)
 void    settings_set_bt_mouse_en(bool v);        // BLE mouse (scan/pair)
 void    settings_set_cluster_en(bool v);         // DX cluster spot feed (phone spots)
@@ -1193,6 +1266,7 @@ void settings_set_spur_mode(uint8_t v);
 // boundary and a hand-tapped reply can fire in its own slot at a decodable DT.
 void settings_set_ft8_early_decode(bool v);
 void settings_set_greylist_en(bool v);
+bool settings_get_greylist_en(void);    // narrow: row_activate_ex() runs on taskLVGL's small stack
 void settings_set_tx_band_guard_off(bool v);
 bool settings_get_tx_band_guard_off(void);
 void settings_set_pskreporter_en(bool v);

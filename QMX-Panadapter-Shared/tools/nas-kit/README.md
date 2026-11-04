@@ -11,20 +11,25 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (42 patches). It applies to upstream **v1.23.1** as it
-  is (ported 2026-10-31; flashed and marked tested on the Tab5 on 2026-10-31). v1.20.5-NAS was
+* `patches/` - the NAS series (42 patches). It applies to upstream **v1.24.1** as it
+  is (ported 2026-11-04; built, not yet flashed or tested on the Tab5).
+  v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
   which is in git history and in Shared's kit. `SERIES_BASE` in the script names
   the release the patches were made against. Each build writes the release into
   the README's Version line, the CMake version fallback and the relay README, so
   they name the release they were built on. The ports that needed hand work:
-  * the relay's settings bit is DIRTY_RELAY **152** (upstream took 140-150 and,
-    in v1.23.0, 151 for DIRTY_JS8_ALT_SUB, the alternate JS8 submode;
-    check_dirty_bits is clean, 7 free) - patch 0001;
-  * the Radio source drawer section is id **55** (upstream took 52 for server
-    mode and, in v1.22.0, 53 for DRAWER_SEC_MANLOG, manual log entry, and set
-    N_DRAWER_SECTIONS to 56, leaving 54 spare), with its `_Static_assert` -
-    patch 0005;
+  * the relay's settings bit is DIRTY_RELAY **157** (upstream took 140-156; in
+    v1.24.1, 152-156 for the web-radio player, the CW page and its macro sets;
+    check_dirty_bits is clean, 2 free) - patch 0001. v1.24.1 also passes the
+    flush task's settings snapshot as a pointer, so the relay's NVS writes use
+    `snap->` - patch 0001;
+  * the Radio source drawer section is id **56** (upstream took 54 for the
+    web-radio player and 55 for CW practice in v1.24.1), N_DRAWER_SECTIONS
+    **57**, with its `_Static_assert` - patch 0005;
+  * (v1.24.1) dxcluster.c, psk_rx.c and rbn.c now read single settings instead
+    of a whole snapshot; their online checks still accept Ethernet or Wi-Fi
+    (`net_is_up()`) - patch 0040;
   * (v1.22.0) upstream's new Scheduled events pane (spots.c, sched_modal.c)
     asks for any network, Ethernet or Wi-Fi - patch 0040;
   * (v1.23.1) upstream's new tcpip-stack guard (wifi_tcpip_stack_up(), for
@@ -42,10 +47,10 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     (patch 0015); the "TX locked" refusal sits after upstream's band guard (T48)
     (patch 0029); CMakeLists.txt keeps both upstream's configure-on-commit block
     and the -NAS version block.
-  On v1.23.1 the host harnesses (`tools/run_harnesses.py`) give 59 passed, 3
-  failed (js8_submode, js8_wav, sb_tune), 1 skipped - the same as pristine
-  upstream v1.23.1; check_tx_guard, check_unattended_tx, check_dirty_bits,
-  check_web, check_webui and check_docs are clean.
+  On v1.24.1 the host harnesses (`tools/run_harnesses.py`) give 62 passed, 1
+  failed (sb_tune), 1 skipped - the same as pristine upstream v1.24.1;
+  check_tx_guard, check_unattended_tx, check_dirty_bits, check_web and
+  check_webui are clean, and check_docs gives upstream's own one warning.
   Later patches: **0021** the version fallback, **0022** the front-page README
   (version, features, build steps), **0023-0024** the one project PDF,
   **0025** the Mac scripts' usage examples, **0026** the project PDF for v1.20.0-NAS,

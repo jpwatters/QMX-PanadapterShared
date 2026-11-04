@@ -1,4 +1,4 @@
-From d43893b22f9c8de890cec823d1322df00336ad20 Mon Sep 17 00:00:00 2001
+From 05d7cf39de4d93b0751ea247ebe3d462ca0dc957 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/42] Ethernet through the M5Stack W5500 PoE base, alongside
@@ -64,7 +64,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index 585563bb..c444ee2e 100644
+index b291f9d9..2230f9c6 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -75,9 +75,9 @@ index 585563bb..c444ee2e 100644
 +7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +8. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’s own checks and host tests give the same results as plain v1.23.1). v1.23.1-NAS was flashed and marked tested on the Tab5 on 2026-10-31, including Find NAS with the relay’s discovery fix.
+ The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.24.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
  
-@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’
+@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-che
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
@@ -115,10 +115,10 @@ index 585563bb..c444ee2e 100644
  * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
  * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 57f37c3e..9527addd 100644
+index 953065dd..61e9a145 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -111,6 +111,7 @@ idf_component_register(
+@@ -120,6 +120,7 @@ idf_component_register(
          "usb_hid_mouse.c"
          "net/rigctld_server.c"
          "net/radio_relay.c"
@@ -126,7 +126,7 @@ index 57f37c3e..9527addd 100644
          "net/reader_net.c"
          "net/manual_embed.c"
          "net/update_check.c"
-@@ -206,6 +207,7 @@ idf_component_register(
+@@ -218,6 +219,7 @@ idf_component_register(
          nvs_flash
          esp_wifi
          esp_netif
@@ -135,10 +135,10 @@ index 57f37c3e..9527addd 100644
          lwip
          esp_http_server
 diff --git a/main/main.c b/main/main.c
-index 769d8a56..693fc075 100644
+index ea40f5da..c1c467fc 100644
 --- a/main/main.c
 +++ b/main/main.c
-@@ -84,6 +84,7 @@ static const char *TAG = "main";
+@@ -86,6 +86,7 @@ static const char *TAG = "main";
  /* The ledger macro moved to util/mem_ledger.h on 2026-10-04 - the marks
   * that matter are now outside app_main. See that header for the why. */
  #include "util/mem_ledger.h"
@@ -146,7 +146,7 @@ index 769d8a56..693fc075 100644
  
  /* SETTLING MARKS (2026-10-04).
   *
-@@ -703,6 +704,10 @@ void app_main(void)
+@@ -713,6 +714,10 @@ void app_main(void)
      #if BENCH_WIFI_ENABLED != 0
      panadapter_wifi_start();
      MEM_LEDGER("wifi_start (hosted/SDIO)");
@@ -179,7 +179,7 @@ index 0a7b4a8f..119476eb 100644
      }
      for (;;) {
 diff --git a/main/net/dxcluster.c b/main/net/dxcluster.c
-index 95bc2944..219aa57b 100644
+index 953a2e11..1d3ba73c 100644
 --- a/main/net/dxcluster.c
 +++ b/main/net/dxcluster.c
 @@ -44,6 +44,7 @@
@@ -190,12 +190,12 @@ index 95bc2944..219aa57b 100644
  
  static const char *TAG = "dxc";
  
-@@ -475,7 +476,7 @@ static void dxc_task(void *arg)
+@@ -478,7 +479,7 @@ static void dxc_task(void *arg)
          // audio is on (standing telnet session, one of the heavier feeds -
          // 2026-09-20)
          if (net_quiet_active() || bg_feed_gate_active() || rx_audio_any_listener()) continue;
--        if (!cfg.cluster_en || !cfg.my_callsign[0] || !wifi_is_connected()) {
-+        if (!cfg.cluster_en || !cfg.my_callsign[0] || !net_is_up()) {
+-        if (!cluster_en || !my_call[0] || !wifi_is_connected()) {
++        if (!cluster_en || !my_call[0] || !net_is_up()) {
              if (s->n) { s->n = 0; spots_publish(SPOT_SRC_CLUSTER, NULL, 0); s_pub_count = 0; }
              continue;
          }
@@ -509,7 +509,7 @@ index da00fd9e..55e27598 100644
          return false;
      }
 diff --git a/main/net/psk_rx.c b/main/net/psk_rx.c
-index dc755506..f37353b4 100644
+index 5430a7bc..900a8a82 100644
 --- a/main/net/psk_rx.c
 +++ b/main/net/psk_rx.c
 @@ -35,6 +35,7 @@
@@ -520,12 +520,12 @@ index dc755506..f37353b4 100644
  
  static const char *TAG = "psk_rx";
  
-@@ -330,7 +331,7 @@ static void psk_rx_task(void *arg)
- 
-         qmx_settings_t s;
-         settings_load_all(&s);
--        if (!s.psk_rx_en || !s.my_callsign[0] || !wifi_is_connected()) continue;
-+        if (!s.psk_rx_en || !s.my_callsign[0] || !net_is_up()) continue;
+@@ -335,7 +336,7 @@ static void psk_rx_task(void *arg)
+         /* Narrow, same reason as parse_body() above. */
+         char my_call[16] = {0};
+         settings_get_my_callsign(my_call, sizeof(my_call));
+-        if (!settings_get_psk_rx_en() || !my_call[0] || !wifi_is_connected()) continue;
++        if (!settings_get_psk_rx_en() || !my_call[0] || !net_is_up()) continue;
          // net_quiet: this query's response cap is 64 KB and it comes over TLS -
          // by far the largest periodic allocation on the device. Not during an
          // update, where internal free has been measured at 5 KB. See net_quiet.h.
@@ -602,7 +602,7 @@ index fed5966e..58c50c2c 100644
      int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
      if (s < 0) return -1;
 diff --git a/main/net/rbn.c b/main/net/rbn.c
-index 194b04da..e499d6ec 100644
+index 3f86e640..d8144bdf 100644
 --- a/main/net/rbn.c
 +++ b/main/net/rbn.c
 @@ -29,6 +29,7 @@
@@ -613,21 +613,21 @@ index 194b04da..e499d6ec 100644
  
  static const char *TAG = "rbn";
  
-@@ -423,7 +424,7 @@ static void session(int fd, const char *mycall)
+@@ -429,7 +430,7 @@ static void session(int fd, const char *mycall)
           * SelfSpotter was open RBN delivered NOTHING, including the CW
           * self-spots that screen exists to show. */
  
--        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
-+        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
+-        if ((!rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
++        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
  
          // The operator can change callsign in the web UI while this session
          // is still happily connected - an RBN session can run for hours with
-@@ -504,7 +505,7 @@ static void rbn_task(void *arg)
+@@ -512,7 +513,7 @@ static void rbn_task(void *arg)
          // holding its reconnect while an overlay is up starves that very screen.
          if (net_quiet_active() || rx_audio_any_listener()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
  
--        if ((!st.rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) {
-+        if ((!st.rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
+-        if ((!rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) {
++        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
              // Drop anything we were showing: stale RBN spots are worse than none.
              if (s->n) { s->n = 0; spots_publish(SPOT_SRC_RBN, NULL, 0); s_pub_count = 0; }
              vTaskDelay(pdMS_TO_TICKS(5000));
@@ -683,10 +683,10 @@ index 0a6b51dd..0bee174e 100644
  
          /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 43c834d5..fecf5e6a 100644
+index a7545496..04f3ffe2 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -94,6 +94,7 @@
+@@ -96,6 +96,7 @@
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
  #include "radio_relay.h"       // network radio source (QMX on a NAS)
@@ -694,7 +694,7 @@ index 43c834d5..fecf5e6a 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -727,6 +728,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -729,6 +730,18 @@ static esp_err_t status_handler(httpd_req_t *req)
      // checking from another room as it is looking at the Tab5 itself.
      cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
  
@@ -744,10 +744,10 @@ index a25a653f..7ce5a480 100644
      }
  }
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 93e9c70a..d606cf2c 100644
+index 3218f308..8fbc6ffb 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -8877,11 +8877,13 @@ async function tick() {
+@@ -9010,11 +9010,13 @@ async function tick() {
        }
      }
  
@@ -892,10 +892,10 @@ index a0c03912..8e277830 100644
              else if (sched_events_version() == 0) msg = "No schedule yet - press Refresh.";
              else                                msg = "Nothing scheduled in this filter.";
 diff --git a/main/util/diag_log.c b/main/util/diag_log.c
-index 0a356ea1..f45b5171 100644
+index 216b536b..cf984a9d 100644
 --- a/main/util/diag_log.c
 +++ b/main/util/diag_log.c
-@@ -24,6 +24,7 @@
+@@ -25,6 +25,7 @@
  #include "cat.h"             // cat_get_qmx_fw / cat_is_ready / freq / mode
  #include "wifi.h"            // wifi_is_connected / ssid / ip / rssi
  #include "settings.h"        // callsign / grid
@@ -903,7 +903,7 @@ index 0a356ea1..f45b5171 100644
  
  static const char *TAG = "diag";
  
-@@ -104,6 +105,9 @@ void diag_log_write_session_header(void)
+@@ -105,6 +106,9 @@ void diag_log_write_session_header(void)
               s.wifi_ssid[0] ? s.wifi_ssid : "(none)",
               wifi_is_connected() ? "yes" : "no",
               wifi_get_ip(), wifi_get_rssi_dbm());

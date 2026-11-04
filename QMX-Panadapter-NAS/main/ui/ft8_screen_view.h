@@ -2,11 +2,26 @@
 #include "lvgl.h"
 #include "ft8_test.h"   // ft8_op_mode_t - the sub-mode these take and return
 
-// Cyan accent used for everything FT4: the dropdown's FT4 column header, the
-// "MODE: FT4" label, and the left drawer's MODE: FT4 button - so they can
+// Orange accent used for everything FT4: the dropdown's FT4 column header,
+// the "MODE: FT4" label, and the left drawer's MODE: FT4 button - so they can
 // never drift apart. FT8 keeps the gold UI_COLOR_ACCENT_GOLD.
-#define FT4_ACCENT_HEX 0x00B4FF
-// Magenta for JS8. Picked to be unmistakable against both gold and cyan at a
+//
+// WAS CYAN 0x00B4FF UNTIL 2026-10-28, and the clash was real. The CW page
+// took its place in the left drawer that day, one row above FT4, and its
+// accent is UI_COLOR_MODE_CW 0x2477B3. Two blues, adjacent; the operator saw
+// it immediately.
+//
+// CW's blue is NOT the one free to move. ui_theme.h binds it to the band-plan
+// strip's CW segment so that the same mode reads as the same colour in the
+// freq keypad, the memory grid, the spots lane and the strip. FT4 has no
+// band-plan analogue - it draws as DiGi there - so FT4's accent is local to
+// FT4 and is the one that can change.
+//
+// Orange rather than another yellow, so FT4 stays in the FT8 family (his
+// word) while sitting far enough off FT8's own gold to be told apart: hue
+// 25 deg against gold's 51 deg, both at full saturation and brightness.
+#define FT4_ACCENT_HEX 0xFF6A00
+// Magenta for JS8. Picked to be unmistakable against both gold and orange at a
 // glance across the room - the mode label is the only thing on the screen that
 // says which protocol is about to be transmitted.
 #define JS8_ACCENT_HEX 0xE040FB
@@ -76,6 +91,19 @@ void ft8_screen_view_freetext_result(char *out, size_t out_len);
  * ⛔ THESE ARE THE ONLY WAY A JS8 REPORT LEAVES THIS STATION BY HAND NOW. A
  * row click selects and transmits nothing - see js8_target.h. */
 void ft8_screen_view_request_js8_macro(int which);
+
+/* The macro sheet from the browser. Records the directive; the 1 Hz LVGL
+ * timer sends it, because arming must not happen on the HTTP task. The word
+ * is the one js8_cmd_text() spells - "GRID?", "HW CPY?" - plus "RR73". What
+ * became of it lands in /api/status with the other web results. */
+void ft8_screen_view_request_js8_directive(const char *cmd_text);
+
+/* The macro SHEET's sends - any directive js8_cmd_from_text() accepts, plus
+ * "RR73". Composes "<them> <us> <cmd>", builds a one-frame request through
+ * the round-trip guard and arms it. Returns false with the refusal in *out,
+ * which is the text both the toast and the browser show. Must be called on
+ * the LVGL task: it arms. */
+bool ft8_screen_view_js8_directive(const char *cmd_text, char *out, size_t out_len);
 
 // CQ slot parity: -1 = any, 0 = EVEN only, 1 = ODD only. The Tab5's cycling
 // TXCQ button and the web page drive the SAME state - set is deferred to the

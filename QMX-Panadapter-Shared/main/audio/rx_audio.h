@@ -96,6 +96,20 @@ uint32_t rx_audio_web_dropped(void);
 #define RX_AUDIO_WEB_RATE_HZ 12000
 
 // Output volume, 0..100 (persisted to NVS).
+/* ---- lending the speaker ------------------------------------------------
+ *
+ * The web-radio player writes through these rather than opening a codec of its
+ * own: the codec is opened once at boot, before USB host takes the DMA RAM, so
+ * there is only ever one output channel and it is this file's. While claimed,
+ * this file stops writing to the speaker; everything else in the chain keeps
+ * running. The caller must deliver stereo 16-bit at DSP_SAMPLE_RATE_HZ.
+ *
+ * claim(false) hands it straight back; it is safe to call either way twice.
+ * Returns false only when the codec was never opened at all. */
+bool rx_audio_aux_claim(bool on);
+bool rx_audio_aux_active(void);
+int  rx_audio_aux_write(const int16_t *pcm, int frames);
+
 void rx_audio_set_volume(uint8_t vol_0_100);
 uint8_t rx_audio_get_volume(void);
 
@@ -139,8 +153,13 @@ void rx_audio_set_agc_off(bool off);
 // see rx_audio.c for the "pre-shift + real lowpass + remix" implementation
 // and why an earlier detuned-tone attempt was the wrong technique for this.
 // CW/CW-R only; any other mode is plain mono regardless of this setting.
-// RAM-only, not persisted - same class of live tuning as the AGC params
-// above, takes effect on the next retune (same loop that already tracks
+// ⭐ PERSISTED since 2026-11-02. This said "RAM-only, not persisted - same
+// class of live tuning as the AGC params above", and that was wrong about its
+// own class: the three pan sliders that SHAPE the split were already stored,
+// so the only part of the feature that died on a power cycle was the switch
+// that turns it on. The operator's call - a user should not have to remember
+// to re-enable it, and a caveat in the guide was documenting a defect.
+// Takes effect on the next retune (same loop that already tracks
 // mode/center-frequency changes).
 /* Re-read the stored gain/pan settings and apply them to the live DSP. Called
  * by rx_audio_init(), and by config import - which otherwise writes settings

@@ -52,6 +52,8 @@
 #include "ft8_qso.h"
 #include "ft8_pileup.h"
 #include "ft8_sim.h"
+#include "cw_qso.h"
+#include "js8_sim.h"
 #include "net/pskreporter.h"
 #include "net/spots.h"
 #include "net/qrz_coords.h"
@@ -199,6 +201,14 @@ void app_main(void)
     // operator sent a diagnostic download containing everything except the one
     // thing needed. No-op on a clean boot.
     panic_hook_report_previous();
+
+    /* T138: and the other record, which covers the reset the one above cannot
+     * see. A hardware-watchdog reset never runs the panic handler, so it
+     * leaves no crash record - Michael KZ4LY's v1.23.1 reset came back as
+     * reset_reason=other-watchdog with nothing else at all. This one is
+     * written by the code ENTERING a cache-off stretch, not by a handler, so
+     * it survives a reset that gives the CPU no turn. No-op on a clean boot. */
+    panic_hook_report_previous_crumb();
 
     // Apply any pending selective NVS reset requested from the web UI before a
     // reboot. Must run before nvs_flash_init()/settings_init() open handles on
@@ -823,6 +833,7 @@ void app_main(void)
     ft8_qso_init();
     ft8_pileup_init();
     ft8_sim_init();
+    js8_sim_init();
     pskreporter_init();
     spots_init();          // live POTA spots on the spectrum (WiFi, opt-out)
     psk_rx_selftest();     // attribute names still match the collector's output
@@ -868,6 +879,12 @@ void app_main(void)
     ft8_hash_selftest();
     ft8_sim_synth_selftest();
     ft8_arrl_fd_e2e_selftest();
+    cw_qso_hint_selftest();   // CW copilot classifier (no radio needed)
+    /* ⛔ NOT ui_apply_saved_mode() - feat/cw-page called that here, but main
+     * has since SPLIT it into ui_apply_saved_mode_view() (before the backlight
+     * fades in, above) and ui_apply_saved_mode_start() (already called above,
+     * where audio/dsp/cat exist). Restoring the single call would not even
+     * link. */
 
     // Background firmware-update poller for the docs Reader page. Self-throttles
     // (first check ~30 s after boot, then every 6 h) and no-ops while WiFi is

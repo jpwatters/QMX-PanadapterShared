@@ -218,6 +218,12 @@ js8_frame_type_t js8_frame_type(const uint8_t frame[JS8_FRAME_BYTES]);
  * string literal, never allocated, "?" for an index with no wording. */
 const char* js8_cmd_text(uint8_t cmd);
 
+/* The reverse: "GRID?" -> 4, "73" -> 28. JS8_CMD_NONE for anything with no
+ * sendable directed form - free text, ">", the MSG/QUERY family that needs an
+ * argument, and the deprecated HEARTBEAT SNR. Exact match, no trimming. The
+ * reasons are written at the function. */
+uint8_t js8_cmd_from_text(const char* text);
+
 /* Spelling of a Heartbeat frame's bits3, e.g. CQ 0 -> "CQ CQ CQ". */
 const char* js8_cq_text(bool is_cq, uint8_t bits3);
 
@@ -236,6 +242,11 @@ void     js8_unpack_alnum50(uint64_t packed, char out[16]);
 
 /* 15-bit grid. 0x7FFF means "no grid" and is what an empty or short locator
  * packs to. */
+/* The centre of a 4-character Maidenhead square, in degrees, longitude
+ * EAST-positive. Both outputs are 0 for a grid it cannot read. The square is
+ * ~111 x 70 km here, so this is a district, not a fix. */
+void js8_grid_to_latlon(const char* grid4, float* out_lat, float* out_lon);
+
 uint16_t js8_pack_grid(const char* grid);
 void     js8_unpack_grid(uint16_t packed, char out[5]);
 

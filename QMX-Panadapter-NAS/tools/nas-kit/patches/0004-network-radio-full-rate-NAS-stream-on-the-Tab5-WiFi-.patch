@@ -1,4 +1,4 @@
-From ad5beee34e781ded82f85a6bab7291134d4946c2 Mon Sep 17 00:00:00 2001
+From ece1894c9488257ac6f6b30f709482624bc79296 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
 Subject: [PATCH 04/42] network-radio: full-rate NAS stream on the Tab5 - WiFi
@@ -83,7 +83,7 @@ index 967f5420..987dc1b8 100644
 +
  project(qmx_panadapter)
 diff --git a/main/idf_component.yml b/main/idf_component.yml
-index f781d4b9..6c90f7f0 100644
+index d2343bb0..bb0ff727 100644
 --- a/main/idf_component.yml
 +++ b/main/idf_component.yml
 @@ -1,3 +1,8 @@
@@ -95,7 +95,7 @@ index f781d4b9..6c90f7f0 100644
  dependencies:
    idf:
      version: ">=5.4.0"
-@@ -5,19 +10,19 @@ dependencies:
+@@ -5,12 +10,12 @@ dependencies:
    espressif/esp_lcd_ili9881c: "^1.1.0"
    espressif/esp_lcd_touch_gt911: "^1.1.1~2"
    espressif/esp_lcd_touch_st7123: "^1.0.0"
@@ -111,6 +111,7 @@ index f781d4b9..6c90f7f0 100644
  
    espressif/esp-dsp: "^1.6.0"
  
+@@ -22,7 +27,7 @@ dependencies:
    # mDNS: reach the Tab5 as qmx.local instead of hunting an IP that changes with
    # the network. Added after an evening lost to exactly that (roamed onto a hotel
    # WiFi, new lease, no way to find it).
@@ -176,10 +177,10 @@ index 95d5a4e4..1a1fac07 100644
  CONFIG_TCP_OVERSIZE_MSS=y
  # CONFIG_TCP_OVERSIZE_QUARTER_MSS is not set
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 15530395..0c1046b8 100644
+index 2827dd5e..39de684e 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
-@@ -77,6 +77,22 @@ PATCHES = [
+@@ -85,6 +85,22 @@ PATCHES = [
      # Same FILE as the row above, different marker. sdio_drv.c now carries
      # several of our fixes and one apply script restores all of them, so a row
      # per marker is the only way a partially-restored copy shows up as missing.

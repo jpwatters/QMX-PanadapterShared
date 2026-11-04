@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.23.1-NAS** — upstream QMX-Panadapter **v1.23.1** plus the NAS patch series 0001-0042 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.24.1-NAS** — upstream QMX-Panadapter **v1.24.1** plus the NAS patch series 0001-0042 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -20,7 +20,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 8. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-10-31, to upstream v1.23.1 (upstream’s own checks and host tests give the same results as plain v1.23.1). v1.23.1-NAS was flashed and marked tested on the Tab5 on 2026-10-31, including Find NAS with the relay’s discovery fix.
+The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.24.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.24.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -146,7 +146,7 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.23.1-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.24.1-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 ________________________________________________________________________________________________________________________________________________
@@ -182,7 +182,7 @@ Other options:
 * `--ref v1.20.5`: builds a specific release instead of the newest.
 * `--force`: rebuilds even when there’s nothing new.
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.23.1-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.24.1-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -227,13 +227,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v1.23.1.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware.
+> **Release — v1.24.1.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v1.24.1 is a two-fix patch** on v1.24.0: tapping an FT8 CQ caller to answer could reboot the Tab5, and a manual pounce held on a busy station that had actually signed off with RRR rather than RR73/73 - both fixed. v1.24.0 added a **MODE: CW page** (beta) and an internet **Web Radio** player.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.23.1.pdf).
+Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.24.1.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -278,7 +278,7 @@ the live trace has dropped back into the noise *(Samuel W7STF)*.
 
 ### Hear the band
 
-**Audio, and binaural CW** *(beta)* — The I/Q the radio already sends is turned into sound
+**Audio, and binaural CW** — The I/Q the radio already sends is turned into sound
 on the device. The **panoramic CW split** places two stations on different frequencies to
 the left and right of the stereo image instead of letting them land on top of each other,
 with **pan width**, **pan blend** and **overlap** adjustable live while you listen. This
@@ -289,9 +289,7 @@ two stations calling together stop being a jumble. Best at **300 Hz bandwidth an
 **below 200 Hz there is little separation to be had**, because the signals then share too
 much of the audio passband for any amount of panning to pull them apart. Audio competes
 for resources, so open **Audio Settings** from the settings drawer, where it is switched
-on and off. This is a first implementation and is
-**beta**, with the same features planned for the web interface — sending only the I/Q to
-the PC and doing the work there. See [Audio](docs/mkdocs/guide/audio.md).
+on and off. See [Audio](docs/mkdocs/guide/audio.md).
 
 **CW peak filter** — A narrow audio peak on the CW pitch, 250, 150 or 100 Hz wide at −3 dB,
 in the Tab5's own audio after the mode filter and **before the AGC**, so the automatic gain
@@ -575,7 +573,9 @@ restore as a text file; and a settings reset that does not need a reflash.
 - [Quick Guide](#quick-guide) — get on air in 10 minutes
 - [Getting help](#getting-help) — the manual on the device, and the guidance panel
 - [Panadapter](#panadapter) — spectrum, waterfall, zoom, touch-to-tune, S-meter, memory channels
-- [Audio](#audio) — binaural CW and panoramic split (beta)
+- [Audio](#audio) — binaural CW and panoramic split
+- [CW](#cw) — the MODE: CW page, decode ticker, keyer macros (beta)
+- [Web Radio](#web-radio) — an internet radio player on the Tab5, for when the bands are quiet
 - [Live spots](#live-spots) — POTA, RBN and DX cluster callsigns drawn on the spectrum
 - [Spot map](#spot-map) — who is hearing YOU: RBN, PSK Reporter and WSPR reports of your own signal, on a world map
 - [Web UI](#web-ui) — browser panadapter and remote control
@@ -815,7 +815,7 @@ Switch it off under **Settings → Radio & display → Still spectrum**. At ×1 
 
 ## Audio
 
-*(beta)* The I/Q the radio already sends can be turned into sound on the Tab5
+The I/Q the radio already sends can be turned into sound on the Tab5
 itself, with no extra hardware: **binaural CW**, which places two stations at
 different points across the stereo image so your ears separate them the way
 they separate voices in a room, and a **panoramic CW split** that pans the two
@@ -834,6 +834,47 @@ This is the part of the panadapter that is not a picture. On a crowded CW band
 it does something no amount of screen resolution can.
 
 Full chapter: [tab5.lav.dk/guide/audio](https://tab5.lav.dk/guide/audio/)
+
+---
+
+## CW
+
+A dedicated MODE: CW page with the radio's own decoder on screen: a **decode
+ticker** that squelches a quiet band's endless lone `T`s, a **copilot hint
+line** that says what the copy *meant* ("W1AW is calling CQ — tap the card to
+answer"), two named sets of six keyer macros (**General** and **Contest**, with
+a toggle at the bottom of the panel to switch between them), and a station
+card that tells you whether you have worked them before. It is there to be
+tried and reported on, not to be relied on for a contest yet — in particular,
+`KY` has no abort: once a macro starts sending, it runs to completion.
+
+It also sets out the one thing that catches everybody: **the Tab5 and the radio
+produce separate audio**, and only the radio's can carry your keying sidetone.
+The Tab5's playback path is about 100 ms deep, which is longer than a dot at
+20 WPM, so the tone would arrive after the element that made it. The chapter
+says which path does what, and what the two honest headphone arrangements are.
+
+The page ships **on** - it is this release's own beta. Turn it off with
+`cw_page_enabled = no` in a config file, or `{"action":"cw_enable","on":false}`
+over the API, if you would rather not have it yet.
+
+Full chapter: [tab5.lav.dk/guide/cw](https://tab5.lav.dk/guide/cw/)
+
+---
+
+## Web Radio
+
+An internet radio player on the Tab5, for when the bands are quiet — new in
+this release. Opens from **Web Radio** in the settings drawer. Browses the
+[radio-browser.info](https://www.radio-browser.info) directory with a text
+search and a genre filter that compose together, shows the station's ICY
+title as it changes track to track, and keeps **six memory slots**: tap plays
+a saved station, long-press stores whatever is currently playing. Closing the
+player does not stop it — playback is a background task, so you can go back
+to the panadapter and keep listening. Decoding runs on the Tab5 itself; the
+radio and its I/Q are untouched.
+
+Full chapter: [tab5.lav.dk/guide/webradio](https://tab5.lav.dk/guide/webradio/)
 
 ---
 
@@ -1110,9 +1151,9 @@ clock that is wrong, WiFi that will not hold, a card that stops being written.
 | Touch + drag (hold ~250 ms first) | Spectrum / waterfall | Cyan cursor snaps grid-to-grid; tunes on release |
 | Fast one-finger horizontal swipe | Spectrum / waterfall, any zoom | Pan/"stroll" the view; retunes to the new centre on release |
 | Double-tap | Spectrum / waterfall | Reset zoom and pan to ×1.0 / centred |
-| Pinch (two fingers) | Spectrum / waterfall | Zoom ×1.0–×24.0 |
-| Two-finger drag | Spectrum / waterfall (zoomed) | Pan the zoomed window |
-| Swipe → from left edge | Left edge strip | Open the **page picker** — tap any of the five pages directly |
+| Pinch (two fingers) | Spectrum / waterfall, Panadapter and CW pages | Zoom ×1.0–×24.0 **and** pan together — the midpoint between your fingers drives the pan, the spread drives the zoom |
+| Three-finger hold | Spectrum, any page with a simulator | Toggle Simulation Mode on/off (FT8's, or CW's on the CW page) |
+| Swipe → from left edge | Left edge strip | Open the **page picker** — tap any of the pages directly, including CW |
 | Swipe ← from right edge | Right edge strip | Open settings drawer |
 | Tap right grip handle | Right edge | Open settings drawer (alternative) |
 | Swipe → | Open drawer, or spectrum while drawer open | Close settings drawer |
