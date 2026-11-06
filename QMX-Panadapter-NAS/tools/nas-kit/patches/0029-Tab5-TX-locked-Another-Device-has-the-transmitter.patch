@@ -1,4 +1,4 @@
-From 7ef3f44b30f5d4976e4fb71ae8c45680b77b8ef9 Mon Sep 17 00:00:00 2001
+From f07a7b3f0e20193594824292e4b51060ecea77a4 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
 Subject: [PATCH 29/42] Tab5: "TX locked: Another Device has the transmitter"
@@ -9581,7 +9581,7 @@ z{pG*?_g|zRCGeZ|Yr{&C*Kg<#e*AbfJ^zQ`Hyr)zT?G5=_3yJF{FT626eE5G!LHH!
 G^?v|zW!0<z
 
 diff --git a/README.md b/README.md
-index 8b4d26bc..4e0f0e17 100644
+index ad39f71b..3513676b 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -9791,7 +9791,7 @@ index 5338825b..d4d2f26a 100644
       * the Tab5's: nobody is standing in front of the radio. Tune keys a
       * carrier on the DIAL in MD8 - no audio offset. */
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index ec4bc27d..a097913e 100644
+index b4263ce2..83deb586 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -873,6 +873,9 @@
@@ -9805,7 +9805,7 @@ index ec4bc27d..a097913e 100644
    /* ---- Bottom status row ---- */
    #bot {
 diff --git a/main/ui/ft8_screen_view.c b/main/ui/ft8_screen_view.c
-index b4db1a60..ac5e85e6 100644
+index d69f73e4..65c412d5 100644
 --- a/main/ui/ft8_screen_view.c
 +++ b/main/ui/ft8_screen_view.c
 @@ -41,6 +41,7 @@
@@ -9816,7 +9816,7 @@ index b4db1a60..ac5e85e6 100644
  #include "ft8_test.h"   // ft8_op_mode_set() - FT8/FT4 sub-mode flag
  #include "ft8_greylist.h"
  #include "js8_page.h"
-@@ -2523,6 +2524,12 @@ static void t_clock_cb(lv_timer_t *t)
+@@ -2521,6 +2522,12 @@ static void t_clock_cb(lv_timer_t *t)
                       (double)trip_swr);
              lv_label_set_text(s_lbl_tx, b);
              lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_RED), 0);

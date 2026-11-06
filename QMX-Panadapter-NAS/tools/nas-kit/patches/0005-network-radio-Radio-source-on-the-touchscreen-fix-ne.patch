@@ -1,4 +1,4 @@
-From 58b201afef9389ad501f5c91b7c75902d7a91f41 Mon Sep 17 00:00:00 2001
+From 3eb1684c3448803aa932a3da70f9807a7aac5b98 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
 Subject: [PATCH 05/42] network-radio: Radio source on the touchscreen; fix
@@ -6531,7 +6531,7 @@ index 1c6e15ce..1e8a3e18 100644
          return ESP_ERR_TIMEOUT;
      }
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index e4babae4..997d6a3a 100644
+index 38f1d0ee..8422aca4 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
 @@ -94,6 +94,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
@@ -6542,24 +6542,24 @@ index e4babae4..997d6a3a 100644
  #include "bt_hid_mouse.h"      // is the BLE radio actually up, and was it at boot
  
  static const char *TAG = "ui";
-@@ -3649,7 +3650,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
-  * is an amusement that plays while the panadapter runs, so it lives in
+@@ -3651,7 +3652,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
   * its own group and is visible everywhere. */
  #define DRAWER_SEC_WEBRADIO   54
--#define N_DRAWER_SECTIONS     56   /* ids 0..55; 12 is free, 55 is CWSIM */
-+#define N_DRAWER_SECTIONS     57   /* ids 0..56; 12 is free, 55 is CWSIM, 56 RADIOSRC */
+ #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
+-#define N_DRAWER_SECTIONS     57   /* ids 0..56; 24 retired (no section built), 56 is CWQSK (T144) */
++#define N_DRAWER_SECTIONS     58   /* ids 0..57; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC */
 +// "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 +// or one plugged into a NAS running tools/nas-relay. Same effect as the web
 +// page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 +// cat_reconnect), so the switch no longer needs a computer.
-+// (56: upstream uses 0..55 in v1.24.1, with 12 free; N_DRAWER_SECTIONS was 56.)
-+#define DRAWER_SEC_RADIOSRC   56
-+// ⛔ IDs are 0..56 now. The next one raises N_DRAWER_SECTIONS AND gets an
++// (57: upstream uses 0..56 in v1.24.2; N_DRAWER_SECTIONS was 57.)
++#define DRAWER_SEC_RADIOSRC   57
++// ⛔ IDs are 0..57 now. The next one raises N_DRAWER_SECTIONS AND gets an
 +// assert below - see the 2026-10-03 note above.
  
  /* Catches the mistake above at COMPILE time instead of as a crash minutes into
   * a session. Every id must be a valid index; raise N_DRAWER_SECTIONS when you
-@@ -3665,6 +3674,8 @@ _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS
+@@ -3667,6 +3676,8 @@ _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS
  _Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
  _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
  _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
@@ -6568,7 +6568,7 @@ index e4babae4..997d6a3a 100644
  static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
  static int       s_drawer_section_y[N_DRAWER_SECTIONS];
  static int       s_drawer_section_h[N_DRAWER_SECTIONS];
-@@ -3704,6 +3715,7 @@ static const drawer_item_t GRP_STATION[] = {
+@@ -3706,6 +3717,7 @@ static const drawer_item_t GRP_STATION[] = {
      { DRAWER_SEC_BPREGION, "Band-plan region", false },
  };
  static const drawer_item_t GRP_RADIO[] = {
@@ -6576,7 +6576,7 @@ index e4babae4..997d6a3a 100644
      { DRAWER_SEC_QMXVOL, "QMX volume", true },
      { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
      /* T139: under the two gains because it only makes sense read against them
-@@ -4469,6 +4481,9 @@ static void gain_resolve_stop(void);
+@@ -4485,6 +4497,9 @@ static void gain_resolve_stop(void);
  static void drawer_pause_btn_cb(lv_event_t *e);
  static void drawer_term_btn_cb(lv_event_t *e);
  static void drawer_gpsstats_btn_cb(lv_event_t *e);
@@ -6586,7 +6586,7 @@ index e4babae4..997d6a3a 100644
  static void topbar_reconcile_cb(lv_timer_t *t);
  static void drawer_slider_cwtxoff_cb(lv_event_t *e);
  static void ui_set_cw_tx_offset_label(int hz);
-@@ -16527,6 +16542,29 @@ static void drawer_build(void)
+@@ -16630,6 +16645,29 @@ static void drawer_build(void)
      //
      // Directly under the pause button on purpose: an operator reaching for
      // "let me use the QMX menus" on a radio with no front panel wanted this.
@@ -6616,7 +6616,7 @@ index e4babae4..997d6a3a 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -20007,6 +20045,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
+@@ -20182,6 +20220,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
   * physically swap a card - which is exactly when it disappears. It also has a
   * second instruction after the swap, so it has to still be there afterwards.
   * A window waits. */
@@ -6917,7 +6917,7 @@ index 3c42746f..8fb7f910 100644
              ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
          }
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 39de684e..90e07a9c 100644
+index 3b0c6e44..a258f1f4 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -101,6 +101,13 @@ PATCHES = [

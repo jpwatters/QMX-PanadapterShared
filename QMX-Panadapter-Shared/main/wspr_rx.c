@@ -1663,6 +1663,12 @@ static void decode_one_window(int16_t *pcm, int64_t cycle_utc)
             ESP_LOGI(TAG, "cands(%d): %s", ncand, cl);
         }
     }
+    /* Release the ~2.3 MB candidate-search FFT scratch before the decode
+     * loop below needs room for build_stage1()'s ~1.44 MB - see the
+     * function's own comment in wspr_decode.c. Costs one re-alloc on the
+     * NEXT cycle's wspr_find_candidates() call, same "once per cycle, not
+     * once per candidate" cost class the 2026-09-19 caching fix established. */
+    wspr_find_candidates_release_scratch();
     found_in_pass = 0;
     tried_this_pass = 0;
     for (int i = 0; i < ncand && s_run; i++) {
@@ -1910,6 +1916,7 @@ static void wspr_dec_task(void *arg)
         s_pcm_busy[job.slot] = false;
     }
     set_dec_status("%s", "");
+    wspr_decode_free_scratch();   /* real teardown - see its own comment */
     ESP_LOGI(TAG, "decode task stopped");
     s_dec_exited = true;
     psram_task_park();
@@ -2389,7 +2396,36 @@ static void wspr_rx_task(void *arg)
      * Retrying is the right fix rather than reaching into FT8's teardown -
      * CLAUDE.md puts the double-spawn and worker-join crashes squarely in that
      * lifecycle, which is not somewhere to make a casual change. The memory
-     * genuinely does arrive; this just waits for it, and says so. */
+     * genuinely does arrive; this just waits for it, and says so.
+     *
+     * ⛔⛔ RETRYING ON FAILURE IS NOT ENOUGH - MEASURED 2026-11-04. If FT8 still
+     * has enough free PSRAM alongside its own live pool (it usually does - FT8's
+     * pool is ~9 MB against ~20 MB total), the FIRST attempt below just
+     * succeeds, immediately, while FT8's pool is still resident. WSPR's 8.4 MB
+     * then lands carved out of whatever is left NEXT TO that pool. Seconds
+     * later FT8 actually exits and frees its ~9 MB, but it cannot coalesce with
+     * anything on the other side of WSPR's new block - the heap ends up split,
+     * total free correct (2875 KB) but largest contiguous block under the
+     * candidate search's 2.3 MB requirement (2048 KB), FOREVER, because nothing
+     * afterwards frees or reallocates that region to compact it. Capture on
+     * bench1: every single cycle failed "NO MEMORY for the candidate search"
+     * from boot to a 59-minute check, unchanging. A cold boot straight to WSPR
+     * (no FT8 first) decoded its first cycle (cands(20)) with the same build.
+     *
+     * So: if the previous page was FT8 and it is still alive, wait for it to
+     * finish BEFORE the first allocation attempt, not only after one fails.
+     * This does not touch FT8's teardown - ft8_task_is_alive() is a read-only
+     * poll, already used below for the same purpose. Bounded by the same
+     * ceiling as the retry loop, so a worst case adds at most that many seconds
+     * to a page switch, once. */
+    if (ft8_task_is_alive()) {
+        ESP_LOGW(TAG, "FT8 is still alive on entry - waiting for its teardown "
+                      "before claiming memory, so WSPR's buffers don't end up "
+                      "carved out next to FT8's still-live pool");
+        set_status("waiting for FT8 to release memory");
+        for (int w = 0; w < WSPR_ALLOC_MAX_WAIT_TRIES && ft8_task_is_alive(); w++)
+            vTaskDelay(pdMS_TO_TICKS(WSPR_ALLOC_WAIT_MS));
+    }
     float *cap = NULL;
     bool   pcm_ok = false;
     int    charged = 0;      /* iterations with nothing visibly holding it */
@@ -2765,6 +2801,31 @@ static void wspr_rx_task(void *arg)
          * taken before the first sample and cannot be overtaken by a retune. */
         const uint32_t cap_dial_hz = wspr_rx_cycle_dial_hz();
 
+        /* ⛔ REALLOCATED HERE, NOT KEPT FOR THE WHOLE SESSION. `cap` (5.76 MB)
+         * is only touched between this capture and the float->int16
+         * conversion right after dsp_ft8_capture_finish() below - idle for
+         * the rest of the cycle (candidate search + per-candidate decode,
+         * 12-45+ s measured). It is freed right after that conversion and
+         * reallocated here, so it is never resident at the same time as
+         * wspr_find_candidates()'s ~2.3 MB scratch or build_stage1()'s
+         * ~1.44 MB (T150) - same "lend it back" pattern already proven for
+         * those two tonight, just a bigger buffer and a once-per-cycle
+         * frequency. Costs one alloc per cycle instead of one for the whole
+         * session; failing to get it is not fatal, the existing skip-cycle
+         * path below already covers a failed capture_begin. */
+        if (!cap) cap = heap_caps_malloc((size_t)CAP_SAMPLES * sizeof(float),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!cap) {
+            ESP_LOGW(TAG, "cycle %lld: could not get the capture buffer back "
+                          "(%u KB free, largest %u KB) - skipping this cycle",
+                     (long long)cycle_utc,
+                     (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
+                     (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+            set_status("out of memory - no capture");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
         const bool wf_live = wf_begin();
         esp_err_t err = dsp_ft8_capture_begin(cap, CAP_SAMPLES, backfill);
         if (err != ESP_OK) {
@@ -2891,6 +2952,11 @@ static void wspr_rx_task(void *arg)
          * its 120 s the slots really did alternate and the pointer changed
          * every time, so the address check looked sufficient. It never was. */
         wspr_decode_capture_changed();
+
+        /* Give the 5.76 MB float buffer back now - see the note at its
+         * reallocation above. Nothing below this point touches `cap`. */
+        free(cap);
+        cap = NULL;
 
         /* The rows were drawn live as the capture filled; this only recomputes
          * the floor from the finished window and repaints against it. No FFTs,
@@ -3105,6 +3171,12 @@ bool wspr_rx_start(void)
      * the LVGL task and last time's tasks are provably parked. */
     int reaped = psram_task_reap();
     if (reaped) ESP_LOGI(TAG, "reaped %d parked task(s) from the last visit", reaped);
+    /* And FT8's own, if the previous screen was FT8 rather than WSPR itself -
+     * see ft8_test_reap_parked_tasks()'s own comment (2026-11-04, measured on
+     * bench1: an FT8 sim session left WSPR unable to decode at all afterward,
+     * every cycle, "NO MEMORY for the candidate search"). Same PSRAM pool,
+     * different parking list; psram_task_reap() above only knows about its own. */
+    ft8_test_reap_parked_tasks();
 
     /* ⛔ CORE 1, NOT tskNO_AFFINITY - AND THAT ONE WORD WAS #376.
      *

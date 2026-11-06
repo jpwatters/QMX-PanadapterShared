@@ -1,4 +1,4 @@
-From ce65cc7e76ef905ec48ead19fdad365080fba373 Mon Sep 17 00:00:00 2001
+From a6179aa2e245bdcd717a7ddec2529b5d5dd23f7f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 00:23:22 -0500
 Subject: [PATCH 22/42] README: v1.19.0-NAS version and feature list; how to
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 53 insertions(+), 23 deletions(-)
 
 diff --git a/README.md b/README.md
-index dabb87ed..69e9e52b 100644
+index 9add8b8a..d5d56166 100644
 --- a/README.md
 +++ b/README.md
 @@ -4,44 +4,74 @@

@@ -1,4 +1,4 @@
-From 9596ca3c1cef9615eee1afa8197d4f9b41455346 Mon Sep 17 00:00:00 2001
+From 24d29ac9de5e0ee42c4bc6cd56260c0f364a0466 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 22:32:25 +0000
 Subject: [PATCH 06/42] webserver: raise the URI handler limit so the live

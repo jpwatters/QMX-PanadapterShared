@@ -1,4 +1,4 @@
-From 01c7f551e637655731e0e36fcf4a1ad37ba887ef Mon Sep 17 00:00:00 2001
+From 50ab02d04d1750a6a5874f9380679a5467dd7f41 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 19:28:28 -0500
 Subject: [PATCH 19/42] README and project PDF: relay-timed transmit, logs and
@@ -5969,7 +5969,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/README.md b/README.md
-index 583a3868..435e5c06 100644
+index 888d6101..f28299e4 100644
 --- a/README.md
 +++ b/README.md
 @@ -21,21 +21,24 @@ On the Tab5

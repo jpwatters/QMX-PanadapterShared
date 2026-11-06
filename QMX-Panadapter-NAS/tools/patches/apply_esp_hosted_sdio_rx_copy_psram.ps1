@@ -44,6 +44,21 @@ if (-not (Test-Path $target)) {
 $content = (Get-Content -Raw -Path $target) -replace "`r`n", "`n"
 
 if ($content.Contains("QMX_SDIO_RX_COPY_PSRAM")) {
+    if (-not $content.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
+        # Patched by an older copy of this script, before upstream's v1.24.2
+        # copypayload patch existed: the code already drops the frame on a
+        # failed allocation, so only the marker check_patches looks for is added.
+        $head = "/* QMX_SDIO_RX_COPY_PSRAM (qmx-panadapter network-radio, 2026-10-04)."
+        $note = $head + "`n`t`t`t`t *`n`t`t`t`t * Also QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT: this block already drops the`n`t`t`t`t * frame when the payload copy cannot be allocated (upstream's T152)."
+        if (([regex]::Matches($content, [regex]::Escape($head))).Count -ne 1) {
+            Write-Host "QMX_SDIO_RX_COPY_PSRAM block not recognised - patch by hand." -ForegroundColor Red
+            exit 1
+        }
+        $content = $content.Replace($head, $note)
+        [System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "Already patched (SDIO RX copy in PSRAM); added the copypayload marker it also satisfies." -ForegroundColor Green
+        exit 0
+    }
     Write-Host "Already patched (SDIO RX copy in PSRAM) - nothing to do." -ForegroundColor Green
     exit 0
 }
@@ -58,6 +73,12 @@ $old = @'
 '@
 $new = @'
 				/* QMX_SDIO_RX_COPY_PSRAM (qmx-panadapter network-radio, 2026-10-04).
+				 *
+				 * Also QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT: upstream's
+				 * apply_esp_hosted_sdio_copypayload_tolerant.ps1 (v1.24.2, T152)
+				 * patches this same allocation to drop the frame instead of
+				 * asserting. The code below already does that, so it carries
+				 * that patch's marker too and either script may run first.
 				 *
 				 * Every received WiFi frame is copied into a fresh buffer that
 				 * lwIP holds (zero-copy, L2_TO_L3_COPY off) until TCP has
@@ -87,11 +108,24 @@ $new = @'
 $old = $old -replace "`r`n", "`n"
 $new = $new -replace "`r`n", "`n"
 $n = ([regex]::Matches($content, [regex]::Escape($old))).Count
-if ($n -ne 1) {
-    Write-Host "Anchor found $n times (expected 1) - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red
-    exit 1
+if ($n -eq 1) {
+    $content = $content.Replace($old, $new)
+} else {
+    # Upstream's apply_esp_hosted_sdio_copypayload_tolerant.ps1 (v1.24.2) runs
+    # first (alphabetical order) and replaces the assert with a drop-the-frame
+    # branch. Replace that whole block - from the TODO comment to the memcpy -
+    # with ours, which does the same and also moves the copy to PSRAM.
+    $rx = [regex]'(?s)	+/\* TODO : Need to abstract heap_caps_malloc \*/
+	+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);
+.*?	+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);
+'
+    $m = $rx.Matches($content)
+    if ($m.Count -ne 1 -or -not $m[0].Value.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
+        Write-Host "Anchor found $n times (expected 1), and no copypayload-patched block either - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red
+        exit 1
+    }
+    $content = $content.Substring(0, $m[0].Index) + $new + "`n" + $content.Substring($m[0].Index + $m[0].Length)
 }
-$content = $content.Replace($old, $new)
 
 [System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Patched sdio_drv.c: received WiFi frames are copied into PSRAM, not internal RAM." -ForegroundColor Green

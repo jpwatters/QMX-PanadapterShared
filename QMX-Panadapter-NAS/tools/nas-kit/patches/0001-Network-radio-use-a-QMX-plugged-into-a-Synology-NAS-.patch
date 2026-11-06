@@ -1,4 +1,4 @@
-From bac5257a96fadcfd44929e385abd57cf0135dfff Mon Sep 17 00:00:00 2001
+From a86c31d78f26a348755a7de0b6357efcf96389d8 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 00:57:14 +0000
 Subject: [PATCH 01/42] Network radio: use a QMX plugged into a Synology NAS
@@ -2679,7 +2679,7 @@ index fca97794..50553b42 100644
  // when a session starts or ends - a new stream begins on a frame boundary, and
  // carrying a fragment across would misalign the interleave from the first
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index 4cae1861..1e4d00a0 100644
+index 5aeceade..fe0514f2 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
 @@ -21,6 +21,8 @@
@@ -2715,7 +2715,7 @@ index 4cae1861..1e4d00a0 100644
      cdc_acm_dev_hdl_t dev = s_cdc_dev;
      if (!dev) return ESP_ERR_INVALID_STATE;
      return cdc_acm_host_data_tx_blocking(dev, (const uint8_t *)data, len, timeout_ms);
-@@ -728,7 +740,7 @@ void cat_cw_poll_set_active(bool active)
+@@ -751,7 +763,7 @@ void cat_cw_poll_set_active(bool active)
  }
  esp_err_t cat_send_raw_cmd(const char *fmt, ...)
  {
@@ -2724,7 +2724,7 @@ index 4cae1861..1e4d00a0 100644
      char buf[64];
      va_list ap;
      va_start(ap, fmt);
-@@ -766,7 +778,7 @@ esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
+@@ -789,7 +801,7 @@ esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
  {
      if (err && err_len) err[0] = '\0';
      if (!cmd || !cmd[0]) return ESP_ERR_INVALID_ARG;
@@ -2733,7 +2733,7 @@ index 4cae1861..1e4d00a0 100644
  
      cat_keying_t k;
      cat_keying_classify(cmd, &k);
-@@ -806,7 +818,7 @@ esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
+@@ -829,7 +841,7 @@ esp_err_t cat_send_external_cmd(const char *cmd, char *err, size_t err_len)
  
  esp_err_t cat_query_power_swr(float *power_w, float *swr)
  {
@@ -2742,7 +2742,7 @@ index 4cae1861..1e4d00a0 100644
  
      s_pc_resp_len = 0;
      s_sw_resp_len = 0;
-@@ -850,7 +862,7 @@ esp_err_t cat_query_power_swr(float *power_w, float *swr)
+@@ -873,7 +885,7 @@ esp_err_t cat_query_power_swr(float *power_w, float *swr)
  // keyed, same as the unchanged end-of-burst query.
  esp_err_t cat_pwr_swr_async_send(void)
  {
@@ -2751,7 +2751,7 @@ index 4cae1861..1e4d00a0 100644
      s_pc_resp_len = 0;
      s_sw_resp_len = 0;
      return cat_tx("PC;SW;", 6, 50);
-@@ -1959,7 +1971,7 @@ static bool iq_mode_handshake(int max_attempts);
+@@ -2087,7 +2099,7 @@ const char *const *cat_cw_qsk_modes(void) { return s_qsk_modes; }
  
  bool cat_apply_cw_profile(uint16_t centre_hz, uint8_t mask)
  {
@@ -2760,7 +2760,7 @@ index 4cae1861..1e4d00a0 100644
      s_pending_prof_mask   = mask;
      s_pending_prof_centre = centre_hz;   /* set LAST - it is the "go" flag */
      return true;
-@@ -2414,7 +2426,7 @@ static void poll_task(void *arg)
+@@ -2542,7 +2554,7 @@ static void poll_task(void *arg)
  
      int phase = 0;
      int poll_fail = 0;   // consecutive poll-TX failures; one transient timeout must not kill the poll
@@ -2769,7 +2769,7 @@ index 4cae1861..1e4d00a0 100644
          /* RX watchdog - see the note above the declaration. Checked once a
           * second so the arithmetic costs nothing at the 50 ms poll rate, and
           * only while we are actually polling: a paused link (FT8 burst, the
-@@ -3046,7 +3058,7 @@ static void band_scan_restore(uint32_t pre_freq, char pre_mode_digit)
+@@ -3187,7 +3199,7 @@ static void band_scan_restore(uint32_t pre_freq, char pre_mode_digit)
   * and the mode. */
  void cat_band_scan_restore_test(uint32_t pre_freq, char pre_mode_digit)
  {
@@ -2778,7 +2778,7 @@ index 4cae1861..1e4d00a0 100644
          ESP_LOGW(TAG, "restore test: no CAT link");
          return;
      }
-@@ -3059,10 +3071,44 @@ void cat_band_scan_restore_test(uint32_t pre_freq, char pre_mode_digit)
+@@ -3200,10 +3212,44 @@ void cat_band_scan_restore_test(uint32_t pre_freq, char pre_mode_digit)
      band_scan_restore(pre_freq, pre_mode_digit);
  }
  
@@ -2824,7 +2824,7 @@ index 4cae1861..1e4d00a0 100644
          if (err == ESP_OK) {
              s_rx_len = 0;
              s_last_freq_hz = 0;
-@@ -3587,6 +3633,19 @@ static void link_task(void *arg)
+@@ -3728,6 +3774,19 @@ static void link_task(void *arg)
              xEventGroupWaitBits(s_evt_group, EVT_DEV_GONE,
                                  pdTRUE, pdFALSE, portMAX_DELAY);
              ESP_LOGW(TAG, "QMX gone, cleaning up");
@@ -2844,7 +2844,7 @@ index 4cae1861..1e4d00a0 100644
              if (s_cdc_dev) {
                  cdc_acm_dev_hdl_t dev = s_cdc_dev;
                  // Clear the handle FIRST so poll_task's "while (s_cdc_dev !=
-@@ -3633,7 +3692,7 @@ uint32_t cat_quantise_dial_hz(uint32_t freq_hz)
+@@ -3774,7 +3833,7 @@ uint32_t cat_quantise_dial_hz(uint32_t freq_hz)
  
  esp_err_t cat_set_frequency(uint32_t freq_hz)
  {
@@ -2853,7 +2853,7 @@ index 4cae1861..1e4d00a0 100644
          return ESP_ERR_INVALID_STATE;  // QMX not connected
      }
  
-@@ -3853,7 +3912,7 @@ esp_err_t cat_set_mode(const char *mode)
+@@ -3994,7 +4053,7 @@ esp_err_t cat_set_mode(const char *mode)
          ESP_LOGW(TAG, "cat_set_mode: unknown mode '%s'", mode ? mode : "(null)");
          return ESP_ERR_INVALID_ARG;
      }
@@ -2862,7 +2862,7 @@ index 4cae1861..1e4d00a0 100644
      // ⛔ WAS THE ONE BLOCKING CDC WRITER IN THIS FILE WITH NO s_poll_paused
      // GUARD (found 2026-09-16, chasing Randy N4OPI's "web Apply hangs and
      // loses the QMX, only during an active QSO/CQ exchange, needs a power
-@@ -3888,7 +3947,7 @@ esp_err_t cat_set_mode(const char *mode)
+@@ -4029,7 +4088,7 @@ esp_err_t cat_set_mode(const char *mode)
  esp_err_t cat_set_passband_hz(uint32_t hz)
  {
      if (hz < 50 || hz > 9999) return ESP_ERR_INVALID_ARG;
@@ -2871,7 +2871,7 @@ index 4cae1861..1e4d00a0 100644
  
      uint64_t now = esp_timer_get_time();
      if (now - s_last_tx_us < 200000) return ESP_ERR_TIMEOUT;
-@@ -3920,7 +3979,7 @@ esp_err_t cat_set_qmx_time(int hour, int min, int sec)
+@@ -4061,7 +4120,7 @@ esp_err_t cat_set_qmx_time(int hour, int min, int sec)
  
  esp_err_t cat_query_qmx_time(int *out_hour, int *out_min, int *out_sec)
  {
@@ -2880,7 +2880,7 @@ index 4cae1861..1e4d00a0 100644
  
      /* ⛔ NOT WHILE A BURST IS KEYED. This was missing, and it is what let the
       * RTC read clear a WSPR burst's hold 30 s into a 110.6 s transmission -
-@@ -4414,7 +4473,7 @@ esp_err_t cat_ta_latency_probe(int count, int interval_ms, bool logged,
+@@ -4555,7 +4614,7 @@ esp_err_t cat_ta_latency_probe(int count, int interval_ms, bool logged,
  // already owns the CDC pipe (FT8 TX pauses the same poll flag).
  esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *out_flip_us)
  {
@@ -2889,7 +2889,7 @@ index 4cae1861..1e4d00a0 100644
      if (cat_poll_held_by_other(CAT_HOLD_TIME_SYNC)) {
          ESP_LOGI(TAG, "GPS tick skipped - %s holds the link", hold_name(s_poll_holds));
          return ESP_ERR_INVALID_STATE;   // a burst owns the pipe
-@@ -4525,6 +4584,20 @@ esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *
+@@ -4666,6 +4725,20 @@ esp_err_t cat_gps_tick_sync(int *out_hour, int *out_min, int *out_sec, int64_t *
  // `while (s_cdc_dev != NULL)` lets it exit, wait for it, and only then close.
  void cat_usb_shutdown(void)
  {
@@ -2911,10 +2911,10 @@ index 4cae1861..1e4d00a0 100644
      if (!dev) {
          ESP_LOGI(TAG, "shutdown: no CAT device open");
 diff --git a/main/cat/cat.h b/main/cat/cat.h
-index 3d14609f..deb376d4 100644
+index 96243563..f3c9621a 100644
 --- a/main/cat/cat.h
 +++ b/main/cat/cat.h
-@@ -828,3 +828,15 @@ bool cat_force_rx_pending(void);
+@@ -861,3 +861,15 @@ bool cat_force_rx_pending(void);
   * Reached from POST /api/cmd {"action":"band_scan_restore_test", ...}. Nothing
   * calls it in normal operation; it sends no TX. */
  void cat_band_scan_restore_test(uint32_t pre_freq, char pre_mode_digit);
@@ -3569,7 +3569,7 @@ index 3b21b0ac..5338825b 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 6ba67e5e..f390e4b7 100644
+index ce31447a..d1dbec07 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -1628,6 +1628,7 @@
@@ -3580,7 +3580,7 @@ index 6ba67e5e..f390e4b7 100644
          <a href="#" id="memory-btn" title="Your 32 memory channels - click one to tune to it">Memory channels</a>
          <a href="#" id="pause-btn" title="Stops the Tab5 talking to the radio, so its own menus and the Band Configuration terminal app behave normally. Nothing is decoded until you hand it back">Let me use the QMX menus</a>
          <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
-@@ -7783,6 +7784,39 @@ function paintPaused(on) {
+@@ -7784,6 +7785,39 @@ function paintPaused(on) {
      bar.remove();
    }
  }
@@ -3620,7 +3620,7 @@ index 6ba67e5e..f390e4b7 100644
  document.getElementById("pause-btn").addEventListener("click", async () => {
    await sendCmd({ action: pausedNow ? "resume" : "pause" });
    paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
-@@ -8087,6 +8121,7 @@ async function tick() {
+@@ -8088,6 +8122,7 @@ async function tick() {
       * one poll has had time to return carrying it. That window is the debounce
       * plus a round trip; anything shorter and the last snap-back still shows. */
      radioFreqHz = s.freq_hz || 0;      /* always - see its declaration */
@@ -3758,10 +3758,10 @@ index 39443cb7..d96a7122 100644
              else if (!strcasecmp(key, "cloudlog_key"))      settings_set_cloudlog_key(val);
              else if (!strcasecmp(key, "cloudlog_station"))  settings_set_cloudlog_station(val);
 diff --git a/main/storage/settings.c b/main/storage/settings.c
-index cc400ac4..7dd2a28c 100644
+index 0374d652..b9e9088c 100644
 --- a/main/storage/settings.c
 +++ b/main/storage/settings.c
-@@ -95,6 +95,8 @@ static const char *TAG = "settings";
+@@ -97,6 +97,8 @@ static const char *TAG = "settings";
  #define KEY_QRZ_UPLOADED "qrz_upl_n"
  #define KEY_EQSL_USER    "eqsl_user"
  #define KEY_EQSL_PSWD    "eqsl_pswd"
@@ -3770,24 +3770,24 @@ index cc400ac4..7dd2a28c 100644
  #define KEY_QRZ_LU_USER  "qrz_lu_user"
  #define KEY_QRZ_LU_PASS  "qrz_lu_pass"
  #define KEY_EQSL_UPLOADED "eqsl_upl_n"
-@@ -276,7 +278,7 @@ static const char *TAG = "settings";
+@@ -278,7 +280,7 @@ static const char *TAG = "settings";
   * taken every one of them while the comment still said 62. Bumped to 5 words
   * rather than land the next person on a full bitmap behind a wrong number.
   * Cost is 4 bytes. Recount before trusting this figure again. */
--#define DIRTY_WORDS      5                        /* 160 bits; highest used 156, 3 spare */
-+#define DIRTY_WORDS      5                        /* 160 bits; highest used 157, 2 spare */
+-#define DIRTY_WORDS      5                        /* 160 bits; highest used 158, 1 spare */
++#define DIRTY_WORDS      5                        /* 160 bits; highest used 159, 0 spare - the NEXT bit must raise DIRTY_WORDS to 6 */
  #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
  
  typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
-@@ -512,6 +514,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
- #define DIRTY_CW_MSG_B        155  /* all 6 slots of macro set B "Contest", ONE bit - only
-                                        5 free when this was added, unlike cw_msg's six (67..72) */
- #define DIRTY_CW_MSG_SET      156  /* active macro set toggle: 0 = General, 1 = Contest */
-+#define DIRTY_RELAY           157  /* network radio: relay_host + relay_port (142-156 are upstream's) */
+@@ -516,6 +518,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
+ #define DIRTY_CW_MSG_SET      156
+ #define DIRTY_CW_RST_CUT      157  /* active macro set toggle: 0 = General, 1 = Contest */
+ #define DIRTY_CW_SERIAL        158  /* {SERIAL} macro - next contest serial to send */
++#define DIRTY_RELAY           159  /* network radio: relay_host + relay_port (142-158 are upstream's) */
  
  // Bits that actually affect config_io_export()'s output (storage/config_io.c).
  // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
-@@ -534,6 +537,7 @@ static const uint8_t s_config_export_bits[] = {
+@@ -538,6 +541,7 @@ static const uint8_t s_config_export_bits[] = {
      DIRTY_CQ_MSG2, DIRTY_CQ_SEL, DIRTY_ONBOARDED, DIRTY_FT8_FILT,
      DIRTY_WIFI_ENABLED, DIRTY_QMX_GPS, DIRTY_FREQ_KP_CALC,
      DIRTY_QRZ_KEY, DIRTY_QRZ_LU_USER, DIRTY_QRZ_LU_PASS, DIRTY_EQSL_USER, DIRTY_EQSL_PSWD,
@@ -3795,7 +3795,7 @@ index cc400ac4..7dd2a28c 100644
      DIRTY_CL_URL, DIRTY_CL_KEY, DIRTY_CL_STATION,
      DIRTY_WF_BLACK, DIRTY_WF_CONTRAST, DIRTY_WF_BLEND, DIRTY_WF_WINDOW,
      DIRTY_DISP_FLIP, DIRTY_QMX_VOL, DIRTY_RX_AUD_VOL, DIRTY_CHARGE_LIM_EN,
-@@ -761,6 +765,10 @@ static void flush_task(void *arg)
+@@ -767,6 +771,10 @@ static void flush_task(void *arg)
          if (dirty_test(&dirty_local, DIRTY_QRZ_UPLOADED)) nvs_set_u32(s_nvs, KEY_QRZ_UPLOADED, snap->qrz_uploaded_n);
          if (dirty_test(&dirty_local, DIRTY_EQSL_USER))     nvs_set_str(s_nvs, KEY_EQSL_USER, snap->eqsl_user);
          if (dirty_test(&dirty_local, DIRTY_EQSL_PSWD))     nvs_set_str(s_nvs, KEY_EQSL_PSWD, snap->eqsl_pswd);
@@ -3806,7 +3806,7 @@ index cc400ac4..7dd2a28c 100644
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_USER))   nvs_set_str(s_nvs, KEY_QRZ_LU_USER, snap->qrz_lookup_user);
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_PASS))   nvs_set_str(s_nvs, KEY_QRZ_LU_PASS, snap->qrz_lookup_pass);
          if (dirty_test(&dirty_local, DIRTY_EQSL_UPLOADED)) nvs_set_u32(s_nvs, KEY_EQSL_UPLOADED, snap->eqsl_uploaded_n);
-@@ -1111,6 +1119,8 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -1119,6 +1127,8 @@ static void load_from_nvs(qmx_settings_t *out)
      out->qrz_lookup_pass[0] = '\0';
      out->eqsl_user[0] = '\0';
      out->eqsl_pswd[0] = '\0';
@@ -3815,7 +3815,7 @@ index cc400ac4..7dd2a28c 100644
      out->eqsl_uploaded_n = 0;
      out->cloudlog_url[0] = '\0';
      out->cloudlog_key[0] = '\0';
-@@ -1364,6 +1374,12 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -1374,6 +1384,12 @@ static void load_from_nvs(qmx_settings_t *out)
      out->eqsl_pswd[0] = '\0';
      sz = sizeof(out->eqsl_pswd);
      nvs_get_str(s_nvs, KEY_EQSL_PSWD, out->eqsl_pswd, &sz);
@@ -3828,7 +3828,7 @@ index cc400ac4..7dd2a28c 100644
      nvs_get_u32(s_nvs, KEY_EQSL_UPLOADED, &out->eqsl_uploaded_n);
      out->cloudlog_url[0] = '\0';
      sz = sizeof(out->cloudlog_url);
-@@ -4780,3 +4796,13 @@ void settings_set_gps_grid_auto(const char *grid)
+@@ -4868,3 +4884,13 @@ void settings_set_gps_grid_auto(const char *grid)
      nvs_commit(s_nvs);
      xSemaphoreGive(s_mutex);
  }
@@ -3843,10 +3843,10 @@ index cc400ac4..7dd2a28c 100644
 +    mark_dirty(DIRTY_RELAY);
 +}
 diff --git a/main/storage/settings.h b/main/storage/settings.h
-index d7db2fa6..1362207f 100644
+index 4c46fc70..025d24e1 100644
 --- a/main/storage/settings.h
 +++ b/main/storage/settings.h
-@@ -993,6 +993,10 @@ typedef struct {
+@@ -995,6 +995,10 @@ typedef struct {
      char     lotw_state[4];     // 2-letter US state, e.g. "VA"
      char     lotw_county[40];   // county name only, e.g. "Arlington"
      uint32_t lotw_uploaded_n;   // count of ADIF records already uploaded to LoTW
@@ -3857,7 +3857,7 @@ index d7db2fa6..1362207f 100644
  } qmx_settings_t;
  
  // Initialise the settings module. Opens an NVS handle. Safe to call
-@@ -1523,6 +1527,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
+@@ -1541,6 +1545,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
  void settings_set_eqsl_user(const char *user);
  void settings_set_eqsl_pswd(const char *pswd);
  

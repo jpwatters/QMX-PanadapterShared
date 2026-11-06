@@ -1,4 +1,4 @@
-From c83a8498054449a90d0b724d866f1dc78f88d745 Mon Sep 17 00:00:00 2001
+From 2922ab113414bde1d2701d1d7f065900aa301c48 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 10:00:00 -0500
 Subject: [PATCH 27/42] TCI for WS / WSJT-X / JTDX on the Mac; relay serves a
@@ -7823,7 +7823,7 @@ z7*Z@31#<2GZ^fSm|MH9W+oki5lV7WoEPMTt_>t$2Z`0HN5&e<m|NQ1)|MB|YA5r`(
 Qjgt(|{R+d{sPpUp1lf|!cmMzZ
 
 diff --git a/README.md b/README.md
-index 2f4a0102..32151de5 100644
+index eccad439..5a61b00f 100644
 --- a/README.md
 +++ b/README.md
 @@ -10,7 +10,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,

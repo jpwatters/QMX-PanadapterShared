@@ -1,4 +1,4 @@
-From c787213aea1f494e5a50ae5619904846dc05012f Mon Sep 17 00:00:00 2001
+From 176efc1d0e4ce438d74a96006f40db8bc395de70 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 23:13:44 +0000
 Subject: [PATCH 07/42] nas-kit: rebuild the NAS version from each new upstream

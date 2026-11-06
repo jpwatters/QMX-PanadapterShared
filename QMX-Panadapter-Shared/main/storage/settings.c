@@ -75,6 +75,8 @@ static const char *TAG = "settings";
 #define KEY_CW_MSG_B   "cw_msgb"   // + digit 0..5 appended at use sites (set B, "Contest")
 #define KEY_CW_MSG_SET "cw_mset"   // which set is active: 0 = General, 1 = Contest
 #define KEY_CW_PARK    "cw_park"
+#define KEY_CW_RST_CUT "cw_rst_cut"
+#define KEY_CW_SERIAL  "cw_serial"
 #define KEY_CW_SIM     "cw_sim"
 #define KEY_CW_PAGE_EN "cw_page_en"
 #define KEY_HOUND_MODE "hound_md"
@@ -278,7 +280,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      5                        /* 160 bits; highest used 157, 2 spare */
+#define DIRTY_WORDS      5                        /* 160 bits; highest used 159, 0 spare - the NEXT bit must raise DIRTY_WORDS to 6 */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -513,8 +515,10 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_PAGE_EN      153  /* master switch for the CW page - default OFF */
 #define DIRTY_CW_MSG_B        155  /* all 6 slots of macro set B "Contest", ONE bit - only
                                        5 free when this was added, unlike cw_msg's six (67..72) */
-#define DIRTY_CW_MSG_SET      156  /* active macro set toggle: 0 = General, 1 = Contest */
-#define DIRTY_RELAY           157  /* network radio: relay_host + relay_port (142-156 are upstream's) */
+#define DIRTY_CW_MSG_SET      156
+#define DIRTY_CW_RST_CUT      157  /* active macro set toggle: 0 = General, 1 = Contest */
+#define DIRTY_CW_SERIAL        158  /* {SERIAL} macro - next contest serial to send */
+#define DIRTY_RELAY           159  /* network radio: relay_host + relay_port (142-158 are upstream's) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -739,6 +743,8 @@ static void flush_task(void *arg)
         }
         if (dirty_test(&dirty_local, DIRTY_CW_MSG_SET)) nvs_set_u8(s_nvs, KEY_CW_MSG_SET, snap->cw_msg_set);
         if (dirty_test(&dirty_local, DIRTY_CW_PARK)) nvs_set_str(s_nvs, KEY_CW_PARK, snap->cw_park);
+        if (dirty_test(&dirty_local, DIRTY_CW_RST_CUT)) nvs_set_u8(s_nvs, KEY_CW_RST_CUT, snap->cw_rst_cut_nines ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_CW_SERIAL)) nvs_set_u16(s_nvs, KEY_CW_SERIAL, snap->cw_serial_next);
         if (dirty_test(&dirty_local, DIRTY_CW_SIM))  nvs_set_u8(s_nvs, KEY_CW_SIM, snap->cw_sim_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_PAGE_EN)) nvs_set_u8(s_nvs, KEY_CW_PAGE_EN, snap->cw_page_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_HOUND_MODE))   nvs_set_u8(s_nvs, KEY_HOUND_MODE, snap->hound_mode);
@@ -1077,13 +1083,13 @@ static void load_from_nvs(qmx_settings_t *out)
     strcpy(out->cw_msg[4], "AGN AGN BK");
     strcpy(out->cw_msg[5], "QRZ? DE {MYCALL} K");
     // Set B defaults, "Contest" - same structure, 5NN instead of 599 (decided
-    // 2026-11-02, see memory/project_cw_macro_set_selector_decided.md). No
-    // {SERIAL} macro exists yet (never built past the design doc), so a real
-    // serial-exchange contest macro still needs a hand edit here - these are
-    // a starting point, not a finished contest sheet.
+    // 2026-11-02, see memory/project_cw_macro_set_selector_decided.md).
+    // {SERIAL} built 2026-11-03 (T151) - M3 now sends a real serial exchange
+    // instead of repeating 5NN where the number belongs; still just a
+    // starting point, not a finished contest sheet for every exchange format.
     strcpy(out->cw_msg_b[0], "CQ CQ TEST DE {MYCALL} {MYCALL} K");
     strcpy(out->cw_msg_b[1], "CQ TEST DE {MYCALL} {MYCALL} TEST");
-    strcpy(out->cw_msg_b[2], "{CALL} 5NN 5NN BK");
+    strcpy(out->cw_msg_b[2], "{CALL} 5NN {SERIAL} BK");
     strcpy(out->cw_msg_b[3], "{CALL} TU 73 EE");
     strcpy(out->cw_msg_b[4], "AGN AGN BK");
     strcpy(out->cw_msg_b[5], "QRZ? DE {MYCALL} K");
@@ -1096,6 +1102,8 @@ static void load_from_nvs(qmx_settings_t *out)
      * the word from the running activation has the same refusal problem when
      * nothing is running. Both want an operator decision, not a default. */
     out->cw_park[0] = '\0';
+    out->cw_rst_cut_nines = false;
+    out->cw_serial_next = 1;
     out->cw_sim_en = false;
     /* ON from v1.24.0 (operator): ships as the release's beta, not hidden
      * behind a config line nobody would find. It still has no abort for a
@@ -1321,6 +1329,8 @@ static void load_from_nvs(qmx_settings_t *out)
     }
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_MSG_SET, &v8) == ESP_OK) out->cw_msg_set = v8 > 1 ? 0 : v8; }
     sz = sizeof(out->cw_park); nvs_get_str(s_nvs, KEY_CW_PARK, out->cw_park, &sz);
+    if (nvs_get_u8(s_nvs, KEY_CW_RST_CUT, &u8v) == ESP_OK) out->cw_rst_cut_nines = (u8v != 0);
+    nvs_get_u16(s_nvs, KEY_CW_SERIAL, &out->cw_serial_next);
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_SIM, &v8) == ESP_OK) out->cw_sim_en = v8 != 0; }
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_PAGE_EN, &v8) == ESP_OK) out->cw_page_en = v8 != 0; }
     nvs_get_u8(s_nvs, KEY_HOUND_MODE, &out->hound_mode);
@@ -2076,6 +2086,55 @@ void settings_set_cw_park(const char *park)
     mark_dirty(DIRTY_CW_PARK);
 }
 
+void settings_set_cw_rst_cut_nines(bool v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.cw_rst_cut_nines == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.cw_rst_cut_nines = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_CW_RST_CUT);
+}
+
+bool settings_get_cw_rst_cut_nines(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.cw_rst_cut_nines;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+void settings_set_cw_serial_next(uint16_t v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.cw_serial_next == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.cw_serial_next = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_CW_SERIAL);
+}
+
+uint16_t settings_get_cw_serial_next(void)
+{
+    if (!s_ready) return 1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t v = s_pending.cw_serial_next;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+uint16_t settings_cw_serial_advance(void)
+{
+    if (!s_ready) return 1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t sent = s_pending.cw_serial_next;
+    s_pending.cw_serial_next = sent + 1;   // wraps past 65535, same as every other u16 counter here
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_CW_SERIAL);
+    return sent;
+}
+
 void settings_set_cw_sim_en(bool v)
 {
     if (!s_ready) return;
@@ -2224,6 +2283,19 @@ void settings_set_ft8_filters(const ft8_filters_t *f)
     s_pending.ft8_filters = *f;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_FT8_FILT);
+}
+
+// Narrow accessor: ft8_qso_build_manual_reply() reads this on taskLVGL (it's
+// called directly from both ft8_screen_view.c's row touch handler and
+// ft8_pileup_modal.c's), where a full qmx_settings_t is the stack-overflow
+// class fixed elsewhere in this release.
+bool settings_get_ft8_skip_tx1(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.ft8_filters.skip_tx1;
+    xSemaphoreGive(s_mutex);
+    return v;
 }
 
 void settings_set_kbd_bindings(const kbd_bindings_t *b)
@@ -4092,6 +4164,22 @@ bool settings_get_field_day_en(void)
     if (!s_ready) return false;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     bool v = s_pending.field_day_en;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+// Narrow accessor for the `field_day_en && fd_class[0] && fd_section[0]`
+// check that five call sites repeated, each behind its own full
+// settings_load_all() (3888 B). Two of them - ft8_qso_build_manual_reply()
+// and ft8_pileup_modal.c's row_work_cb() - run on taskLVGL from a touch
+// callback; row_work_cb() is the crash Randy N4OPI hit on v1.24.1
+// clicking a pileup entry to work them (2026-11-03), the same class as the
+// CQ-row fix already shipped in this release, just a second instance of it.
+bool settings_get_fd_mode_active(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.field_day_en && s_pending.fd_class[0] && s_pending.fd_section[0];
     xSemaphoreGive(s_mutex);
     return v;
 }

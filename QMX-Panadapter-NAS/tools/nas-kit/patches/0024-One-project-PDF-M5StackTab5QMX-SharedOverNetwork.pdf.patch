@@ -1,4 +1,4 @@
-From 0c194728b385c74c24a17ff169a6daf0c1ed24df Mon Sep 17 00:00:00 2001
+From 980b7f282a4e0d78742a9be166826f93ba65f735 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 06:06:18 -0500
 Subject: [PATCH 24/42] One project PDF: M5StackTab5QMX+SharedOverNetwork.pdf
@@ -15438,7 +15438,7 @@ zF$vx15BN*Ie^&oAR#Ei%^RG)NfB#xP{<rh5YnlIgc<7RT{&jhip#PH1KgHru9sTov
 E0F<(pPyhe`
 
 diff --git a/README.md b/README.md
-index 69e9e52b..2f4a0102 100644
+index d5d56166..eccad439 100644
 --- a/README.md
 +++ b/README.md
 @@ -69,8 +69,7 @@ If you’ve customised the drawer’s Basic/Advanced menus: check where Radio so

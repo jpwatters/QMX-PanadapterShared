@@ -1,4 +1,4 @@
-From 7d538860d8911ed59cca3df6c4b7ce9ce26394e8 Mon Sep 17 00:00:00 2001
+From ac78de49e7a9c7df606faa03c9be2fb90b9510c9 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 19:11:26 -0500
 Subject: [PATCH 18/42] FT8/FT4 over the NAS: the relay times the transmit

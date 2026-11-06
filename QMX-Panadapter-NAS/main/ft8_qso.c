@@ -599,9 +599,13 @@ bool ft8_qso_build_manual_reply(const ft8_call_t *heard, int reply_freq_hz,
     char          extra_buf[16] = {0};
     bool          fresh_grid = true;
 
-    qmx_settings_t qs;
-    settings_load_all(&qs);
-    bool fd_mode = qs.field_day_en && qs.fd_class[0] && qs.fd_section[0];
+    /* ⛔ THE NARROW ACCESSORS, NOT settings_load_all(). This runs on
+     * taskLVGL - called directly from both ft8_screen_view.c's row touch
+     * handler and ft8_pileup_modal.c's, each already fixed for the SAME
+     * 3888-byte qmx_settings_t stack-overflow class this release (Randy
+     * N4OPI, 2026-11-03). This was the one that survived that pass, because
+     * it's a level deeper than the row handler itself. */
+    bool fd_mode = settings_get_fd_mode_active();
 
     // Skip-TX1 applies to the manual Transmit exactly like WSJT-X applies
     // "Skip Tx1" to a double-click: a fresh CQ answer opens with our signal
@@ -614,7 +618,7 @@ bool ft8_qso_build_manual_reply(const ft8_call_t *heard, int reply_freq_hz,
     // ⭐ JS8 takes this branch ALWAYS, toggle or not: a Directed frame has no
     // locator field, so the grid opening has no JS8 form at all (js8_text.c).
     // Report-first is not a shortcut there, it is the protocol.
-    if (!fd_mode && (qs.ft8_filters.skip_tx1 ||
+    if (!fd_mode && (settings_get_ft8_skip_tx1() ||
                      ftx_protocol_is_js8(ft8_op_mode_protocol()))) {
         fmt_report(heard->last_snr_db, extra_buf, sizeof(extra_buf));
         extra = extra_buf;
@@ -3630,8 +3634,17 @@ static void ft8_qso_advance_body(int64_t slot_sec)
         s_rst_sent[sizeof(s_rst_sent) - 1] = '\0';
 
         bool ok;
-        if (got_rr73 || got_73) {
-            ESP_LOGI(TAG, "WAIT_RPT: %s sent RR73/73 directly", target);
+        // ⛔ BARE "RRR" BELONGS HERE TOO (Gyula HA3HZ + Randy N4OPI, 2026-11-03):
+        // scan_for_response() only recognises RR73/73 as a direct ack - a bare
+        // RRR (no report ever sent/expected) fell into the generic report
+        // bucket below and got treated as a signal report, so we replied with
+        // R<our-measurement> and sat in WAIT_RR73 waiting for an RR73/73/RRR
+        // that was never coming back (they'd already said it). The station
+        // just re-CQs and we wait out the full timeout. Same fix family as
+        // WAIT_RR73's got_rrr and WAIT_ROGER's is_roger_token("RRR") - RRR
+        // ends the exchange exactly like RR73/73 everywhere else.
+        if (got_rr73 || got_73 || strcmp(report, "RRR") == 0) {
+            ESP_LOGI(TAG, "WAIT_RPT: %s sent RR73/73/RRR directly", target);
             ok = send_next(FT8_TX_KIND_73, target, freq, slot_sec, "73",
                            FT8_QSO_WAIT_DONE);
             if (ok) ft8_status_set("QSO %s: sending 73", target);

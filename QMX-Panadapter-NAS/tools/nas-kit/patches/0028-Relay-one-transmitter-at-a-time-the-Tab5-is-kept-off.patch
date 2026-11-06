@@ -1,4 +1,4 @@
-From 80b7ab8c4859729f4b1d066e038da2c25182fe5e Mon Sep 17 00:00:00 2001
+From 4b8d59515f481fbfcf0cb8899002404cec9a9396 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 11:00:00 -0500
 Subject: [PATCH 28/42] Relay: one transmitter at a time - the Tab5 is kept off
@@ -7850,7 +7850,7 @@ zyZ-B+!m1?f_Irk-cOtzPIC&$9KVGA<-%GS82(d(||6PyYHvji8%^&srb?_&0aKFEP
 prGL=s$6v$a|FZj)rT=oDXPmwML$=%hiDP+Q7XJjp4Y&EH{~wPHvMm4r
 
 diff --git a/README.md b/README.md
-index 32151de5..8b4d26bc 100644
+index 5a61b00f..ad39f71b 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,

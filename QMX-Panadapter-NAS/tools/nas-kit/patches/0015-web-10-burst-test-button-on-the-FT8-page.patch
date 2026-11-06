@@ -1,4 +1,4 @@
-From 503a0eef615a75e0dd3f5584ca9508aa69946dda Mon Sep 17 00:00:00 2001
+From ed47d8facdb7e21c6aa4d65ffbfdfe980a230a4a Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 11:14:16 -0500
 Subject: [PATCH 15/42] web: 10-burst test button on the FT8 page
@@ -16,7 +16,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 93 insertions(+), 1 deletion(-)
 
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index f390e4b7..ec4bc27d 100644
+index d1dbec07..b4263ce2 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -1321,7 +1321,7 @@
@@ -28,7 +28,7 @@ index f390e4b7..ec4bc27d 100644
      <div id="ft8-decodes" style="width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
          <strong id="dec-title" style="color:#ffa040">Decode list</strong>
-@@ -4120,6 +4120,97 @@ async function sendCmd(payload) {
+@@ -4121,6 +4121,97 @@ async function sendCmd(payload) {
     then held disabled briefly: the device defers the request to its own 1 Hz timer,
     so a second click inside that window would do nothing visible and invite
     double-tapping. */
@@ -126,7 +126,7 @@ index f390e4b7..ec4bc27d 100644
  (function wireCqRestart() {
    const btn = document.getElementById("cq-restart");
    if (!btn) return;
-@@ -8558,6 +8649,7 @@ async function tick() {
+@@ -8559,6 +8650,7 @@ async function tick() {
        }
      }
  

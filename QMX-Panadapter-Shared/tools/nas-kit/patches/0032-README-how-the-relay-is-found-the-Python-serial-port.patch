@@ -1,4 +1,4 @@
-From 4089561898aaf1826d00d36d8d94a26cbb5aa42f Mon Sep 17 00:00:00 2001
+From ec5a87bdf695ff5b1bc9ca736370ecc83b8a3f10 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 10:00:00 -0500
 Subject: [PATCH 32/42] README: how the relay is found, the Python serial port,
@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+)
 
 diff --git a/README.md b/README.md
-index 99806b3f..94797ccc 100644
+index 20d5b543..f59c687e 100644
 --- a/README.md
 +++ b/README.md
 @@ -75,6 +75,31 @@ Flash with nothing plugged into the Tab5’s USB-A port, then power it off and o

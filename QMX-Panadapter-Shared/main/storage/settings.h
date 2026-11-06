@@ -420,6 +420,8 @@ typedef struct {
     char     cw_msg_b[6][44];  // 6 CW macros, SET B "Contest" - same slots, same ladder indices
     uint8_t  cw_msg_set;       // which set is active/edited: 0 = General, 1 = Contest (default 0)
     char     cw_park[16];      // POTA park reference for the {PARK} macro (e.g. "US-1211")
+    bool     cw_rst_cut_nines; // {RST} macro expands "5NN" (both 9s cut) instead of "599" when true (default false)
+    uint16_t cw_serial_next;  // {SERIAL} macro - next contest serial to send, 1-based (default 1)
     bool     cw_sim_en;        // CW phantom practice - SEPARATE from sim_mode_en (default false)
     /* MASTER SWITCH FOR THE CW PAGE. It keys the radio over CAT KY and still
      * has NO WAY TO ABORT a message once sent (tested on the bench: neither
@@ -1070,6 +1072,16 @@ void settings_set_cw_msg(uint8_t idx, const char *text);          // set A ("Gen
 void settings_set_cw_msg_for_set(uint8_t set, uint8_t idx, const char *text);  // explicit set, used by the CW editor
 void settings_set_cw_msg_set(uint8_t set);                        // 0 = General, 1 = Contest
 void settings_set_cw_park(const char *park);
+void settings_set_cw_rst_cut_nines(bool v);
+bool settings_get_cw_rst_cut_nines(void);     // narrow: {RST} macro expansion, read on taskLVGL
+
+// {SERIAL} macro - a plain send-time counter (N1MM/keyer convention: it
+// advances when a message carrying {SERIAL} actually keys the radio, not
+// when a QSO is logged - the CW page has no ADIF logging yet). All three are
+// narrow: read/written from send_cw_text() and expand_macros() on taskLVGL.
+void     settings_set_cw_serial_next(uint16_t v);   // manual correction (e.g. after a repeat)
+uint16_t settings_get_cw_serial_next(void);         // current value, does NOT advance
+uint16_t settings_cw_serial_advance(void);           // returns the value just sent, THEN increments
 
 // The park reference alone, narrow - the CW page resolves {PARK} from its
 // 500 ms tick and cannot afford a qmx_settings_t local there. Writes "" when
@@ -1098,6 +1110,7 @@ void settings_set_onboarded(bool v);
 
 // FT8 CQ-run reply include/exclude filters (debounced flush).
 void settings_set_ft8_filters(const ft8_filters_t *f);
+bool settings_get_ft8_skip_tx1(void);     // narrow: ft8_filters.skip_tx1, read on taskLVGL
 void settings_set_kbd_bindings(const kbd_bindings_t *b);
 
 // RX audio output: enable demodulated audio on the Tab5 speaker/headphone
@@ -1125,7 +1138,11 @@ void settings_set_cw_peak_hz(uint16_t hz);
 // Display 180-degree flip for upside-down mounting (debounced flush).
 void settings_set_display_flip(bool v);
 void settings_set_qmx_vol_db(uint8_t db);
-/* CW transmit offset in Hz, -1000..+1000, 0 = off. Applied only in CW mode. */
+/* CW transmit offset in Hz, -1000..+1000, 0 = off. Applied only in CW mode.
+ * Every caller clamps to +/-300 before writing (Roy KI0ER's real-world figure
+ * was 200-250 Hz) - shared here so a second UI entry point cannot drift from
+ * ui.c's drawer control by restating its own copy of the number. */
+#define CW_TX_OFFSET_MAX_HZ 300
 void settings_set_cw_tx_offset_hz(int16_t hz);
 /* Scalar read of the same value. Exists so cat.c's poll task can check it every
  * 50 ms WITHOUT putting a ~500-byte qmx_settings_t on its 4 KB stack - the same
@@ -1358,6 +1375,7 @@ void settings_set_field_day_en(bool v);
    put a whole qmx_settings_t on taskLVGL's stack - see ft8_screen_view.c's CQ
    button label refresh. */
 bool settings_get_field_day_en(void);
+bool settings_get_fd_mode_active(void);   // narrow: field_day_en && fd_class[0] && fd_section[0]
 // Activation session. type: 0 none, then one of the programmes in k_act[]
 // (settings.c) - 1 POTA, 2 SOTA, 3 WWFF, 4 IOTA, 5 GMA, 6 WCA, 7 WWBOTA.
 // ⛔ Those ids are persisted in NVS: append to the table, never renumber.

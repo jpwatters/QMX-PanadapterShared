@@ -34,10 +34,25 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 
+/* ⛔ PSRAM's heap_caps_get_largest_free_block(SPIRAM) REMOVED 2026-11-04,
+ * same evening it was added. It is exactly the call CLAUDE.md's resolved
+ * FT4 cyan-flash quirk forbids on any periodic/boot-time path: a full heap
+ * walk with interrupts off, and over 26 MB of PSRAM it is the slowest one
+ * this file has ever issued - slower than the DMA/INTERNAL walks below that
+ * predate it and never drew a report. The "one-shot, bounded, costs
+ * nothing" reasoning that added it was wrong: bounded still means it fires
+ * at 8 fixed points every single boot, and a capture taken tonight shows
+ * the T+22s/T+26s marks landing exactly when the operator saw a one-frame
+ * cyan flash on bench1. heap_caps_get_free_size(SPIRAM) stays - it is a
+ * tracked counter, not a walk, and is what the WSPR PSRAM investigation
+ * actually needed named. The largest-free-block question belongs in a
+ * deliberately invoked diagnostic (resmon-style), never a boot-time mark. */
 #define MEM_LEDGER(stage)                                                     \
-    ESP_LOGI("memledger", "%-26s dma=%6u B (lblk %5u)  int=%6u B (lblk %5u)", \
+    ESP_LOGI("memledger", "%-26s dma=%6u B (lblk %5u)  int=%6u B (lblk %5u)  " \
+             "psram=%8u B",                                                   \
              (stage),                                                         \
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),               \
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),      \
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),          \
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL))
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), \
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM))

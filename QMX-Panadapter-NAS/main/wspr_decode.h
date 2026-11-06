@@ -81,6 +81,11 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
                           double f_hi_hz, wspr_freq_candidate_t *out,
                           int max_out);
 
+// Call once per cycle, right after reading the candidate list and before the
+// per-candidate decode loop - frees this ~2.3 MB scratch so build_stage1()'s
+// ~1.44 MB can have the room instead. See the function's own comment.
+void wspr_find_candidates_release_scratch(void);
+
 typedef struct {
     int ok; /* 1 if this cleared all three plausibility checks */
     char callsign[7];
@@ -163,6 +168,12 @@ typedef struct {
  * anything else ever modifies a capture in place.
  */
 void wspr_decode_capture_changed(void);
+
+// Actually frees the stage-1 scratch (~700 KB x2, grow-only, kept across
+// captures by wspr_decode_capture_changed() above). Call once, when the WSPR
+// decode task really exits - not per capture, or the PSRAM churn this exists
+// to avoid just comes back.
+void wspr_decode_free_scratch(void);
 
 void wspr_decode_candidate(const int16_t *samples, long n, double f0_hz,
                             wspr_decode_result_t *result);

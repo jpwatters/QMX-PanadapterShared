@@ -11,22 +11,29 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (42 patches). It applies to upstream **v1.24.1** as it
-  is (ported 2026-11-04; built, not yet flashed or tested on the Tab5).
+* `patches/` - the NAS series (42 patches). It applies to upstream **v1.24.2** as it
+  is (ported 2026-11-05; built, not yet flashed or tested on the Tab5).
   v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
   which is in git history and in Shared's kit. `SERIES_BASE` in the script names
   the release the patches were made against. Each build writes the release into
   the README's Version line, the CMake version fallback and the relay README, so
   they name the release they were built on. The ports that needed hand work:
-  * the relay's settings bit is DIRTY_RELAY **157** (upstream took 140-156; in
-    v1.24.1, 152-156 for the web-radio player, the CW page and its macro sets;
-    check_dirty_bits is clean, 2 free) - patch 0001. v1.24.1 also passes the
+  * the relay's settings bit is DIRTY_RELAY **159**, the last of the 160 (upstream
+    took 140-158; in v1.24.1, 152-156 for the web-radio player, the CW page and
+    its macro sets; in v1.24.2, 157-158 for the CW RST cut and contest serial).
+    check_dirty_bits is clean with 0 free: the next setting on either side must
+    raise DIRTY_WORDS to 6 - patch 0001. v1.24.1 also passes the
     flush task's settings snapshot as a pointer, so the relay's NVS writes use
     `snap->` - patch 0001;
-  * the Radio source drawer section is id **56** (upstream took 54 for the
-    web-radio player and 55 for CW practice in v1.24.1), N_DRAWER_SECTIONS
-    **57**, with its `_Static_assert` - patch 0005;
+  * the Radio source drawer section is id **57** (upstream took 54 for the
+    web-radio player and 55 for CW practice in v1.24.1, and 56 for Semi QSK in
+    v1.24.2), N_DRAWER_SECTIONS **58**, with its `_Static_assert` - patch 0005;
+  * (v1.24.2) upstream's new standing patch
+    apply_esp_hosted_sdio_copypayload_tolerant.ps1 edits the same allocation as
+    the NAS's apply_esp_hosted_sdio_rx_copy_psram.ps1, which already drops the
+    frame on failure; the NAS script now accepts either order and carries
+    upstream's marker, so check_patches passes - patch 0004;
   * (v1.24.1) dxcluster.c, psk_rx.c and rbn.c now read single settings instead
     of a whole snapshot; their online checks still accept Ethernet or Wi-Fi
     (`net_is_up()`) - patch 0040;
@@ -47,8 +54,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     (patch 0015); the "TX locked" refusal sits after upstream's band guard (T48)
     (patch 0029); CMakeLists.txt keeps both upstream's configure-on-commit block
     and the -NAS version block.
-  On v1.24.1 the host harnesses (`tools/run_harnesses.py`) give 62 passed, 1
-  failed (sb_tune), 1 skipped - the same as pristine upstream v1.24.1;
+  On v1.24.2 the host harnesses (`tools/run_harnesses.py`) give 60 passed, 3
+  failed (js8_submode, js8_wav, sb_tune), 1 skipped - the same as pristine
+  upstream v1.24.2;
   check_tx_guard, check_unattended_tx, check_dirty_bits, check_web and
   check_webui are clean, and check_docs gives upstream's own one warning.
   Later patches: **0021** the version fallback, **0022** the front-page README
@@ -108,7 +116,7 @@ Other options: `--ref vX.Y.Z` (a specific tag, branch or commit),
 * Each tree holds `.qmx-nas-build` (release, upstream commit, patch-series
   checksum, build time) and, once tested, `.qmx-nas-tested`. Both are excluded
   from `git status`.
-* Builds report the upstream release plus `-NAS`, e.g. `v1.23.1-NAS`.
+* Builds report the upstream release plus `-NAS`, e.g. `v1.24.2-NAS`.
 
 Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on the current release
 produced a tree identical to QMX-Panadapter-NAS (same git tree hash); a rebuild

@@ -10,12 +10,23 @@
  * follow this precedent without the same justification. */
 #if defined(ESP_PLATFORM)
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 static int64_t wspr_now_us(void) { return esp_timer_get_time(); }
+/* The FFT/stage1/stage2 scratch below is hundreds of KB to ~1.3 MB - plain
+ * malloc() leaves it to CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL's threshold
+ * heuristic, same ambiguity the rest of this codebase never accepts for
+ * anything this size (see CLAUDE.md's "audit every malloc under ~16 KB").
+ * Explicit PSRAM here, consistent with everywhere else; free() still works
+ * on it, IDF's allocator tracks the owning pool. */
+static void *wspr_big_alloc(size_t n) {
+    return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 #else
 #include <time.h>
 static int64_t wspr_now_us(void) {
     return (int64_t)((double)clock() * (1000000.0 / (double)CLOCKS_PER_SEC));
 }
+static void *wspr_big_alloc(size_t n) { return malloc(n); }
 #endif
 
 #include "fft/kiss_fftr.h" /* ft8_lib's component INCLUDE_DIRS is its own root
@@ -50,6 +61,14 @@ typedef float wspr_tp_t;
 #define WSPR_SNR_BW_OFFSET_DB  (-32.32)
 
 #define TONE_SPACING (WSPR_SAMPLE_RATE_HZ / WSPR_SYM_LEN_SAMPLES) /* 1.46484375 Hz */
+
+/* File-scope, not function-static, so wspr_find_candidates_release_scratch()
+ * below can reach them - see its own comment for why it exists. */
+static kiss_fftr_cfg     s_cand_cfg;
+static kiss_fft_scalar  *s_cand_in;
+static kiss_fft_cpx     *s_cand_spec;
+static float            *s_cand_mag;
+static int               s_cand_cached_nfft;
 
 int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
                           double f_hi_hz, wspr_freq_candidate_t *out,
@@ -137,28 +156,23 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
      * Returns WSPR_CANDS_NOMEM (-1), never 0, when it cannot get the memory,
      * so the caller can say so. This file deliberately has no ESP_LOG - it is
      * host-tested - so reporting is the caller's job. */
-    static kiss_fftr_cfg     cfg;
-    static kiss_fft_scalar  *in;
-    static kiss_fft_cpx     *spec;
-    static float            *mag;
-    static int               cached_nfft;
-
     int nbins = nfft / 2 + 1;
-    if (cached_nfft != nfft) {
-        free(cfg); free(in); free(spec); free(mag);
-        cfg = NULL; in = NULL; spec = NULL; mag = NULL; cached_nfft = 0;
-        cfg  = kiss_fftr_alloc(nfft, 0, NULL, NULL);
-        in   = (kiss_fft_scalar *)malloc((size_t)nfft * sizeof(kiss_fft_scalar));
-        spec = (kiss_fft_cpx *)malloc((size_t)nbins * sizeof(kiss_fft_cpx));
-        mag  = (float *)malloc((size_t)nbins * sizeof(float));
-        if (!cfg || !in || !spec || !mag) {
-            free(cfg); free(in); free(spec); free(mag);
-            cfg = NULL; in = NULL; spec = NULL; mag = NULL;
+    if (s_cand_cached_nfft != nfft) {
+        free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
+        s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
+        s_cand_cached_nfft = 0;
+        s_cand_cfg  = kiss_fftr_alloc(nfft, 0, NULL, NULL);
+        s_cand_in   = (kiss_fft_scalar *)wspr_big_alloc((size_t)nfft * sizeof(kiss_fft_scalar));
+        s_cand_spec = (kiss_fft_cpx *)wspr_big_alloc((size_t)nbins * sizeof(kiss_fft_cpx));
+        s_cand_mag  = (float *)wspr_big_alloc((size_t)nbins * sizeof(float));
+        if (!s_cand_cfg || !s_cand_in || !s_cand_spec || !s_cand_mag) {
+            free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
+            s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
             return WSPR_CANDS_NOMEM;
         }
-        cached_nfft = nfft;
+        s_cand_cached_nfft = nfft;
     }
-    memset(mag, 0, (size_t)nbins * sizeof(float));
+    memset(s_cand_mag, 0, (size_t)nbins * sizeof(float));
 
     /* 50 % overlap: every sample outside the first and last half-window is
      * covered twice, so a transmission straddling a window boundary is not
@@ -167,10 +181,10 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
     int nwin = 0;
     for (long off = 0; off + nfft <= n; off += step) {
         for (int i = 0; i < nfft; i++)
-            in[i] = (kiss_fft_scalar)(samples[off + i] / 32768.0);
-        kiss_fftr(cfg, in, spec);
+            s_cand_in[i] = (kiss_fft_scalar)(samples[off + i] / 32768.0);
+        kiss_fftr(s_cand_cfg, s_cand_in, s_cand_spec);
         for (int b = 0; b < nbins; b++)
-            mag[b] += spec[b].r * spec[b].r + spec[b].i * spec[b].i;
+            s_cand_mag[b] += s_cand_spec[b].r * s_cand_spec[b].r + s_cand_spec[b].i * s_cand_spec[b].i;
         nwin++;
     }
     if (nwin == 0) return 0;   /* scratch is cached - see above */
@@ -189,7 +203,7 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
             double s = 0;
             for (int k = 0; k < 4; k++) {
                 int bb = b + k * tone_step_bins;
-                if (bb < nbins) s += mag[bb];
+                if (bb < nbins) s += s_cand_mag[bb];
             }
             score[b - lo_bin] = (float)s;
         }
@@ -240,6 +254,28 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
     /* The scratch is CACHED, not owned by this call - see the note at the top.
      * Freeing it here is what made every cycle re-claim 2.3 MB. */
     return count;
+}
+
+/* ⛔ WHY THIS EXISTS, ON TOP OF THE "DON'T FREE IT HERE" NOTE ABOVE. This
+ * scratch (~2.3 MB) and build_stage1()'s stage-1 scratch (~1.44 MB,
+ * wspr_decode.c, also now grow-only-cached) are NEVER needed at the same
+ * moment within a cycle - this one only during wspr_find_candidates()
+ * itself, the other only afterwards, once per candidate. Caching BOTH
+ * permanently needs ~3.74 MB held at once; Gyula HA3HZ's bench measured only
+ * ~2-4 MB free at WSPR entry on top of the page's own ~9.7 MB capture/decode
+ * ping-pong (the 2026-09-19 note above has the fuller arithmetic). That
+ * doesn't fit, so stage-1 never got its memory for the rest of the session.
+ *
+ * The caller (wspr_rx.c) frees this one right after reading the candidate
+ * list for a cycle, before the per-candidate decode loop - so at most one of
+ * the two big buffers is ever resident, and wspr_find_candidates() pays one
+ * cached_nfft-keyed realloc on the NEXT cycle, same cost class as before
+ * this existed (once per cycle, not once per candidate). */
+void wspr_find_candidates_release_scratch(void)
+{
+    free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
+    s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
+    s_cand_cached_nfft = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -433,6 +469,7 @@ static void build_lpf(void)
  * The pointer/length check is only a backstop for a different buffer. */
 static float               *s_s1i, *s_s1q;
 static long                 s_s1n;
+static long                 s_s1_cap;   /* allocated capacity, grow-only - see below */
 static const int16_t       *s_s1_src;
 static long                 s_s1_srcn;
 static uint32_t             s_s1_sig;
@@ -464,11 +501,25 @@ static uint32_t capture_signature(const int16_t *x, long n)
     return h;
 }
 
+/* ⛔ INVALIDATES THE CACHE, DOES NOT FREE THE BUFFERS. It used to free them,
+ * which forced the ~700 KB s_s1i/s_s1q pair through a fresh PSRAM
+ * malloc/free every single capture and subtraction pass. Gyula HA3HZ,
+ * 2026-11-03: WSPR stopped decoding for the rest of a session once PSRAM
+ * fragmented enough that the request could never again find one contiguous
+ * 720000 B block, even with >4 MB free overall. build_stage1() below now
+ * keeps the allocation and only grows it (s_s1_cap), so steady state is
+ * zero alloc/free churn for this buffer instead of one pair per cycle. */
 void wspr_decode_capture_changed(void)
+{
+    s_s1n = 0; s_s1_src = NULL; s_s1_srcn = 0; s_s1_sig = 0;
+}
+
+void wspr_decode_free_scratch(void)
 {
     free(s_s1i); free(s_s1q);
     s_s1i = s_s1q = NULL;
-    s_s1n = 0; s_s1_src = NULL; s_s1_srcn = 0; s_s1_sig = 0;
+    s_s1_cap = 0;
+    wspr_decode_capture_changed();
 }
 
 static int build_stage1(const int16_t *samples, long n)
@@ -479,9 +530,16 @@ static int build_stage1(const int16_t *samples, long n)
 
     const long out_n = n / S1_DECIM;
     if (out_n <= 0) return 0;
-    s_s1i = (float *)malloc((size_t)out_n * sizeof(float));
-    s_s1q = (float *)malloc((size_t)out_n * sizeof(float));
-    if (!s_s1i || !s_s1q) { wspr_decode_capture_changed(); return 0; }
+    if (out_n > s_s1_cap) {
+        free(s_s1i); free(s_s1q);
+        s_s1i = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
+        s_s1q = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
+        if (!s_s1i || !s_s1q) {
+            free(s_s1i); free(s_s1q); s_s1i = s_s1q = NULL; s_s1_cap = 0;
+            return 0;
+        }
+        s_s1_cap = out_n;
+    }
 
     build_lpf();
 
@@ -552,8 +610,8 @@ static int mix_decimate(const int16_t *samples, long n, double f0, baseband_t *b
 
     const long out_n = s_s1n / S2_DECIM;
     if (out_n <= 0) return 0;
-    bb->i = (float *)malloc((size_t)out_n * sizeof(float));
-    bb->q = (float *)malloc((size_t)out_n * sizeof(float));
+    bb->i = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
+    bb->q = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
     if (!bb->i || !bb->q) { free_baseband(bb); return 0; }
     bb->n = out_n;
 

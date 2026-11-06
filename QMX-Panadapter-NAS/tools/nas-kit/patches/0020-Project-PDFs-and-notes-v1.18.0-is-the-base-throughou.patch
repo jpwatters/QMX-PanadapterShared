@@ -1,4 +1,4 @@
-From c3b03c8d929a36427ee9136f0daa246db4c64d9b Mon Sep 17 00:00:00 2001
+From 6713fb436606add676510ecd69556222ce987231 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 22:12:27 -0500
 Subject: [PATCH 20/42] Project PDFs and notes: v1.18.0 is the base throughout
@@ -31648,7 +31648,7 @@ z^!1gfTsGJ5Pmg?ezY^W+_4Um^Pv`4?C3^e+TmLyr%w)cvujS+Q=fn{bj-mSH^Oaiq
 G*Z%{U8fydq
 
 diff --git a/README.md b/README.md
-index 435e5c06..57df6d0d 100644
+index f28299e4..0f7b5041 100644
 --- a/README.md
 +++ b/README.md
 @@ -38,7 +38,7 @@ Keeping up with upstream

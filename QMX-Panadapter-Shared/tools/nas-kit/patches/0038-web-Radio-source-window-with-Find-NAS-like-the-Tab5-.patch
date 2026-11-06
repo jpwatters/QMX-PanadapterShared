@@ -1,4 +1,4 @@
-From 06b06a19867619d4dcf859876cc3a79c51d18400 Mon Sep 17 00:00:00 2001
+From 4432f50ee35503098a5d5bd84998ab4cf342dea7 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
 Subject: [PATCH 38/42] web: Radio source window with Find NAS, like the Tab5's
@@ -30,10 +30,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  3 files changed, 174 insertions(+), 15 deletions(-)
 
 diff --git a/README.md b/README.md
-index 8f689773..b291f9d9 100644
+index f7e10a36..33d18791 100644
 --- a/README.md
 +++ b/README.md
-@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-che
+@@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-11-05, to upstream v1.24.2 (compile-che
  
  **On the Tab5**
  * Radio source in the drawer: shows USB or NAS and whether it’s connected, with Find NAS, Use NAS and Use USB buttons. The last NAS address is remembered. Tested.
@@ -136,7 +136,7 @@ index d4d2f26a..a7545496 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index a097913e..3218f308 100644
+index 83deb586..feb7cc4e 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -1870,6 +1870,33 @@
@@ -173,7 +173,7 @@ index a097913e..3218f308 100644
    <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
      <!-- max-height + an inner scroll box: with 32 slots the card ran off the
           bottom of the window and the last rows could not be reached at all. -->
-@@ -7880,27 +7907,84 @@ function paintPaused(on) {
+@@ -7881,27 +7908,84 @@ function paintPaused(on) {
  }
  /* Network radio - the QMX plugged into a NAS, reached over TCP through
     tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */

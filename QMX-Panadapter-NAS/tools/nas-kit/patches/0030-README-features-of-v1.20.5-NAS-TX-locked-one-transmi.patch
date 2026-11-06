@@ -1,4 +1,4 @@
-From b58294c3ccdab06316f21285b16e9d2e1172b473 Mon Sep 17 00:00:00 2001
+From 21706c1b6386c1d6d28a93b5136fc577b657b476 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 23 Oct 2026 21:00:00 -0500
 Subject: [PATCH 30/42] README: features of v1.20.5-NAS - TX locked, one
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 10 insertions(+), 3 deletions(-)
 
 diff --git a/README.md b/README.md
-index 4e0f0e17..99806b3f 100644
+index 3513676b..20d5b543 100644
 --- a/README.md
 +++ b/README.md
 @@ -12,7 +12,10 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -22,7 +22,7 @@ index 4e0f0e17..99806b3f 100644
 +6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
 +7. An update kit that rebuilds all of this on each new upstream release
 +
-+The NAS patches were last ported on 2026-11-04, to upstream v1.24.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.24.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
++The NAS patches were last ported on 2026-11-05, to upstream v1.24.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.24.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
  
  **Sharing the radio over the network**
  * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.

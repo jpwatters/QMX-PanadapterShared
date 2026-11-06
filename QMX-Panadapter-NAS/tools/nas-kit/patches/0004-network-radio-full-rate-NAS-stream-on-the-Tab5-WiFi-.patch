@@ -1,4 +1,4 @@
-From ece1894c9488257ac6f6b30f709482624bc79296 Mon Sep 17 00:00:00 2001
+From 99c14a94004de0e3c3c70e3b47a56bc2b4f0e8fb Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
 Subject: [PATCH 04/42] network-radio: full-rate NAS stream on the Tab5 - WiFi
@@ -52,10 +52,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  tools/nas-relay/check.sh                      |  15 +-
  tools/nas-relay/qmx_nas_relay.py              |  65 +++--
  .../patches/apply_cdc_acm_close_tolerant.ps1  |  19 +-
- .../apply_esp_hosted_sdio_rx_copy_psram.ps1   |  98 +++++++
+ .../apply_esp_hosted_sdio_rx_copy_psram.ps1   | 132 +++++++++
  .../apply_esp_hosted_sdio_split_bundles.ps1   | 274 ++++++++++++++++++
  .../apply_httpd_ws_dead_socket_close.ps1      |   6 +
- 13 files changed, 650 insertions(+), 28 deletions(-)
+ 13 files changed, 684 insertions(+), 28 deletions(-)
  create mode 100644 tools/mac-build-flash.sh
  create mode 100755 tools/mac-capture-serial.sh
  create mode 100644 tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
@@ -177,7 +177,7 @@ index 95d5a4e4..1a1fac07 100644
  CONFIG_TCP_OVERSIZE_MSS=y
  # CONFIG_TCP_OVERSIZE_QUARTER_MSS is not set
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 2827dd5e..39de684e 100644
+index 2f2b12c1..3b0c6e44 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -85,6 +85,22 @@ PATCHES = [
@@ -563,10 +563,10 @@ index 089f5d5d..da326914 100644
  
 diff --git a/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1 b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
 new file mode 100644
-index 00000000..0f4f60f5
+index 00000000..e43122e5
 --- /dev/null
 +++ b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,132 @@
 +<#
 +.SYNOPSIS
 +    esp_hosted SDIO RX: copy each received WiFi frame into PSRAM instead of
@@ -613,6 +613,21 @@ index 00000000..0f4f60f5
 +$content = (Get-Content -Raw -Path $target) -replace "`r`n", "`n"
 +
 +if ($content.Contains("QMX_SDIO_RX_COPY_PSRAM")) {
++    if (-not $content.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
++        # Patched by an older copy of this script, before upstream's v1.24.2
++        # copypayload patch existed: the code already drops the frame on a
++        # failed allocation, so only the marker check_patches looks for is added.
++        $head = "/* QMX_SDIO_RX_COPY_PSRAM (qmx-panadapter network-radio, 2026-10-04)."
++        $note = $head + "`n`t`t`t`t *`n`t`t`t`t * Also QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT: this block already drops the`n`t`t`t`t * frame when the payload copy cannot be allocated (upstream's T152)."
++        if (([regex]::Matches($content, [regex]::Escape($head))).Count -ne 1) {
++            Write-Host "QMX_SDIO_RX_COPY_PSRAM block not recognised - patch by hand." -ForegroundColor Red
++            exit 1
++        }
++        $content = $content.Replace($head, $note)
++        [System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
++        Write-Host "Already patched (SDIO RX copy in PSRAM); added the copypayload marker it also satisfies." -ForegroundColor Green
++        exit 0
++    }
 +    Write-Host "Already patched (SDIO RX copy in PSRAM) - nothing to do." -ForegroundColor Green
 +    exit 0
 +}
@@ -627,6 +642,12 @@ index 00000000..0f4f60f5
 +'@
 +$new = @'
 +				/* QMX_SDIO_RX_COPY_PSRAM (qmx-panadapter network-radio, 2026-10-04).
++				 *
++				 * Also QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT: upstream's
++				 * apply_esp_hosted_sdio_copypayload_tolerant.ps1 (v1.24.2, T152)
++				 * patches this same allocation to drop the frame instead of
++				 * asserting. The code below already does that, so it carries
++				 * that patch's marker too and either script may run first.
 +				 *
 +				 * Every received WiFi frame is copied into a fresh buffer that
 +				 * lwIP holds (zero-copy, L2_TO_L3_COPY off) until TCP has
@@ -656,11 +677,24 @@ index 00000000..0f4f60f5
 +$old = $old -replace "`r`n", "`n"
 +$new = $new -replace "`r`n", "`n"
 +$n = ([regex]::Matches($content, [regex]::Escape($old))).Count
-+if ($n -ne 1) {
-+    Write-Host "Anchor found $n times (expected 1) - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red
-+    exit 1
++if ($n -eq 1) {
++    $content = $content.Replace($old, $new)
++} else {
++    # Upstream's apply_esp_hosted_sdio_copypayload_tolerant.ps1 (v1.24.2) runs
++    # first (alphabetical order) and replaces the assert with a drop-the-frame
++    # branch. Replace that whole block - from the TODO comment to the memcpy -
++    # with ours, which does the same and also moves the copy to PSRAM.
++    $rx = [regex]'(?s)	+/\* TODO : Need to abstract heap_caps_malloc \*/
++	+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);
++.*?	+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);
++'
++    $m = $rx.Matches($content)
++    if ($m.Count -ne 1 -or -not $m[0].Value.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
++        Write-Host "Anchor found $n times (expected 1), and no copypayload-patched block either - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red
++        exit 1
++    }
++    $content = $content.Substring(0, $m[0].Index) + $new + "`n" + $content.Substring($m[0].Index + $m[0].Length)
 +}
-+$content = $content.Replace($old, $new)
 +
 +[System.IO.File]::WriteAllText($target, $content, (New-Object System.Text.UTF8Encoding $false))
 +Write-Host "Patched sdio_drv.c: received WiFi frames are copied into PSRAM, not internal RAM." -ForegroundColor Green

@@ -1,4 +1,4 @@
-From a0aa7815da3cefc9457a9eaf5255d2ec44214cca Mon Sep 17 00:00:00 2001
+From 1e9881642f461b6375f92ab58141d7f4d2f5c06a Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 23:43:24 +0000
 Subject: [PATCH 12/42] patches: apply_fatfs_dma_aligned_alloc.ps1 matches on

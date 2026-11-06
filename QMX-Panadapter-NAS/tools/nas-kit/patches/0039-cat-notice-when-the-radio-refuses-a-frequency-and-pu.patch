@@ -1,4 +1,4 @@
-From 70878b0649c6ce942973d417070068c09d38fcdb Mon Sep 17 00:00:00 2001
+From 4920aee7c6fd764ef00f5947b92e3e32e1770858 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
 Subject: [PATCH 39/42] cat: notice when the radio refuses a frequency, and put
@@ -32,7 +32,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 41 insertions(+)
 
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index 6a464632..8eaf49ba 100644
+index f5212350..1acd9c15 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
 @@ -179,6 +179,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
@@ -47,7 +47,7 @@ index 6a464632..8eaf49ba 100644
  static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
  static int  s_cw_offset_hz = 700;   // CW LO offset read from QMX at connect, default 700
  // Which VFO the radio RECEIVES on, from "FR;": 0 = VFO A, 1 = VFO B, 2 = Split.
-@@ -1205,6 +1210,36 @@ static void process_cat_message(const char *msg, size_t len)
+@@ -1228,6 +1233,36 @@ static void process_cat_message(const char *msg, size_t len)
              }
              freq_hz = freq_hz * 10 + (d - '0');
          }
@@ -84,7 +84,7 @@ index 6a464632..8eaf49ba 100644
          if (freq_hz != s_last_freq_hz) {
              s_last_freq_hz = freq_hz;
              ESP_LOGI(TAG, "Freq = %lu Hz (%lu.%03lu MHz)",
-@@ -3797,6 +3832,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
+@@ -3938,6 +3973,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
          return err;
      }
      ESP_LOGI(TAG, "Sent: %s (target %lu Hz)", cmd, (unsigned long)freq_hz);
