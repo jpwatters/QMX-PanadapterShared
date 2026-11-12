@@ -1,4 +1,4 @@
-From d30dbf8340ebf2f8bc99bc0319b82bad316a6b34 Mon Sep 17 00:00:00 2001
+From cabbe923ca7d5a9a175c72ccdf9ebeaeb390be6f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 12 Nov 2026 08:15:24 -0600
 Subject: [PATCH 43/43] README: what each upstream release changed for the NAS
@@ -19,7 +19,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 18 insertions(+)
 
 diff --git a/README.md b/README.md
-index b6974abd..be9b2679 100644
+index b6974abd..c8a35c04 100644
 --- a/README.md
 +++ b/README.md
 @@ -8,6 +8,21 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
@@ -28,7 +28,7 @@ index b6974abd..be9b2679 100644
  
 +**Keeping up with upstream: what each release changed**
 +
-+Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. Section 9 of the project PDF has the details.
++Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](M5StackTab5QMX+SharedOverNetwork.pdf#page=12) has the details.
 +
 +| Release (ported) | What stopped the patches | How it was resolved |
 +|---|---|---|
