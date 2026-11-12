@@ -10,7 +10,7 @@ $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen
 
 **Keeping up with upstream: what each release changed**
 
-Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](QMX-Panadapter-NAS/M5StackTab5QMX+SharedOverNetwork.pdf#page=12) has the details.
+Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](QMX-Panadapter-NAS/docs/nas/keeping-up-with-upstream.md) has the details (the same text as in the [project PDF](QMX-Panadapter-NAS/M5StackTab5QMX+SharedOverNetwork.pdf), page 12).
 
 | Release (ported) | What stopped the patches | How it was resolved |
 |---|---|---|

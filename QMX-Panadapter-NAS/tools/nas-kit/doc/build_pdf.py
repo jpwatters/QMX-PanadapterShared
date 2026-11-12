@@ -498,7 +498,52 @@ def render(md):
     return story
 
 
+# ------------------------------------------------------------------ section 9 as a GitHub page
+# GitHub cannot open a PDF at a page (its preview ignores #page=, and raw PDFs
+# are served as downloads), so the README links to this Markdown copy of
+# section 9 instead. It is written from the same project.md text on every
+# build, so the two never differ.
+SECTION_MD = os.path.join(REPO, "docs", "nas", "keeping-up-with-upstream.md")
+
+
+def export_section(num, out):
+    src = open(os.path.join(HERE, "project.md"), encoding="utf-8").read().splitlines()
+    body, on, header_done = [], False, False
+    for ln in src:
+        s = ln.rstrip()
+        if s.startswith("# "):
+            if on:
+                break
+            on = s.startswith("# %d. " % num)
+        if not on:
+            continue
+        if s.startswith("|~"):
+            header_done = False
+            continue
+        if s.startswith("|"):
+            cells = [c.strip() for c in s[1:].split("|")]
+            body.append("| " + " | ".join(subst(c) for c in cells) + " |")
+            if not header_done:
+                body.append("|" + "---|" * len(cells))
+                header_done = True
+            continue
+        header_done = False if not s.startswith("|") else header_done
+        if s.startswith("!small "):
+            body.append("*" + subst(s[7:]) + "*")
+        else:
+            body.append(subst(s))
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    head = ("<!-- Written by tools/nas-kit/doc/build_pdf.py from tools/nas-kit/doc/project.md, "
+            "section %d of the project PDF. Edit project.md, not this file. -->\n\n" % num)
+    text = head + "\n".join(body).strip() + "\n\n" + \
+        ("This is section %d of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) "
+         "(%s + NAS patches %s).\n" % (num, BASE, SERIES))
+    open(out, "w", encoding="utf-8").write(text)
+
+
 story = render(os.path.join(HERE, "project.md"))
 doc = Doc(OUT)
 doc.multiBuild(story)
+export_section(9, SECTION_MD)
 print("wrote %s: %d pages, %s + NAS patches %s" % (OUT, doc.page, BASE, SERIES))
+print("wrote %s (section 9 as a GitHub page)" % SECTION_MD)

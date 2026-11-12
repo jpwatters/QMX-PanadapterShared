@@ -1,4 +1,4 @@
-From e2ef2c3cc13fda332b249fcafffea51dc1674250 Mon Sep 17 00:00:00 2001
+From 3f366c8a595b6e272397cffe754dd37818ff22d8 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 08:21:10 -0500
 Subject: [PATCH 42/43] nas-relay: answer Find NAS from the interface the query

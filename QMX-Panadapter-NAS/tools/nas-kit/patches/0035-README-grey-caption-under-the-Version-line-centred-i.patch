@@ -1,4 +1,4 @@
-From 6fd7caf4fe96fc0b2c56cba05cc021684e119427 Mon Sep 17 00:00:00 2001
+From c299e327def174e64221f37c7382bf15395f13ff Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 13:00:00 -0500
 Subject: [PATCH 35/43] README: grey caption under the Version line, centred in

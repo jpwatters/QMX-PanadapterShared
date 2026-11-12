@@ -1,4 +1,4 @@
-From 25fc33e17296caf14a27a9cac66cc0798f43fe76 Mon Sep 17 00:00:00 2001
+From 20e8fce9cd63428f58715bd0dbe8ebb7bc795f7c Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 15:00:00 -0500
 Subject: [PATCH 37/43] README: build steps for a new upstream release

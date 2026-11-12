@@ -1,4 +1,4 @@
-From d3c89316fa50cecb07d58004d04244d95076b658 Mon Sep 17 00:00:00 2001
+From 43018d0d558049f6278ee6c9ee17d9f7c45bd5ff Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/43] Ethernet through the M5Stack W5500 PoE base, alongside
