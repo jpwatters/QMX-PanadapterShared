@@ -1,4 +1,4 @@
-From 4b273dd5eb95e55198f848144e3c4b3d16b8c176 Mon Sep 17 00:00:00 2001
+From d30dbf8340ebf2f8bc99bc0319b82bad316a6b34 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 12 Nov 2026 08:15:24 -0600
 Subject: [PATCH 43/43] README: what each upstream release changed for the NAS
@@ -15,19 +15,18 @@ the folder.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 16 ++++++++++++++++
- 1 file changed, 16 insertions(+)
+ README.md | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
 
 diff --git a/README.md b/README.md
-index b6974abd..d425f4eb 100644
+index b6974abd..be9b2679 100644
 --- a/README.md
 +++ b/README.md
-@@ -149,6 +149,21 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
- * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+@@ -8,6 +8,21 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
  
- Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
-+
-+**What each upstream release changed for the NAS patches**
+ $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
+ 
++**Keeping up with upstream: what each release changed**
 +
 +Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. Section 9 of the project PDF has the details.
 +
@@ -41,10 +40,20 @@ index b6974abd..d425f4eb 100644
 +| v1.24.1 (2026-11-04) | Bits 152-156; settings saved through a pointer; drawer sections 54-55; DX cluster, PSK and RBN code rewritten; a new MP3 component | Bit 157 with the new pointer form; section 56; the rewritten code keeps "Ethernet or Wi-Fi" |
 +| v1.24.2 (2026-11-05) | Bits 157-158; drawer section 56; upstream’s new Wi-Fi driver patch edits the same spot as a NAS patch | Bit 159; section 57; the NAS patch accepts either order and carries upstream’s marker |
 +| v1.26.1 (2026-11-12) | Bit 159 taken: the settings table was full; new web Radio menu rows; DX cluster and RBN files removed | Settings table enlarged to 192 bits, relay setting bit 160; Radio source kept in the menu; nothing to carry for the removed files |
++
+ <p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
+ 
+ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
+@@ -149,6 +164,8 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
+ * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+ 
+ Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
++
++What each upstream release changed for the NAS patches, and how each was resolved, is in **Keeping up with upstream: what each release changed** near the top of this page.
  ________________________________________________________________________________________________________________________________________________
  
  These commands build a new version whenever Steffen publishes a new upstream release:
-@@ -214,6 +229,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
+@@ -214,6 +231,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
  **Documentation**
  * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
  * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
