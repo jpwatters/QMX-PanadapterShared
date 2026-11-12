@@ -67,6 +67,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "hid_cursor.h"
 #include "util/hid_rotate.h"
 #include "util/wf_shift.h"
+#include "src/widgets/image/lv_image_private.h"   /* img->offset: the CW carpet shift, see ui_push_waterfall_row */
 #include "util/qmx_prompt_gate.h"   // WHEN the "turn on your QMX" prompt may appear
 #include "memory_modal.h"
 #include "identity_config.h"
@@ -3123,6 +3124,45 @@ static lv_obj_t *s_bot_center_suffix = NULL;
 static lv_coord_t s_bot_clock_x0 = -1, s_bot_clock_x1 = -1;
 static ui_clock_t s_bot_clock;
 static bool       s_bot_clock_valid = false;
+
+/* The bottom-bar seconds are painted HERE, from an LVGL timer, and nowhere
+ * else. This runs inside lv_timer_handler(), which already holds the display
+ * lock, so it can never miss a second waiting for it.
+ *
+ * ⛔ Until 2026-11-11 the status task pushed h/m/s through ui_set_bottom_clock()
+ * behind display_lock(20), and DROPPED the second whenever the wait timed out.
+ * Measured on the 7B (status-loop stall log, 3fa58359): the loop was on time
+ * (gap 1.13-1.18 s, RSSI RPC 36-50 ms) but LVGL drew 57 ms of every 75 ms frame
+ * on the CW page, so 3-9 waits in a row timed out and the seconds froze for up
+ * to 11.6 s, then jumped. Panadapter page, 22 ms draws: still one 4.6 s stall
+ * in 30 s. Waiting longer would only move the problem; reading the clock where
+ * the lock is already held removes it. The suffix (time source) still comes
+ * from status.c, which owns that decision - see ui_set_bottom_clock_suffix(). */
+static void bot_clock_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    static time_t shown = (time_t)-1;
+    time_t now = time(NULL);
+    if (now == shown) return;
+    struct tm tm_utc;
+    gmtime_r(&now, &tm_utc);
+    if (tm_utc.tm_year > 100) {          // sane only after a sync (year > 2000)
+        /* A jump means LVGL itself did not run for that long - which is the
+         * display stalling, not the clock. Logged so it cannot hide again.
+         * ⚠ A time STEP reads the same: the 7B logged "22 s between painted
+         * seconds" at the same millisecond as "Time set from SNTP" (boot,
+         * 2026-11-11). Check for a time_sync line before calling it a stall. */
+        if (shown != (time_t)-1 && now - shown > 2 && now - shown < 3600)
+            ESP_LOGW(TAG, "bottom clock: %ld s between painted seconds",
+                     (long)(now - shown));
+        ui_clock_set_time(&s_bot_clock, tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
+    } else {
+        static const int dash[] = { 0, 1, 3, 4, 6, 7 };
+        for (size_t i = 0; i < sizeof(dash) / sizeof(dash[0]); i++)
+            lv_label_set_text(s_bot_clock.cells[dash[i]], "-");
+    }
+    shown = now;
+}
 static lv_obj_t *s_bot_bt = NULL;        // Bluetooth glyph, left of the WiFi fan
 static lv_obj_t *s_bot_wifi_ssid = NULL;
 static ui_wifi_fan_t s_bot_wifi_fan;
@@ -4626,6 +4666,7 @@ static void drawer_db_sliders_set_live(bool live)
 
 void ui_set_flat_mode(bool on);
 static void drawer_apply_preset(int db_min, int db_max, float alpha);
+static void db_band_restore_cb(lv_timer_t *t);   /* T195 */
 static void drawer_build(void);
 void ui_open_user_manual(void);
 // User Manual button: a short tap opens the Reader; holding >= 3 s resets the
@@ -4677,6 +4718,9 @@ static void iq_balance_toggle_cb(lv_event_t *e);
 // Phase 5.5: static defaults -- manual Ref/Range, user-controlled later
 // (internal arbitrary dB scale; ~80=noise floor, ~125=strong signal on test rig)
 static float DB_MIN_DISPLAY = -130.0f;  /* dBm, calibrated scale */
+/* T195: centre of the band whose stored dB range db_band_restore_cb() has
+ * still to apply; 0 = nothing pending. Written by the CAT task, read by LVGL. */
+static volatile uint32_t s_db_restore_center = 0;
 static float DB_MAX_DISPLAY = -30.0f;  /* dBm, headroom for S9+40 */
 
 // Forward decl so build_spectrum can call this
@@ -5118,7 +5162,18 @@ void ui_set_iq_mode_warning(bool active)
 static void iq_warn_banner_keepalive_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_iq_warn_active || !s_iq_warn_banner) return;
+    if (!s_iq_warn_banner) return;
+    /* Apply the state here too, in LVGL context with the lock already held.
+     * ui_set_iq_mode_warning() is called ONCE (cat.c, after the IQ-mode probe)
+     * behind a 20 ms lock wait, and a timed-out wait used to leave the banner
+     * hidden for the whole session - the same dropped-update class as the
+     * bottom-bar clock (2026-11-11). */
+    bool hidden = lv_obj_has_flag(s_iq_warn_banner, LV_OBJ_FLAG_HIDDEN);
+    if (!s_iq_warn_active) {
+        if (!hidden) lv_obj_add_flag(s_iq_warn_banner, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (hidden) lv_obj_clear_flag(s_iq_warn_banner, LV_OBJ_FLAG_HIDDEN);
     if (reader_view_is_active()) return;   // don't draw over the docs Reader
     lv_obj_move_foreground(s_iq_warn_banner);
 }
@@ -5360,12 +5415,16 @@ static unsigned  s_cw_seen;          /* change detector - repaint only on new te
  * two labels quietly overlapping on screen. */
 _Static_assert(sizeof("CW ~08wpm:") - 1 + 2 == CW_PREFIX_COLS,
                "CW_PREFIX_COLS must match CW_PREFIX_FMT rendered with two digits");
-/* CW_LINE_COLS comes from cw_decode.h now: the browser draws the same line, so
- * the grid it wraps on cannot live in the Tab5's UI file. 71 columns is what is
- * left of 84 after this header - 72 since the header lost its space. */
-_Static_assert(84 - CW_PREFIX_COLS == CW_LINE_COLS,
-               "the Tab5 header and cw_decode's line width must still add up");
 #define CW_COL_PX       15
+/* CW_LINE_COLS comes from cw_decode.h now: the browser draws the same line, so
+ * the grid it wraps on cannot live in the Tab5's UI file.
+ *
+ * ⛔ The line must END LEFT OF THE WATERMARK (operator, 2026-11-12). The full
+ * 84 columns (prefix 12 + line 72) ran to x 1264, through "Stef OZ1LAV" at
+ * x 1251. 70 columns end at x 1234. The strip starts 4 px in (cw_strip_init). */
+_Static_assert(4 + (CW_PREFIX_COLS + CW_LINE_COLS) * CW_COL_PX + UI_WATERMARK_GAP
+                   <= UI_WATERMARK_X,
+               "the panadapter CW line runs into the operator watermark");
 /* Half a line of clear air above the band-plan strip, so the text is not
  * sitting on the bar below it (operator). */
 #define CW_LIFT_PX      15
@@ -6303,6 +6362,7 @@ static void build_top_bar(lv_obj_t *parent)
             lv_obj_set_style_border_width(t, 0, 0);
             lv_obj_set_style_radius(t, 0, 0);
             lv_obj_clear_flag(t, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(t, LV_OBJ_FLAG_CLICKABLE);   /* see the bar below */
         }
 
         /* ⭐ THE S-METER IS THE AUDIO PANEL'S "HOT AREA" (Samuel W7STF).
@@ -6324,6 +6384,13 @@ static void build_top_bar(lv_obj_t *parent)
 
         // Moving level bar underneath the scale (half the original height).
         s_smeter_bar = lv_bar_create(smeter_cont);
+        /* ⛔ NOT CLICKABLE. lv_bar and lv_obj are clickable by default, and
+         * LVGL hit-tests the topmost clickable child - so a tap ON the bar or
+         * a tick mark was consumed there and never reached smeter_cont's
+         * handler. Only the overhang right of the bar opened the panel
+         * (operator on the Waveshare port, 2026-11-11: "only open when i tap
+         * the right side"). Verified there after the fix. */
+        lv_obj_clear_flag(s_smeter_bar, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_size(s_smeter_bar, smeter_w, 11);
         lv_obj_set_pos(s_smeter_bar, smeter_off, 34);
         lv_bar_set_range(s_smeter_bar, 0, 68);
@@ -7760,6 +7827,11 @@ static void build_bottom_bar(lv_obj_t *parent)
 
         ui_clock_init(&s_bot_clock, bar, x0, 0, font, lv_color_hex(UI_COLOR_TEXT_SECONDARY), cell_w);
         s_bot_clock_valid = true;
+        /* 100 ms: a new second is painted within one tick of the RTC rolling
+         * over. The callback early-outs on an unchanged second, so the cost is
+         * one time() call per tick. */
+        lv_timer_create(bot_clock_tick_cb, 100, NULL);
+        lv_timer_create(db_band_restore_cb, 200, NULL);   /* T195 */
 
         // The WiFi zone lays itself out from the right edge leftward and must
         // stop here: the clock is CENTRED and stays centred, so it's the SSID
@@ -7768,7 +7840,7 @@ static void build_bottom_bar(lv_obj_t *parent)
         s_bot_wifi_min_x = x0 + clock_w + suffix_w + 24;
 
         s_bot_center_suffix = lv_label_create(bar);
-        lv_label_set_text(s_bot_center_suffix, " UTC");  // updated each second by status_task
+        lv_label_set_text(s_bot_center_suffix, " UTC");  // set by status_task via ui_set_bottom_clock_suffix()
         lv_obj_set_style_text_color(s_bot_center_suffix, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
         lv_obj_set_style_text_font(s_bot_center_suffix, font, 0);
         lv_obj_align(s_bot_center_suffix, LV_ALIGN_LEFT_MID, x0 + clock_w, 0);
@@ -7965,8 +8037,16 @@ static void build_signature(lv_obj_t *scr)
     lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(img, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_coord_t margin = 4;
-    lv_obj_set_pos(img, DISPLAY_H_RES - margin - g_watermark_img.header.w,
+    /* UI_WATERMARK_X (ui.h), not the image's own width: the CW decode grids
+     * are static-asserted clear of that x, so the two must be one number. */
+    if (g_watermark_img.header.w != UI_WATERMARK_W) {
+        ESP_LOGE(TAG, "watermark is %u px wide, UI_WATERMARK_W says %d - the "
+                 "CW grids are sized from the constant",
+                 (unsigned)g_watermark_img.header.w, UI_WATERMARK_W);
+    }
+    _Static_assert(UI_WATERMARK_X == DISPLAY_H_RES - UI_WATERMARK_MARGIN - UI_WATERMARK_W,
+                   "UI_WATERMARK_X assumes a 1280 px wide display");
+    lv_obj_set_pos(img, UI_WATERMARK_X,
                    DISPLAY_V_RES - 75 - g_watermark_img.header.h);
     s_signature_img = img;
 }
@@ -10080,6 +10160,18 @@ void ui_update_frequency(uint32_t freq_hz)
                 settings_band_mem_set(bands[s_last_band_idx].center_hz, s_band_last_hz[s_last_band_idx],
                                       (pan && band_mem_mode_ok(s_current_mode)) ? s_current_mode : NULL);
             }
+            /* T195: the dB range goes with the band. The band being LEFT keeps
+             * the range on screen now; the band entered gets its own back, in
+             * db_band_restore_cb() - an LVGL timer, because this runs on the
+             * CAT task and the drawer sliders are LVGL objects.
+             * ⚠ Not stored while that band's own restore is still pending:
+             * the screen would still show the PREVIOUS band's range, and
+             * storing it would overwrite this band's with it. */
+            if (s_last_band_idx >= 0 && s_last_band_idx < band_count &&
+                s_db_restore_center != bands[s_last_band_idx].center_hz)
+                settings_band_db_set(bands[s_last_band_idx].center_hz,
+                                     (int)lroundf(DB_MIN_DISPLAY), (int)lroundf(DB_MAX_DISPLAY));
+            s_db_restore_center = (current_band_idx >= 0) ? bands[current_band_idx].center_hz : 0;
             s_band_change_us = esp_timer_get_time();
         }
         if (current_band_idx >= 0) s_band_last_hz[current_band_idx] = freq_hz;
@@ -13304,7 +13396,19 @@ void ui_push_waterfall_row(const uint8_t *rgb565_row)
     if (shift_now) {
         s_wf_pending_rows = 0;
         s_wf_shifts++;
-        lv_image_set_offset_y(s_wf_canvas, -(int32_t)s_wf_head);
+        lv_area_t vis[2];
+        if (cw_screen_view_carpet_visible(vis)) {
+            /* CW page: lv_image_set_offset_y() would invalidate the WHOLE
+             * carpet, and the pane + ticker on top were redrawn with it on
+             * every shift - 57-62 ms frames against 16 ms with only the
+             * visible carpet invalidated (measured, see
+             * cw_screen_view_carpet_visible). Same field the setter writes. */
+            ((lv_image_t *)s_wf_canvas)->offset.y = -(int32_t)s_wf_head;
+            lv_obj_invalidate_area(s_wf_canvas, &vis[0]);
+            lv_obj_invalidate_area(s_wf_canvas, &vis[1]);
+        } else {
+            lv_image_set_offset_y(s_wf_canvas, -(int32_t)s_wf_head);
+        }
     }
 
     // FT8-sync-vs-SNTP-only slot-boundary overlay - panadapter-mode-only
@@ -13745,24 +13849,18 @@ void ui_set_update_line_pulsing(const char *text, uint32_t colour)
 }
 
 
-void ui_set_bottom_clock(int h, int m, int s, bool valid, const char *suffix)
+/* Time-source suffix only (" UTC(NTP)" etc.). The digits are painted by
+ * bot_clock_tick_cb(). A missed lock costs nothing: the suffix changes rarely
+ * and the status task re-sends it every second. Only writes on a change, so
+ * the label is not invalidated once a second for nothing. */
+void ui_set_bottom_clock_suffix(const char *suffix)
 {
-    if (!s_bot_clock_valid) return;
-    if (display_lock(20)) {
-        if (valid) {
-            ui_clock_set_time(&s_bot_clock, h, m, s);
-        } else {
-            lv_label_set_text(s_bot_clock.cells[0], "-");
-            lv_label_set_text(s_bot_clock.cells[1], "-");
-            lv_label_set_text(s_bot_clock.cells[3], "-");
-            lv_label_set_text(s_bot_clock.cells[4], "-");
-            lv_label_set_text(s_bot_clock.cells[6], "-");
-            lv_label_set_text(s_bot_clock.cells[7], "-");
-        }
-        if (s_bot_center_suffix && suffix)
-            lv_label_set_text(s_bot_center_suffix, suffix);
-        display_unlock();
-    }
+    static char shown[24];
+    if (!s_bot_center_suffix || !suffix || strcmp(shown, suffix) == 0) return;
+    if (!display_lock(20)) return;
+    lv_label_set_text(s_bot_center_suffix, suffix);
+    display_unlock();
+    snprintf(shown, sizeof(shown), "%s", suffix);
 }
 
 // Bluetooth state in the bottom bar. Called from the 1 Hz status task, which
@@ -19317,13 +19415,13 @@ static void drawer_set_mode(ui_mode_t mode)
 // and Stan asked why we did not simply do this; there was no good answer.
 // === Phase 5.10D Stage 2b: drawer button + slider callbacks ===
 
-static void drawer_apply_preset(int db_min, int db_max, float alpha)
+/* The dB range on the drawer sliders, their labels, the live scale and the
+ * stored CURRENT range - one place, so a preset and a band restore (T195)
+ * cannot leave one of the four behind. LVGL context only. */
+static void drawer_show_db_range(int db_min, int db_max)
 {
     if (s_slider_db_min) lv_slider_set_value(s_slider_db_min, db_min, LV_ANIM_OFF);
     if (s_slider_db_max) lv_slider_set_value(s_slider_db_max, db_max, LV_ANIM_OFF);
-    /* The slider is SMOOTHING PERCENT; alpha is what the preset carries. */
-    if (s_slider_alpha)  lv_slider_set_value(s_slider_alpha, 100 - (int)(alpha * 100.0f + 0.5f), LV_ANIM_OFF);
-
     char buf[24];
     if (s_lbl_db_min) {
         snprintf(buf, sizeof(buf), "Min: %d dBm", db_min);
@@ -19333,17 +19431,41 @@ static void drawer_apply_preset(int db_min, int db_max, float alpha)
         snprintf(buf, sizeof(buf), "Max: %d dBm", db_max);
         lv_label_set_text(s_lbl_db_max, buf);
     }
+    ui_set_db_range((float)db_min, (float)db_max);
+    settings_set_db_min((float)db_min);
+    settings_set_db_max((float)db_max);
+}
+
+static void drawer_apply_preset(int db_min, int db_max, float alpha)
+{
+    drawer_show_db_range(db_min, db_max);
+    /* The slider is SMOOTHING PERCENT; alpha is what the preset carries. */
+    if (s_slider_alpha)  lv_slider_set_value(s_slider_alpha, 100 - (int)(alpha * 100.0f + 0.5f), LV_ANIM_OFF);
     if (s_lbl_alpha) {
         char smbuf[40];
         smoothing_label(smbuf, sizeof(smbuf), 100 - (int)(alpha * 100.0f + 0.5f));
         lv_label_set_text(s_lbl_alpha, smbuf);
     }
-
-    ui_set_db_range((float)db_min, (float)db_max);
     render_set_ema_alpha(alpha);
-    settings_set_db_min((float)db_min);
-    settings_set_db_max((float)db_max);
     settings_set_ema_alpha(alpha);
+}
+
+/* T195: a band entered gets back the dB range it was left with - see the band
+ * change in ui_update_frequency(). A band never stored keeps the range on
+ * screen, and is stored with it when it is left. Runs inside lv_timer_handler(),
+ * so it holds the display lock and cannot drop the update. */
+static void db_band_restore_cb(lv_timer_t *t)
+{
+    (void)t;
+    uint32_t c = s_db_restore_center;
+    if (!c) return;
+    int mn, mx;
+    bool have = settings_band_db_get(c, &mn, &mx);
+    s_db_restore_center = 0;
+    if (!have || mx - mn < 10) return;
+    if (mn == (int)lroundf(DB_MIN_DISPLAY) && mx == (int)lroundf(DB_MAX_DISPLAY)) return;
+    ESP_LOGI(TAG, "band dB range restored: %lu Hz band -> %d..%d dBm", (unsigned long)c, mn, mx);
+    drawer_show_db_range(mn, mx);
 }
 
 /* Phase 5.12: flat-spectrum mode accessor + drawer callback */

@@ -1,4 +1,4 @@
-From 4fd95d4f7738a7548e6148691ccda2668bb6b11f Mon Sep 17 00:00:00 2001
+From 831d2446abeb2055b01d2a9e1b7ba0cb108acd06 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 10:00:00 -0500
 Subject: [PATCH 32/43] README: how the relay is found, the Python serial port,

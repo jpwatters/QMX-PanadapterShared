@@ -2759,6 +2759,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         if (!cmd || !cmd[0]) {
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"cmd required\"}");
+            cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
             return ESP_OK;
         }
         ft8_screen_view_request_js8_directive(cmd);
@@ -2770,6 +2771,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
          * LVGL tick so it is the same code path as the button. */
         ft8_screen_view_request_js8_flush();
         httpd_resp_sendstr(req, "{\"ok\":true}");
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "js8_submode") == 0) {
         /* {"action":"js8_submode","submode":0|1|2|4} - JS8Call's own NSUBMODE:
@@ -3585,6 +3587,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         cw_decode_clear();
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"ok\":true}");
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "web_audio") == 0) {
         /* Start/stop demodulated audio on the WebSocket (Sam W7STF).
@@ -3612,6 +3615,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                  rx_audio_is_enabled() ? "true" : "false");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, body);
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "rxaudio") == 0) {
         // Live AGC/clip tuning for rx_audio.c - RAM only, not persisted.
@@ -4083,6 +4087,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         char body[64];
         snprintf(body, sizeof(body), "{\"ok\":%s,\"failures\":%d}", bad ? "false" : "true", bad);
         httpd_resp_sendstr(req, body);
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "adif_check_test") == 0) {
         /* Runs the checker's own cases on the device. Here because the bench
@@ -4093,6 +4098,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         snprintf(body, sizeof(body), "{\"ok\":%s,\"failures\":%d}",
                  bad ? "false" : "true", bad);
         httpd_resp_sendstr(req, body);
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "wspr_clear") == 0) {
         /* Clear the WSPR decode list (Samuel W7STF asked for the button; this
@@ -4151,12 +4157,14 @@ static esp_err_t cmd_handler(httpd_req_t *req)
            which is the only moment it is really wanted. Dev action, log only. */
         sock_owners_report("on demand");
         httpd_resp_sendstr(req, "{\"ok\":true,\"note\":\"see the log\"}");
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "stacks") == 0) {
         /* One-shot per-task stack headroom. Dev action, serial/diag log only -
            see task_stacks.h for why it must never go on a periodic path. */
         task_stacks_report();
         httpd_resp_sendstr(req, "{\"ok\":true,\"note\":\"see the log\"}");
+        cJSON_Delete(root);   /* every early return owns root - 2026-11-11 sweep */
         return ESP_OK;
     } else if (action && strcmp(action, "resmon") == 0) {
         // Hidden developer-only toggle for the resource-monitor overlay. No web

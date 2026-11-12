@@ -90,6 +90,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   The version, the change-history table and the code listings come from the
   folder itself; section 9 of `project.md` records what each upstream release
   changed and how the patches were adapted - add a row with each port.
+  The builder also writes section 9 to `docs/nas/keeping-up-with-upstream.md`,
+  which the README links to, because GitHub cannot open a PDF at a page;
+  commit it together with the PDF.
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.

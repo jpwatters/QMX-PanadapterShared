@@ -1,4 +1,4 @@
-From 3253fa6a2bd55ab6326c83d79df4a0ee3a3bb186 Mon Sep 17 00:00:00 2001
+From 59c8a90f6d5f5662dd406d99e75458ec28b77786 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
 Subject: [PATCH 39/43] cat: notice when the radio refuses a frequency, and put

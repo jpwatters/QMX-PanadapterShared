@@ -1,4 +1,4 @@
-From 4b273dd5eb95e55198f848144e3c4b3d16b8c176 Mon Sep 17 00:00:00 2001
+From e43ecacd82660063caaf00c110aaea309d1b02ad Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 12 Nov 2026 08:15:24 -0600
 Subject: [PATCH 43/43] README: what each upstream release changed for the NAS
@@ -15,21 +15,22 @@ the folder.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md | 16 ++++++++++++++++
- 1 file changed, 16 insertions(+)
+ README.md                            | 18 ++++++++++++++++++
+ docs/nas/keeping-up-with-upstream.md | 20 ++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+ create mode 100644 docs/nas/keeping-up-with-upstream.md
 
 diff --git a/README.md b/README.md
-index b6974abd..d425f4eb 100644
+index b6974abd..06ca5288 100644
 --- a/README.md
 +++ b/README.md
-@@ -149,6 +149,21 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
- * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+@@ -8,6 +8,21 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
  
- Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
+ $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
+ 
++**Keeping up with upstream: what each release changed**
 +
-+**What each upstream release changed for the NAS patches**
-+
-+Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. Section 9 of the project PDF has the details.
++Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](docs/nas/keeping-up-with-upstream.md) has the details (the same text as in the [project PDF](M5StackTab5QMX+SharedOverNetwork.pdf), page 12).
 +
 +| Release (ported) | What stopped the patches | How it was resolved |
 +|---|---|---|
@@ -41,10 +42,20 @@ index b6974abd..d425f4eb 100644
 +| v1.24.1 (2026-11-04) | Bits 152-156; settings saved through a pointer; drawer sections 54-55; DX cluster, PSK and RBN code rewritten; a new MP3 component | Bit 157 with the new pointer form; section 56; the rewritten code keeps "Ethernet or Wi-Fi" |
 +| v1.24.2 (2026-11-05) | Bits 157-158; drawer section 56; upstream’s new Wi-Fi driver patch edits the same spot as a NAS patch | Bit 159; section 57; the NAS patch accepts either order and carries upstream’s marker |
 +| v1.26.1 (2026-11-12) | Bit 159 taken: the settings table was full; new web Radio menu rows; DX cluster and RBN files removed | Settings table enlarged to 192 bits, relay setting bit 160; Radio source kept in the menu; nothing to carry for the removed files |
++
+ <p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
+ 
+ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
+@@ -149,6 +164,8 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
+ * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
+ 
+ Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
++
++What each upstream release changed for the NAS patches, and how each was resolved, is in **Keeping up with upstream: what each release changed** near the top of this page.
  ________________________________________________________________________________________________________________________________________________
  
  These commands build a new version whenever Steffen publishes a new upstream release:
-@@ -214,6 +229,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
+@@ -214,6 +231,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
  **Documentation**
  * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
  * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
@@ -52,6 +63,32 @@ index b6974abd..d425f4eb 100644
  
  ---
  
+diff --git a/docs/nas/keeping-up-with-upstream.md b/docs/nas/keeping-up-with-upstream.md
+new file mode 100644
+index 00000000..022f3659
+--- /dev/null
++++ b/docs/nas/keeping-up-with-upstream.md
+@@ -0,0 +1,20 @@
++<!-- Written by tools/nas-kit/doc/build_pdf.py from tools/nas-kit/doc/project.md, section 9 of the project PDF. Edit project.md, not this file. -->
++
++# 9. Keeping up with upstream: what each release changed
++
++Upstream (SteffenLav/qmx-panadapter) releases often, and each release is a moving target for the NAS patches: new settings take the same slots in the settings bitmap, new drawer sections take the same ids, and files the patches touch get rewritten or removed. When git am --3way cannot merge a patch, the kit stops, leaves the NAS and Shared folders untouched and keeps the failed attempt in the archive. The series is then rebased onto the new release by hand, built, checked against upstream’s own checks and host tests, and a new kit is committed. The table lists what stopped each release and how it was resolved.
++
++| Release (ported) | What stopped the patches | Resolution |
++|---|---|---|
++| v1.20.5 (2026-10-23) | Settings bits 143-144 taken; upstream now sends every CAT command through its own cat_tx(); new raw-CAT door; SNTP hand-over changed; a new band guard in front of transmit | DIRTY_RELAY 145; the network transport became a branch inside cat_tx() and the raw-CAT door accepts USB or network (0001); the SNTP time is handed over with its microseconds (0005); the TX-locked refusal sits after the band guard (0029); the KS keyer-speed patch became empty and was dropped |
++| v1.21.0 (2026-10-25) | Bits 145-146 (spectrum peak hold, CW peak filter); drawer section 52 (server mode); five new "Switch to ..." entries in the web Radio menu | DIRTY_RELAY 147; Radio source drawer section 53; "Radio source" placed under upstream’s Switch-to entries (0001, 0005) |
++| v1.22.0 (2026-10-28) | Bits 147-150 (log view, SSB low-cut, FT4/JS8 presets); drawer section 53 (manual log); a new Scheduled events pane that only asked for Wi-Fi; upstream tags became annotated, and the kit’s download printed "is not a commit!" | DIRTY_RELAY 151; Radio source section 55; the Scheduled events pane accepts Ethernet or Wi-Fi (0040); the kit fetches the tag and checks out the commit it points to |
++| v1.23.0 (2026-10-31) | Bit 151 (alternate JS8 submode); a new standing patch for esp_hosted’s RPC table | DIRTY_RELAY 152; the new standing patch is applied with the others before the build |
++| v1.23.1 (2026-10-31) | Upstream changed the README lines above the NAS Ethernet section, and git am had no base copy to merge from ("sha1 information is lacking"); a new tcpip-stack guard that only Wi-Fi set | The series was rebased on v1.23.1 itself, so the kit no longer needs a 3-way merge; the Ethernet task also sets the tcpip-stack guard, and Wi-Fi accepts a default event loop Ethernet created first (0040) |
++| v1.24.1 (2026-11-04) | Bits 152-156 (web-radio player, CW page, macro sets); the settings flush now works on a snapshot pointer; drawer sections 54-55 (web radio, CW practice); dxcluster.c, psk_rx.c and rbn.c rewritten to read single settings; a new Helix MP3 component | DIRTY_RELAY 157 and the relay’s NVS writes use snap->; Radio source section 56; the rewritten feeds keep net_is_up() (0040); the new component and its standing patch build as upstream’s do |
++| v1.24.2 (2026-11-05) | Bits 157-158 (CW RST cut, contest serial) left only bit 159; drawer section 56 (Semi QSK); upstream’s new apply_esp_hosted_sdio_copypayload_tolerant.ps1 edits the same allocation as the NAS’s PSRAM copy patch, so check_patches refused to build | DIRTY_RELAY 159; Radio source section 57; the NAS patch script accepts either order, keeps its drop-on-failure code, and carries upstream’s marker (0004) |
++| v1.26.1 (2026-11-12) | Bit 159 taken - the settings bitmap was full; new TX power and noise-reduction rows in the web Radio menu; dxcluster.c and rbn.c removed (spots now come through spots.c); the web bottom bar shows only the network name | DIRTY_WORDS raised from 5 to 6 (192 bits) and DIRTY_RELAY 160 (31 free); "Radio source" kept under "Switch to WSPR"; nothing to carry for the removed files, because spots.c already accepts Ethernet or Wi-Fi; the bottom bar shows "Ethernet <ip>" while the W5500 base is in use (0001, 0040) |
++
++*Each port is checked the same way: a full ESP-IDF v5.4.4 build with every source compiled and the standing patches applied, upstream’s check scripts (check_dirty_bits, check_tx_guard, check_unattended_tx, check_web, check_webui, check_docs) and host harnesses run on plain upstream and on the NAS version with the same results, and the new kit run against GitHub on the Mac, producing the same tree. The relay’s discovery fix (0042, 2026-10-31) was not a port: it was found on the NAS when a VPN client was connected (section 3).*
++
++This is section 9 of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) (v1.26.1 + NAS patches 0001-0043).
 -- 
 2.43.0
 

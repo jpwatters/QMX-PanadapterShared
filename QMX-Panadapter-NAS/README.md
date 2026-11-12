@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.26.1-NAS** — upstream QMX-Panadapter **v1.26.1** plus the NAS patch series 0001-0043 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.26.2-NAS** — upstream QMX-Panadapter **v1.26.2** plus the NAS patch series 0001-0043 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -35,7 +35,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 8. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-11-12, to upstream v1.26.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.26.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.26.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
+The NAS patches were last ported on 2026-11-12, to upstream v1.26.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.26.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.26.2-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -161,7 +161,7 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.26.1-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.26.2-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 
@@ -199,7 +199,7 @@ Other options:
 * `--ref v1.20.5`: builds a specific release instead of the newest.
 * `--force`: rebuilds even when there’s nothing new.
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.26.1-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v1.26.2-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -245,13 +245,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v1.26.1.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v1.26.1 makes WSPR decode every cycle again** (from v1.24.2 it decoded only the first cycle after the page opened), makes the WSPR search a third faster, and has the web spectrum follow your dB range. **v1.26.0 gave the browser noise reduction and an auto-notch**: a speech model for SSB and AM voice, a spectral noise reduction that also works on CW, and a notch that finds a carrier by itself. They run in the browser and cost the Tab5 nothing - see [Web DSP](#web-dsp). **Each band now remembers its frequency and its mode across a restart.** The CW page gets a Log button, a STOP for queued text, type-ahead sending from the browser, and a band guard on every CW send - see [docs/mkdocs/releases.md](docs/mkdocs/releases.md) for the full list. v1.25.0 put the **MODE: CW page** on the web; v1.24.0 added it on the Tab5 (beta) with an internet **Web Radio** player.
+> **Release — v1.26.2.** A complete, self-contained FT8/FT4/JS8 station: spectrum and waterfall, on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v1.26.1 makes WSPR decode every cycle again** (from v1.24.2 it decoded only the first cycle after the page opened), makes the WSPR search a third faster, and has the web spectrum follow your dB range. **v1.26.0 gave the browser noise reduction and an auto-notch**: a speech model for SSB and AM voice, a spectral noise reduction that also works on CW, and a notch that finds a carrier by itself. They run in the browser and cost the Tab5 nothing - see [Web DSP](#web-dsp). **Each band now remembers its frequency and its mode across a restart.** The CW page gets a Log button, a STOP for queued text, type-ahead sending from the browser, and a band guard on every CW send - see [docs/mkdocs/releases.md](docs/mkdocs/releases.md) for the full list. v1.25.0 put the **MODE: CW page** on the web; v1.24.0 added it on the Tab5 (beta) with an internet **Web Radio** player.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.26.1.pdf).
+Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v1.26.2.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -1496,7 +1496,7 @@ The full per-version changelog — every release from v0.1.0 onward — lives in
 
 ### Next up
 
-**v1.26.1 is here.** Next on the bench:
+**v1.26.2 is here.** Next on the bench:
 
 - **A full two-way JS8 QSO, watched from both ends.** Receiving, sending free text and calling CQ are all proven on air, and the automatic exchange **is implemented** - with automatic replies on, the Tab5 answers JS8 callers by itself and has since v1.17.0. What is missing is a complete exchange observed end to end, not the code to do it. An earlier version of this line said the exchange "is not written yet", which was wrong and was corrected publicly in the v1.18.0 notes after Gyula HA3HZ found four stations answered unattended in his own log.
 - **JS8 Slow, Fast and Turbo on the air.** All four speeds are selectable from v1.19.0 and they transmit, but no contact has been made on anything but Normal. The Tab5's own side of Turbo is measured and fast enough; the radio's side is not.
