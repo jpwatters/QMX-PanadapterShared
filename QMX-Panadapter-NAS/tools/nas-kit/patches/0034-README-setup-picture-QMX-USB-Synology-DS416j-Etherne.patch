@@ -1,7 +1,7 @@
-From 7dfc63493199533c1aac9f597ad6373a901b8162 Mon Sep 17 00:00:00 2001
+From 0231709499f037881bdb02776a0fff4cfbf63a69 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 12:00:00 -0500
-Subject: [PATCH 34/42] README: setup picture (QMX+ - USB - Synology DS416j -
+Subject: [PATCH 34/43] README: setup picture (QMX+ - USB - Synology DS416j -
  Ethernet - switch)
 
 Centered above the list of what the shared version adds; the image is

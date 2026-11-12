@@ -1,7 +1,7 @@
 From c3aaef2a948c065ffe15f93c46e1641cedc9d4a9 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 10:00:00 -0500
-Subject: [PATCH 27/42] TCI for WS / WSJT-X / JTDX on the Mac; relay serves a
+Subject: [PATCH 27/43] TCI for WS / WSJT-X / JTDX on the Mac; relay serves a
  listen-only I/Q copy on 7357
 
 WS and WSJT-X on macOS could not open the bridge's pseudo-terminal serial

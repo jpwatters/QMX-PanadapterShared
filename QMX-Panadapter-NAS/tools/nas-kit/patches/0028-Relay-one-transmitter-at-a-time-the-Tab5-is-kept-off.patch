@@ -1,7 +1,7 @@
 From 4585b5c48f0a87c71cbb7febb7189d13c3c3623f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 11:00:00 -0500
-Subject: [PATCH 28/42] Relay: one transmitter at a time - the Tab5 is kept off
+Subject: [PATCH 28/43] Relay: one transmitter at a time - the Tab5 is kept off
  while a TCI program is connected
 
 The Mac's TCI bridge announces tx=1 in its I/Q listener HELLO, and connects

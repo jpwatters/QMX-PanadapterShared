@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v1.26.1-NAS** — upstream QMX-Panadapter **v1.26.1** plus the NAS patch series 0001-0042 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v1.26.1-NAS** — upstream QMX-Panadapter **v1.26.1** plus the NAS patch series 0001-0043 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -149,6 +149,21 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
 * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.26.1-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
+
+**What each upstream release changed for the NAS patches**
+
+Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. Section 9 of the project PDF has the details.
+
+| Release (ported) | What stopped the patches | How it was resolved |
+|---|---|---|
+| v1.20.5 (2026-10-23) | Settings bits 143-144 taken; upstream sends every CAT command through its own `cat_tx()` | Relay setting moved to bit 145; the network transport became a branch inside `cat_tx()`; an empty keyer-speed patch dropped |
+| v1.21.0 (2026-10-25) | Bits 145-146; drawer section 52; five new "Switch to …" entries in the web Radio menu | Relay setting bit 147; Radio source drawer section 53, placed under the new menu entries |
+| v1.22.0 (2026-10-28) | Bits 147-150; drawer section 53; a Scheduled events pane that only checked Wi-Fi; annotated release tags | Bit 151; section 55; the pane accepts Ethernet or Wi-Fi; the kit downloads tags another way |
+| v1.23.0 (2026-10-31) | Bit 151; a new standing patch for the Wi-Fi driver | Bit 152; the new patch applied with the others |
+| v1.23.1 (2026-10-31) | README lines above the Ethernet section changed with no base to merge from; a new network-stack guard that only Wi-Fi set | Series rebased on v1.23.1 itself; the Ethernet task sets the guard too |
+| v1.24.1 (2026-11-04) | Bits 152-156; settings saved through a pointer; drawer sections 54-55; DX cluster, PSK and RBN code rewritten; a new MP3 component | Bit 157 with the new pointer form; section 56; the rewritten code keeps "Ethernet or Wi-Fi" |
+| v1.24.2 (2026-11-05) | Bits 157-158; drawer section 56; upstream’s new Wi-Fi driver patch edits the same spot as a NAS patch | Bit 159; section 57; the NAS patch accepts either order and carries upstream’s marker |
+| v1.26.1 (2026-11-12) | Bit 159 taken: the settings table was full; new web Radio menu rows; DX cluster and RBN files removed | Settings table enlarged to 192 bits, relay setting bit 160; Radio source kept in the menu; nothing to carry for the removed files |
 ________________________________________________________________________________________________________________________________________________
 
 These commands build a new version whenever Steffen publishes a new upstream release:
@@ -214,6 +229,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──  
 **Documentation**
 * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
 * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
+* The PDF is built by the update kit's doc folder (tools/nas-kit/doc: the text and its builder; see the kit's README), so its version, change history and code listings always match the folder.
 
 ---
 

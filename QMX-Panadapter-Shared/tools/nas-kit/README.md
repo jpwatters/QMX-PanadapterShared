@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (42 patches). It applies to upstream **v1.26.1** as it
+* `patches/` - the NAS series (43 patches). It applies to upstream **v1.26.1** as it
   is (ported 2026-11-12; built, not yet flashed or tested on the Tab5).
   v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
@@ -80,7 +80,16 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   **0040** wired Ethernet through the M5Stack W5500 PoE base on the M5-Bus, alongside Wi-Fi
   (net/eth_w5500.c; CONFIG_ETH_SPI_ETHERNET_W5500=y in sdkconfig and sdkconfig.defaults),
   **0041** the README appendix "Initial Setup of the QMX/QMX+ for use with the Tab5-Panadapter",
-  **0042** the relay answers Find NAS from the address the query arrived on (a VPN client on the NAS no longer hides it).
+  **0042** the relay answers Find NAS from the address the query arrived on (a VPN client on the NAS no longer hides it),
+  **0043** the README's table of what each upstream release changed for the NAS patches.
+* `doc/` - the source of the project PDF (`project.md`, plus `port-status.txt`
+  and `tab5-status.txt`) and its builder. After a new release is built and
+  checked, rebuild the PDF from the folder it describes (needs python3 with
+  reportlab):
+  `python3 tools/nas-kit/doc/build_pdf.py ~/src/QMX-Panadapter-NAS`.
+  The version, the change-history table and the code listings come from the
+  folder itself; section 9 of `project.md` records what each upstream release
+  changed and how the patches were adapted - add a row with each port.
 * This folder is the only copy of the kit. The older patch series and the original
   work tree are archived in `~/src/.qmx-panadapter-archive/`; the script does not
   use them.

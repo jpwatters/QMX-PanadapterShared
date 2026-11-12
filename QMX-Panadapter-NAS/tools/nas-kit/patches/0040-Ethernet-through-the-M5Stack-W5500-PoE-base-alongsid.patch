@@ -1,7 +1,7 @@
-From 7857fa56eff7bae963dc1049c04a09844eeab659 Mon Sep 17 00:00:00 2001
+From d3c89316fa50cecb07d58004d04244d95076b658 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
-Subject: [PATCH 40/42] Ethernet through the M5Stack W5500 PoE base, alongside
+Subject: [PATCH 40/43] Ethernet through the M5Stack W5500 PoE base, alongside
  Wi-Fi
 
 net/eth_w5500.c looks for a W5500 on the Tab5's M5-Bus at boot (MOSI G18,

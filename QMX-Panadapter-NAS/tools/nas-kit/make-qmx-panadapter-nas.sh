@@ -10,7 +10,7 @@
 #   bash make-qmx-panadapter-nas.sh --status        what is in NAS and Shared
 #
 # The kit travels with the build: every new QMX-Panadapter-NAS gets a copy of
-# it in tools/nas-kit (scripts, README and the current patch series), so it can
+# it in tools/nas-kit (scripts, README, the current patch series and doc/), so it can
 # be run from ~/src/QMX-Panadapter-NAS/tools/nas-kit to build the next version.
 # Run from there, it first copies itself to a temporary folder, because a
 # rebuild moves that QMX-Panadapter-NAS folder to the archive.
@@ -252,6 +252,12 @@ build() {
     mkdir -p "$tmp/tools/nas-kit/patches" || die "cannot create $tmp/tools/nas-kit"
     cp -p "$KIT"/*.sh "$KIT"/README.md "$tmp/tools/nas-kit/" || die "cannot copy the kit scripts"
     cp -p "$PATCHES"/*.patch "$tmp/tools/nas-kit/patches/" || die "cannot copy the patch series"
+    # doc/: the project PDF's source (project.md) and builder (build_pdf.py), so
+    # the PDF can be rebuilt for the new release:
+    #   python3 tools/nas-kit/doc/build_pdf.py ~/src/QMX-Panadapter-NAS
+    if [ -d "$KIT/doc" ]; then
+        cp -Rp "$KIT/doc" "$tmp/tools/nas-kit/" || die "cannot copy the kit's doc folder"
+    fi
     ( cd "$tmp" && git add tools/nas-kit && git -c user.name="$name" -c user.email="$email" \
           commit --quiet -m "nas-kit: the update kit that built this folder (patch series $pid)" ) \
         || die "cannot commit the kit copy"

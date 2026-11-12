@@ -1,7 +1,7 @@
 From 456345686a69ae8b9ddf331918464016b04461bc Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 9 Oct 2026 07:15:23 +0000
-Subject: [PATCH 13/42] README: what the network-shared version adds, and how
+Subject: [PATCH 13/43] README: what the network-shared version adds, and how
  far each part is tested
 
 Same text as QMX-Panadapter-Shared's README (commits 30dc89e + the wording

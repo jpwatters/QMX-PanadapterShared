@@ -1,7 +1,7 @@
-From f79a6d35c74c5ede7eee24400df9b53e8c4a0e02 Mon Sep 17 00:00:00 2001
+From 8b34c0c4efd271e98de22408d897b1620e2d87ff Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
-Subject: [PATCH 41/42] README: appendix "Initial Setup of the QMX/QMX+ for use
+Subject: [PATCH 41/43] README: appendix "Initial Setup of the QMX/QMX+ for use
  with the Tab5-Panadapter"
 
 Firmware version, the radio settings the Tab5 needs (IQ mode, USB serial

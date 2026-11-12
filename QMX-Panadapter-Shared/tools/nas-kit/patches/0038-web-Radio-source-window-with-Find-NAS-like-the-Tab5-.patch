@@ -1,7 +1,7 @@
-From c0cce057a2327dbe40e6e0280d08aed1c50f3efb Mon Sep 17 00:00:00 2001
+From c3fa19cd86977bd0e6cd5b666ae4d6d655904c3f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
-Subject: [PATCH 38/42] web: Radio source window with Find NAS, like the Tab5's
+Subject: [PATCH 38/43] web: Radio source window with Find NAS, like the Tab5's
  drawer
 
 The web page's "Radio source" entry only offered a prompt for typing the

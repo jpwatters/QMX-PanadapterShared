@@ -1,7 +1,7 @@
 From 9b8c71ea700298c69bd5b52af768286a4316abcf Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 00:57:14 +0000
-Subject: [PATCH 01/42] Network radio: use a QMX plugged into a Synology NAS
+Subject: [PATCH 01/43] Network radio: use a QMX plugged into a Synology NAS
  over TCP/IP
 
 Adds a "network radio" source so the Tab5 can use a QMX that is plugged
