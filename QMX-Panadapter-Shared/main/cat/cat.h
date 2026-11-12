@@ -539,6 +539,27 @@ int cat_get_sidetone_absolute(void);
  * zero" - see the block above. */
 uint16_t cat_sidetone_vol_max(void);
 
+/* ---- CW-page sidetone auto-management (operator ask, 2026-11-09) --------
+ *
+ * New/average users leave the Tab5's own "QMX volume" slider low (they do
+ * not need the radio's analogue RX audio - the Tab5 shows everything), and
+ * do not know that drags the sidetone to near-silent with it. That IS
+ * Relative mode as documented, not a bug - but it is confusing them.
+ *
+ * The CW page (ui.c, ui_set_base_mode) forces Absolute on entry ONLY when it
+ * finds the radio in confirmed Relative, then mirrors "QMX volume" into
+ * Sidetone volume itself while the page is up, and restores Relative on
+ * leaving - so a standalone QMX is never left needing to be "repaired".
+ * If the radio is ALREADY Absolute, this is someone's own deliberate choice
+ * (Michael KZ4LY's binaural T139 setup) and is never touched. */
+void cat_sidetone_set_automirror(bool on);
+bool cat_sidetone_automirror_active(void);
+
+/* Feed the current/just-requested AF gain (same 0.25 dB units as
+ * cat_request_af_gain) through the mirror. No-op when automirror is off or
+ * the sidetone range has not been discovered yet. */
+void cat_sidetone_mirror_from_af_gain(uint16_t ag);
+
 /* ---- T144: Semi QSK (break-in delay) ------------------------------------
  *
  * Michael KZ4LY / Gyula HA3HZ: receive comes back the instant a CW signal
@@ -684,24 +705,37 @@ void cat_request_cw_passband(uint32_t hz);
  * Three commands, all present in QMX 1_03_002 AND 1_04 (verified against both
  * cached CAT manuals, docs/qmx-reference/):
  *   KY <text>;  radio keys the CW itself (timing, envelope, keyer settings);
- *               80-char circular TX buffer, append-while-sending OK, ?; on
- *               overflow. NOTE the "Kenwood TS480 compatibility" System-Config
- *               setting changes the wire format (fixed 24-char padded) - this
- *               implementation speaks the compat-OFF form and is
- *               HARDWARE-UNVERIFIED until the first bench session with a QMX.
+ *               80-char TX buffer. The MANUAL says append-while-sending is OK
+ *               and overflow answers ?; - ⚠ never measured on a QMX, which is
+ *               why cw_txq.h waits for an empty buffer before the next chunk.
+ *               Keying itself is proven on air (2026-09-30). NOTE the "Kenwood
+ *               TS480 compatibility" System-Config setting changes the wire
+ *               format (fixed 24-char padded); this speaks the compat-OFF form.
  *   KS / KSnnn; keyer speed get/set in WPM.
  *   TB;         returns + empties the QMX's own CW-decode buffer ("TBtnns;",
  *               t = KY chars remaining 0-9, 0 = receiving); polled ~1 Hz while
  *               the CW page is visible (cat_cw_poll_set_active). Decoded text
  *               is pushed to cw_screen_feed_decoded() (ui/cw_screen_view.h).
  * All writes deferred to the poll task per the cross-thread CAT rule. */
-void cat_request_cw_send(const char *text);   /* expanded text, <= ~90 chars */
+/* APPENDS expanded text to the CW transmit queue (cw_txq.h) - type-ahead.
+ * Every chunk passes the band guard before it keys. Returns false when the
+ * queue is full (the whole text is refused, never half of it). */
+bool cat_request_cw_send(const char *text);
+/* Drop text not yet handed to the radio; returns chars dropped. What the radio
+ * already holds runs to the end - KY has no abort. Also runs on leaving the CW
+ * page (cat_cw_poll_set_active(false)). */
+int  cat_cw_send_cancel(void);
+int  cat_cw_send_queued(void);                 /* chars waiting, not yet keyed */
 /* ⚠ cat_request_keyer_wpm/cat_query_keyer_wpm/cat_get_keyer_wpm are declared
  * above with main's own signatures (uint16_t, no clamp) - this block used to
  * re-declare them as uint8_t and the merge of 2026-10-19 made that a
  * conflicting-types error. Main's keyer surface is the one that ships; only
  * the two CW-page-specific calls below are declared here. */
 int  cat_get_cw_tx_remaining(void);           /* TB t-field: 0 = receiving, -1 = unknown */
+/* T129: true while the radio transmits, WHOEVER keyed it (paddle included),
+ * plus a short hang. From the CW-mode KD;SW; poll and any PC;SW; read. ⚠ Not
+ * yet measured against a hand key - see tx_sense_note() in cat.c. Any task. */
+bool cat_radio_transmitting(void);
 void cat_cw_poll_set_active(bool active);     /* TB; poll while CW page visible */
 
 /**

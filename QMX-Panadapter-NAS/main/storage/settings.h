@@ -422,6 +422,7 @@ typedef struct {
     char     cw_park[16];      // POTA park reference for the {PARK} macro (e.g. "US-1211")
     bool     cw_rst_cut_nines; // {RST} macro expands "5NN" (both 9s cut) instead of "599" when true (default false)
     uint16_t cw_serial_next;  // {SERIAL} macro - next contest serial to send, 1-based (default 1)
+    char     cw_contest_name[24]; // contest name/ID, empty when not running one - see accessor below
     bool     cw_sim_en;        // CW phantom practice - SEPARATE from sim_mode_en (default false)
     /* MASTER SWITCH FOR THE CW PAGE. It keys the radio over CAT KY and still
      * has NO WAY TO ABORT a message once sent (tested on the bench: neither
@@ -462,7 +463,7 @@ typedef struct {
     char     eqsl_user[16];   // eQSL.cc username (callsign), set via web UI
     char     eqsl_pswd[32];   // eQSL.cc password
     // QRZ.com Callbook (XML) lookup credentials, for net/qrz_coords.c's
-    // real-station-position lookup (net/rbn.c's self-spot skimmers, on the
+    // real-station-position lookup (net/spots.c's self-spot skimmers, on the
     // spot map). Deliberately separate from qrz_api_key above: that one is
     // the unrelated Logbook/QSO-sync API key, this is username+password for
     // the XML Callsign Lookup service.
@@ -653,9 +654,8 @@ typedef struct {
     bool     tx_band_guard_off;
                               // them, rows recolour, tap offers clear (default false; RAM-only list)
     bool     spots_en;        // draw live POTA (later RBN) spots on the spectrum (default true)
-    bool     rbn_en;          // add the RBN telnet feed as a second spot source (default FALSE:
-                              // a continuous firehose on this board's most fragile subsystem,
-                              // so it is opt-in - see net/rbn.h)
+    bool     rbn_en;          // add RBN (CW skimmer) spots as a second source, via spothole.app
+                              // polling (default FALSE - a global firehose, see net/spots.h)
     // The spot map (ui/spot_map_view.c) and the three self-spot feeds behind
     // it: PSK Reporter over MQTT, wsprnet polling, and hamqsl band conditions,
     // plus the QRZ callbook lookups that place an RBN skimmer on the map.
@@ -1077,11 +1077,22 @@ bool settings_get_cw_rst_cut_nines(void);     // narrow: {RST} macro expansion, 
 
 // {SERIAL} macro - a plain send-time counter (N1MM/keyer convention: it
 // advances when a message carrying {SERIAL} actually keys the radio, not
-// when a QSO is logged - the CW page has no ADIF logging yet). All three are
-// narrow: read/written from send_cw_text() and expand_macros() on taskLVGL.
+// when a QSO is logged). All three are narrow: read/written from
+// send_cw_text() and expand_macros() on taskLVGL.
 void     settings_set_cw_serial_next(uint16_t v);   // manual correction (e.g. after a repeat)
 uint16_t settings_get_cw_serial_next(void);         // current value, does NOT advance
 uint16_t settings_cw_serial_advance(void);           // returns the value just sent, THEN increments
+
+// Contest name/ID (e.g. "ARRL SS CW", "CQ WW CW"), operator-set, empty when
+// not running a contest. Gyula HA3HZ ran a full contest on the CW page with
+// no way to record what it WAS - his log had to be typed into CQRlog by hand
+// afterwards because nothing on the device carried the contest's name. Set
+// before the contest, left alone after: cw_qso.c writes it (as ADIF
+// CONTEST_ID) onto every CW QSO logged while it is non-empty, alongside the
+// serial exchange (STX_STRING/SRX_STRING) cw_qso.c captures on its own - see
+// adif_qso_t. Narrow: read on taskLVGL and the web settings path.
+void settings_set_cw_contest_name(const char *name);
+void settings_get_cw_contest_name(char *out, size_t out_sz);
 
 // The park reference alone, narrow - the CW page resolves {PARK} from its
 // 500 ms tick and cannot afford a qmx_settings_t local there. Writes "" when
@@ -1713,6 +1724,17 @@ void    settings_set_line_in_gain_db(uint8_t db);
  * a config import obey the same rule. The button also ellipsizes, so a name
  * from an older store can never spill into its neighbour. */
 #define CW_PROFILE_NAME_MAX 9
+/* T188 - what the operator last used on each band: the frequency and the mode.
+ * Keyed by the band's centre frequency from cat_get_band_list(), not by its
+ * index - the list is the radio's own and may be reordered. Written straight
+ * to NVS (a band change is rare and deliberate), not through the dirty bits:
+ * DIRTY_WORDS has none left.
+ *   _get: false if the band was never stored. Either out pointer may be NULL;
+ *         mode comes back "" when only a frequency is known.
+ *   _set: freq_hz 0 = keep the stored frequency; mode NULL or "" = keep the mode. */
+bool settings_band_mem_get(uint32_t center_hz, uint32_t *freq_hz, char *mode, size_t mode_sz);
+void settings_band_mem_set(uint32_t center_hz, uint32_t freq_hz, const char *mode);
+
 bool settings_get_cw_profile(int idx, char *name, size_t name_sz,
                              uint16_t *centre_hz, uint8_t *mask);
 void settings_set_cw_profile(int idx, const char *name,

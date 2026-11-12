@@ -205,11 +205,16 @@
   #top-center { display: flex; justify-content: center; align-items: center; }
   #top-right { display: flex; align-items: center; gap: 0.5rem; }
   .top-fill  { flex: 1; min-width: 0; }
+  /* 1.4rem, one step down from 1.6 (operator, 2026-11-11: top-bar cleanup). */
   #vfo {
-    color: var(--accent); font-size: 1.6rem; font-weight: 700;
+    color: var(--accent); font-size: 1.4rem; font-weight: 700;
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
-  #smeter { display: block; width: 240px; height: 40px; flex-shrink: 0; }
+  /* Shown 30 % smaller (operator, 2026-11-11: top-bar cleanup). The canvas
+     still DRAWS at 240 x 40 (width/height attributes, and every coordinate
+     in drawSmeter()), so bar, ticks and labels all shrink together and the
+     1.43x oversampling keeps the text sharp. Change the size here only. */
+  #smeter { display: block; width: 168px; height: 28px; flex-shrink: 0; }
   /* clickable pills */
   .pill {
     background: #1f2937; border-radius: 4px; padding: 0.15rem 0.5rem;
@@ -816,24 +821,12 @@
   #ft8-actions select:hover,
   #wspr-actions button:hover:not(:disabled),
   #wspr-actions select:hover { background: var(--accent); color: #000; }
-  /* The WSPR page owns the dial, so the top bar's Band/Mode/BW/Zoom are inert
-     while it is up - the same rule the Tab5 has always had, and what
-     guide/wspr.md has always said. pointer-events:none is the part that
-     matters: these pills LOOKED inactive to John W5JSS and still fired,
-     because nothing stopped the click. Freq is deliberately NOT in this set.
-
-     ⛔ KEEP THIS RULE ON ITS OWN. In v1.19.0 it was pasted INTO the hover
-     selector list above, so every FT8 action button got pointer-events:none
-     THE MOMENT IT WAS HOVERED. That makes the button stop being the hover
-     target, :hover drops, pointer-events comes back, :hover re-applies - the
-     border flickers at paint rate and a click only lands if it happens to
-     fall in an "auto" frame. Randy N4OPI and Ryan KK6DZB both reported it
-     within a day of the release. */
-  .pill.dial-locked {
-    opacity: .45;
-    pointer-events: none;
-    cursor: default;
-  }
+  /* Band/Mode/BW/Zoom/Tune on the WSPR and FT8/JS8 pages are hidden outright
+     (style.display, in the screen-change handler below), not greyed - see
+     that handler for why. This used to be a `.pill.dial-locked` grey+inert
+     class (removed 2026-11-07); the v1.19.0 pointer-events flicker bug this
+     comment used to warn about (Randy N4OPI, Ryan KK6DZB) cannot recur now
+     that nothing applies pointer-events:none to a hover target. */
   #ft8-actions button:disabled { opacity: 0.45; cursor: default; }
   /* A JS8 conversation line that names me, and the row it sits on - js8Poll(). */
   .js8-me     { background: var(--accent); color: #000; border-radius: 3px; }
@@ -894,7 +887,8 @@
   }
   #bot { flex-wrap: nowrap; }
   .bot-fill { flex: 1; min-width: 0; }
-  #clock { color: var(--accent); font-weight: 700; font-size: 1.6rem;
+  /* 1.4rem, one step down from 1.6 (operator, 2026-11-11: bottom-bar cleanup). */
+  #clock { color: var(--accent); font-weight: 700; font-size: 1.4rem;
            white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* Bottom-bar action buttons (ADIF/QRZ/Diag/Tab5Shot) - same look + hover
      behaviour as the top-left Band/Mode/BW/Zoom pills: amber frame on hover. */
@@ -1016,6 +1010,11 @@
     background: var(--card); border: 1px solid var(--border); border-radius: 6px;
     padding: 4px; min-width: 170px; z-index: 1000;
     box-shadow: 0 4px 14px rgba(0,0,0,0.55);
+    /* ⛔ NEVER TALLER THAN THE WINDOW. The menu grows UPWARD from the bar, so
+       without a cap its top - the page selector - went off the top of a short
+       window (operator, 2026-11-11). On a window too short for it, it scrolls
+       inside itself; it is never cut off. 3.5rem clears the bar. */
+    max-height: calc(100vh - 3.5rem); overflow-y: auto; overflow-x: hidden;
   }
   .bot-menu.open { display: flex; }
   .bot-menu a {
@@ -1041,6 +1040,36 @@
               cursor: pointer; }
   #port-mode-row input { accent-color: var(--accent); }
   #port-mode-result { color: var(--dim); }
+  /* T18 noise reduction: an on/off box and three levels, same shape as the
+     port row. width:0 + min-width:100% takes the width the menu's other
+     rows give it instead of setting one: as one line it made the menu 328 px
+     wide, measured, against 209 px before. Two lines: the box, then the levels. */
+  #nr-row { display: flex; flex-flow: row wrap; align-items: center; gap: 0.2rem 0.6rem;
+              padding: 0.4rem 0.6rem; font-size: 0.78rem; color: #9aa4b2;
+              width: 0; min-width: 100%; box-sizing: border-box; }
+  #nr-row label { display: inline-flex; align-items: center; gap: 0.25rem; cursor: pointer; }
+  #nr-row input { accent-color: var(--accent); }
+  #nr-row .nr-main { color: var(--fg, #e5e7eb); flex-basis: 100%; }
+  #nr-row .nr-brk { flex-basis: 100%; height: 0; }
+  #nr-state { color: var(--dim); flex-basis: 100%; }
+  #nr-state:empty { display: none; }
+  /* TX power: TWO LINES. Line 1 is the label with the value at its right
+     end; line 2 is the slider at the full menu width. It was a button per
+     calibration level on wrapped lines (the menu, which opens UPWARD, grew
+     until the page selector left the top of the window), then one line of
+     label + slider + value, which squeezed the slider or widened the menu.
+     Operator, 2026-11-11: text goes on the line above; 0.1 W must be
+     reachable. The real 20 m ladder on bench1 has 29 levels, 0.1 W apart
+     below 1.7 W, so the slider needs the whole width. width:0 + min-width
+     keeps the row from widening the menu. A message replaces the value. */
+  #pwr-row { display: flex; flex-flow: row wrap; align-items: center; gap: 0.25rem 0.45rem;
+             padding: 0.4rem 0.6rem; font-size: 0.78rem; color: #9aa4b2;
+             width: 0; min-width: 100%; box-sizing: border-box; }
+  #pwr-row .pwr-main { color: var(--fg, #e5e7eb); white-space: nowrap; flex: 1 1 auto; }
+  #pwr-val { flex: none; white-space: nowrap; color: var(--fg, #e5e7eb); }
+  #pwr-val.say { color: var(--dim); white-space: normal; flex: 1 1 100%; }
+  #pwr-slider { flex: 1 1 100%; min-width: 0; margin: 0.15rem 0 0; accent-color: var(--accent); }
+  #pwr-slider[hidden] { display: none; }
   /* Unit GPS owns PORT.A: the relay row below is not broken, it is not
      applicable - greyed and inert, with its tooltip swapped for the reason. */
   #gpio-row.port-off { opacity: 0.5; }
@@ -1268,14 +1297,6 @@
            ><span class="lab">Keyer</span><span id="keyer">--</span><span class="arr">▾</span>
         <div class="dropdown" id="dd-keyer"></div>
       </div>
-      <!-- Output power, per band. Shown only where the band has been through
-           Calibrate Power, because the levels ARE that sweep's results - see
-           the out_power action for why a free-text wattage is refused. -->
-      <div class="pill clickable" id="pill-outpwr" style="display:none" onclick="openOutPwr()"
-           title="Transmit power on this band, from its power calibration."
-           ><span class="lab">PWR</span><span id="outpwr">--</span><span class="arr">▾</span>
-        <div class="dropdown" id="dd-outpwr"></div>
-      </div>
       <!-- Activation, shown ONLY while one is running. The hazard is forgetting, so
            it says so without being asked - the same job the Tab5's bottom bar does. -->
       <div class="pill clickable" id="pill-act" style="display:none" onclick="actOpen()"
@@ -1427,6 +1448,68 @@
       <div id="dec-skipped" style="margin-top:4px; font-size:13px; color:var(--dim);"></div>
     </div></div>
 
+  <!-- T159 (Ralph DL1HR): CW page TX controls, for remote operation. The decode
+       side (#cw-line, above) already worked - this was the missing TX half:
+       send a macro or free text, and (added on request) edit the six macros
+       and switch which of the two sets (General/Contest) is active - the same
+       things the Tab5's own long-press editor and set toggle do. -->
+  <div id="cw-tx-wrap" style="display:none; width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
+    <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:8px;">
+      <strong style="color:#ffa040">CW send</strong>
+      <button id="cw-tx-set" type="button"
+              title="Switch which of the two macro sets is active - the same toggle the Tab5 has"
+              style="font-size:13px; padding:2px 8px;"></button>
+      <button id="cw-tx-contest" type="button"
+              title="Set the contest name/ID written onto every CW QSO logged while it is set (ADIF CONTEST_ID). Empty = not running a contest."
+              style="font-size:13px; padding:2px 8px;"></button>
+      <span id="cw-tx-last" style="color:var(--dim); font-size:13px; margin-left:auto;"></span>
+    </div>
+    <!-- The station being worked (Gyula HA3HZ, 2026-11-10). {CALL} in a macro
+         is THIS callsign. On the Tab5 it is the station card: filled by the
+         decoder, or typed after a tap (T162). The page had neither - on a weak
+         signal nothing decodes, and there was nowhere to type it. "Log" is here
+         too: the log window was two menus away (Radio > Log a contact) and came
+         up empty, in the middle of a contact. -->
+    <div id="cw-stn" style="display:none; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+      <label for="cw-stn-call" style="color:var(--dim); font-size:13px;">Station</label>
+      <input id="cw-stn-call" type="text" maxlength="15" autocomplete="off" spellcheck="false"
+             placeholder="their callsign"
+             title="The station you are working. {CALL} in a macro sends this callsign. Type it and press Enter - no decode is needed."
+             style="width:11em; text-transform:uppercase; font-weight:700;">
+      <button id="cw-stn-set" type="button" title="Use this callsign as {CALL} - same as entering it on the Tab5's station card">Set</button>
+      <button id="cw-stn-clear" type="button" title="Forget this station and go back to calling CQ">Clear</button>
+      <button id="cw-stn-heard" type="button" style="display:none"></button>
+      <span id="cw-stn-state" style="color:var(--dim); font-size:13px;"></span>
+      <button id="cw-stn-log" type="button" style="margin-left:auto;"
+              title="Open the log window with this callsign and the report already filled in">Log this contact&hellip;</button>
+    </div>
+    <div id="cw-tx-macros" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; margin-bottom:10px;"></div>
+    <div style="display:flex; gap:8px;">
+      <input id="cw-tx-input" type="text" maxlength="80" placeholder="Free text - {MYCALL} {PARK} {CALL} {RST} {SERIAL} work here too"
+             style="flex:1; min-width:0;">
+      <button id="cw-tx-send-btn" title="Key this text now, through the QMX's own keyer - same as a Tab5 tap">Send</button>
+    </div>
+    <!-- Type-ahead (Ralph DL1HR, 2026-11-10): each word is sent the moment it
+         is finished (Space), so you can keep typing while the radio keys -
+         the flrig-keyer way of working. The device queues it and hands it to
+         the radio only when the radio's own buffer is empty (cw_txq.h), so
+         a burst of typing is never lost. Stop drops what has not reached the
+         radio yet (T145); what the radio already holds runs to the end, because
+         KY has no abort (measured 2026-11-02). -->
+    <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
+      <input id="cw-tx-live" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Type-ahead: each word keys when you press Space, Enter sends the rest"
+             style="flex:1; min-width:0;">
+      <button id="cw-tx-stop" type="button"
+              title="Drop everything typed but not yet handed to the radio. What the radio already holds still runs to the end - KY has no abort.">Stop</button>
+    </div>
+    <div style="display:flex; gap:12px; color:var(--dim); font-size:12px; margin-top:6px;">
+      <span id="cw-tx-sentline" style="flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; direction:rtl; text-align:left;"></span>
+      <span id="cw-tx-queue"></span>
+    </div>
+    <div style="color:var(--dim); font-size:12px; margin-top:4px;">Stop cannot cut a word the radio is already keying (up to 80 characters) - same as the Tab5.</div>
+  </div>
+
   <!-- =====================================================================
        WSPR spots
 
@@ -1550,7 +1633,7 @@
       </div>
     </div>
     <div class="bot-menu-wrap">
-      <button type="button" class="bot-btn" id="reset-group-btn">Miscellaneous &#9650;</button>
+      <button type="button" class="bot-btn" id="reset-group-btn">Misc &#9650;</button>
       <div class="bot-menu" id="reset-menu">
         <a href="#" id="prop-btn" title="Who has heard YOU lately, from PSK Reporter - receivers, distance, bearing and the signal report they gave you">Who has heard me (24 h)</a>
         <a href="/ss.bmp" id="ss-link" target="_blank" title="Opens in a new tab straight away - quickest way to just look at the screen">Tab5 screenshot</a> <a href="#" id="ss-save" title="Saves a PNG file - slower, but the format forums and apps accept">(save PNG)</a>
@@ -1619,19 +1702,56 @@
     <div class="bot-menu-wrap">
       <button type="button" class="bot-btn" id="radio-group-btn">Radio &#9650;</button>
       <div class="bot-menu" id="radio-menu">
-        <!-- ⛔ FIVE ENTRIES, NOT ONE CYCLING LINK. It used to be a single
-             "Switch to <next>" that rotated Panadapter -> FT8 -> WSPR, which
-             could not reach FT4 or JS8 at all: those were only ever selectable
-             by opening FT8 and picking a preset column. Mirrors the Tab5's
-             left drawer, added the same day, button for button and colour for
+        <!-- ⛔ SIX ENTRIES (CW added 2026-11-09), NOT ONE CYCLING LINK. It
+             used to be a single "Switch to <next>" that rotated Panadapter ->
+             FT8 -> WSPR, which could not reach FT4 or JS8 at all: those were
+             only ever selectable by opening FT8 and picking a preset column.
+             Mirrors the Tab5's left drawer, button for button and colour for
              colour - the label colour is the page's own accent, which is why
-             the hexes are repeated from ft8_screen_view.h and ui_theme.h. -->
+             the hexes are repeated from ft8_screen_view.h and ui_theme.h.
+             ⛔ FT8/FT4/WSPR had drifted from those constants (0xFFDD00 vs the
+             real 0xFFD700, 0x00B4FF vs the real 0xFF6A00, 0x3D8C40 vs the
+             real 0x5CC060) - corrected 2026-11-09 the same way ui.c's own
+             FT8 button comment already records this class of drift. -->
         <a href="#" class="screen-to" data-screen="panadapter" style="color:#FFFFFF" title="Show the spectrum and waterfall on the Tab5">Switch to Panadapter</a>
-        <a href="#" class="screen-to" data-screen="ft8" style="color:#FFDD00" title="Open the FT8 page on the Tab5 and select FT8">Switch to FT8</a>
-        <a href="#" class="screen-to" data-screen="ft4" style="color:#00B4FF" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
+        <a href="#" class="screen-to" data-screen="cw" style="color:#5CB4F0" title="Open the CW page on the Tab5">Switch to CW</a>
+        <a href="#" class="screen-to" data-screen="ft8" style="color:#FFD700" title="Open the FT8 page on the Tab5 and select FT8">Switch to FT8</a>
+        <a href="#" class="screen-to" data-screen="ft4" style="color:#FF6A00" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
         <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
-        <a href="#" class="screen-to" data-screen="wspr" style="color:#3D8C40" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
+        <a href="#" class="screen-to" data-screen="wspr" style="color:#5CC060" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
         <a href="#" id="relay-link" title="Where the QMX is: on the Tab5's own USB port, or plugged into your NAS and reached over the network (tools/nas-relay). Click to change.">Radio source: --</a>
+        <!-- T18 noise reduction for the audio Listen plays, done in this
+             browser. ⛔ A MENU ROW, NOT A TOP-BAR BUTTON. It was first built as
+             a button beside Listen: 81 px, MEASURED to push the top bar into
+             a horizontal scroll at 1440, 1366 and 1280 px, where it had fitted
+             before. Operator, 2026-11-10: "you cannot just widen the web view
+             with a scroll function". The top bar is full - a new control
+             needs a home that costs it no width. -->
+        <!-- Output power, per band (operator, 2026-11-11: moved here from a
+             PWR pill in the top bar, which was full and scrolled sideways).
+             One button per level of this band's Calibrate Power sweep - the
+             levels ARE that sweep's results, see the out_power action for why
+             a free-text wattage is refused. An uncalibrated band shows why
+             there are no buttons instead of hiding the row. -->
+        <div id="pwr-row" title="Transmit power on this band, from its power calibration. Drag, then let go to set it.">
+          <span class="pwr-main">TX power <span id="pwr-band"></span></span>
+          <span id="pwr-val">--</span>
+          <input type="range" id="pwr-slider" min="0" max="0" step="1" value="0" hidden>
+        </div>
+        <div id="nr-row">
+          <label class="nr-main"><input type="checkbox" id="nr-on"> Noise reduction</label>
+          <label><input type="radio" name="nr-level" value="1"> Low</label>
+          <label><input type="radio" name="nr-level" value="2"> Med</label>
+          <label><input type="radio" name="nr-level" value="3"> High</label>
+          <!-- T184: which noise reduction the voice modes use (CW always gets
+               Spectral - the speech model removes a CW note), and the
+               auto-notch, which is its own switch and works with NR off. -->
+          <span class="nr-brk"></span>
+          <label title="RNNoise, a small neural network trained on speech. The stronger of the two on a voice."><input type="radio" name="nr-type" value="0"> Speech model</label>
+          <label title="Classic spectral noise reduction. Gentler on a voice, and the one CW uses."><input type="radio" name="nr-type" value="1"> Spectral</label>
+          <label class="nr-main" title="Finds a steady carrier in the audio and filters it out, up to four at once. USB, LSB and AM."><input type="checkbox" id="an-on"> Auto-notch</label>
+          <span id="nr-state"></span>
+        </div>
         <a href="#" id="memory-btn" title="Your 32 memory channels - click one to tune to it">Memory channels</a>
         <a href="#" id="pause-btn" title="Stops the Tab5 talking to the radio, so its own menus and the Band Configuration terminal app behave normally. Nothing is decoded until you hand it back">Let me use the QMX menus</a>
         <a href="#" id="tune-ant-btn" style="display:none" title="Antenna Tune (QMX 1.04+): keys the radio with a steady carrier and shows live power and SWR. Auto-stops after 60 s.">Antenna Tune</a>
@@ -1699,10 +1819,13 @@
        after logging, and Log clears the callsign while keeping the reports -
        a run of CW contacts is not one dialog at a time.
 
-       ⛔ ONLY THREE FIELDS, like the Tab5 window. Frequency, mode, band, date,
-       time, our callsign, our grid and the activation come from the device
-       inside /api/cmd log_qso; a page holding a stale frequency must not be
-       able to write a record on the wrong band. -->
+       ⛔ ONLY WHAT THE DEVICE CANNOT KNOW. Frequency, mode, band, date, time,
+       our callsign, our grid and the activation come from the device inside
+       /api/cmd log_qso; a page holding a stale frequency must not be able to
+       write a record on the wrong band.
+       Name, QTH and Remarks were added for Gyula HA3HZ (2026-11-10): they are
+       what the other operator SAYS, so they are the operator's to type. All
+       three are optional. The Tab5's own Log window does not have them yet. -->
   <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
     <div style="max-width:560px; margin:12vh auto; background:#161616; border:1px solid #494949; border-radius:10px; padding:16px 20px; color:#ddd; font-size:14px;">
       <div style="display:flex; align-items:center; margin-bottom:10px;">
@@ -1730,6 +1853,23 @@
           <div style="color:var(--dim); font-size:12px; margin-bottom:3px">RST rcvd</div>
           <input id="log-rst-r" type="text" maxlength="6"
                  style="width:100%; font-size:17px; padding:6px 8px;">
+        </label>
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-end; margin-bottom:10px; flex-wrap:wrap;">
+        <label style="flex:1 1 150px">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">Name <span style="opacity:.7">(optional)</span></div>
+          <input id="log-name" type="text" maxlength="24" autocomplete="off"
+                 style="width:100%; font-size:15px; padding:5px 8px;">
+        </label>
+        <label style="flex:1 1 150px">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">QTH <span style="opacity:.7">(optional)</span></div>
+          <input id="log-qth" type="text" maxlength="24" autocomplete="off"
+                 style="width:100%; font-size:15px; padding:5px 8px;">
+        </label>
+        <label style="flex:1 1 100%">
+          <div style="color:var(--dim); font-size:12px; margin-bottom:3px">Remarks <span style="opacity:.7">(optional)</span></div>
+          <input id="log-comment" type="text" maxlength="60" autocomplete="off"
+                 style="width:100%; font-size:15px; padding:5px 8px;">
         </label>
       </div>
       <!-- Clearing a report logs NO report rather than a wrong one - the same
@@ -2231,6 +2371,12 @@ let lastPanBins    = 0;
 let lastZoomDecim  = 1;  // zoom-FFT decimation factor from WS frame header byte[1]
 let lastBands      = [];   // [{name, center_hz}]
 let lastScreen     = "panadapter";  // "panadapter" | "ft8" - which screen the Tab5 is showing
+let lastCwMacros   = null;   // 6 raw macro strings, last seen - rebuild buttons only on change
+let lastCwSetB     = null;
+let lastCwLastSent = null;
+let lastCwStn      = null;   // { target, heard, heard_age_s, rst_rcvd } from cw_tx, or null on firmware without it
+let cwStnDirty     = false;  // the operator is typing in the Station box - the poll must not overwrite it
+let lastCwContestName = null;
 let firstStatus    = true;
 let serverUtcAtTick = 0;   // server epoch (s) at last /api/status
 let localAtTick     = 0;   // Date.now()/1000 when that response arrived
@@ -5031,9 +5177,10 @@ const SET_FIELDS = [
      [["0","Never"],["3","Every 3 calls"],["5","Every 5 calls"],["10","Every 10 calls"]]],
 
   ["Spots & reporting", "spots_en",       "bool", "Live POTA spots", ""],
-  ["Spots & reporting", "rbn_en",         "bool", "RBN (CW skimmer) spots", "A continuous feed - off by default"],
+  ["Spots & reporting", "rbn_en",         "bool", "RBN (CW skimmer) spots",
+     "Automated CW/digital skimmers, via spothole.app (like SOTA below) - off by default so nobody polls it who did not ask"],
   ["Spots & reporting", "cluster_en",      "bool", "DX cluster spots (phone)",
-     "Human-typed spots. The ONLY source of SSB spots - RBN is automated skimmers and no SSB skimmer exists. A second connection, so off by default"],
+     "Human-typed spots, via spothole.app. The ONLY source of SSB spots - RBN is automated skimmers and no SSB skimmer exists. Off by default"],
   ["Spots & reporting", "sota_en",        "bool", "SOTA spots (summits)",
      "Summit activations, from spothole.app - a volunteer-run aggregator. Fetched once every two minutes, and off by default so nobody polls it who did not ask"],
   ["Spots & reporting", "pskreporter_en", "bool", "Report decodes to PSK Reporter", "Over the internet, never on the air"],
@@ -6331,6 +6478,7 @@ async function wsprFillBands() {
     const d = await r.json();
     if (!d.bands || !d.bands.length) return;
     wsprBandsLoaded = true;
+    window.__wsprBands = d.bands;   /* the top Band pill uses it on this page */
     const sel = document.getElementById("wspr-band");
     const cfg = await (await fetch("/api/settings", { cache: "no-store" })).json();
     sel.innerHTML = "";
@@ -8078,6 +8226,38 @@ function renderCqParity(v, fromDevice) {
 function buildBandDropdown() {
   const dd = document.getElementById("dd-band");
   dd.innerHTML = "";
+  /* ⭐ ON THE WSPR PAGE THE PILL PICKS A WSPR BAND. set_band is refused there
+     (wspr_owns_the_dial() - W5JSS's 20 m pick put the radio on FT8 while WSPR
+     labelled its spots 160 m), so the pill offers the WSPR page's own band
+     list and goes through the same #wspr-band select, which writes
+     wspr_dial_hz exactly as the Tab5's WSPR band button does. Operator,
+     2026-11-11: "BAND is NOT hidden - how would I change it then?" */
+  const wsel = document.getElementById("wspr-band");
+  if (lastScreen === "wspr" && !window.__wsprBands) {
+    /* Not loaded yet: load it and rebuild, but NEVER fall through to the
+       set_band list below - every pick from it would be refused here. */
+    const wait = document.createElement("button");
+    wait.textContent = "loading…"; wait.disabled = true;
+    dd.appendChild(wait);
+    wsprFillBands().then(() => { if (window.__wsprBands) buildBandDropdown(); });
+    return;
+  }
+  if (lastScreen === "wspr" && window.__wsprBands && wsel) {
+    const cur = parseInt(wsel.value, 10);
+    window.__wsprBands.forEach((b) => {
+      const btn = document.createElement("button");
+      btn.textContent = b.band + "m";
+      if (b.hz === cur) btn.classList.add("active");
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        closeAllDropdowns();
+        wsel.value = String(b.hz);
+        wsel.dispatchEvent(new Event("change"));
+      };
+      dd.appendChild(btn);
+    });
+    return;
+  }
   /* Highlight only the NEAREST band to the current VFO, not every band within
      1.5 MHz — 10m (28.1246) and 11m (27.245) are 0.88 MHz apart, so a fixed
      threshold lit both yellow at once. */
@@ -8320,6 +8500,7 @@ async function tick() {
        had since changed on the glass. */
     lastRitParkedHz = (typeof s.rit_parked_hz === "number") ? s.rit_parked_hz : 0;
     lastKeyerWpm    = (typeof s.keyer_wpm === "number") ? s.keyer_wpm : -1;
+    applyTuneOutcome(s.tune_out);
     updateRitParkPill();
     /* ⚠ The keyer pill is NOT updated here. It is shown only in CW, and
        lastMode is not assigned until further down this same function - so a
@@ -8403,7 +8584,9 @@ async function tick() {
         pb.style.borderColor= on ? "#ffc02a" : "";
       } }
     lastMode       = s.mode        || "USB";
+    nrPaint();           // which NR runs, and whether the notch does, follows the mode
     updateKeyerPill();   // CW-only, so it has to follow the mode it reads
+    updateCwTx(s);       // CW page TX panel - absent from s.cw_tx when not on that screen
     /* ⚠ THIS REPAINTS, IT DOES NOT RE-READ. The ladder and the current target
        are fetched by refreshOutPwr(), which runs on a band change and after
        our own write - not every poll, because it reads the band's whole
@@ -8474,44 +8657,82 @@ async function tick() {
       lastScreen = screen;
       const isFt8  = (screen === "ft8");
       const isWspr = (screen === "wspr");
+      const isCw   = (screen === "cw");
+      {
+        const cwTx = document.getElementById("cw-tx-wrap");
+        if (cwTx) cwTx.style.display = isCw ? "" : "none";
+      }
       /* The spectrum and waterfall belong to the panadapter and to nothing
          else: neither decode page produces them, so both hide for FT8 and for
          WSPR alike. One rule for the page - show what the Tab5 is showing. */
       const noPan = isFt8 || isWspr;
-      /* Band/Mode/BW/Zoom belong to the panadapter's idea of the radio; on
-         the WSPR page that page owns the dial. Disabled rather than merely
-         dimmed - the firmware refuses these four with a reason now, and a
-         control that is offered and then refused is worse than one that is
-         plainly unavailable. Freq stays live on purpose, so a beacon off the
-         standard dial frequency can still be chased. */
-      ["band", "mode", "bw", "zoom"].forEach((id) => {
-        const pill = document.getElementById("pill-" + id);
-        if (!pill) return;
-        pill.classList.toggle("dial-locked", isWspr);
-        pill.title = isWspr
-          ? "The WSPR page owns the dial - use its own band button, or leave the page"
-          : "";
-      });
-      /* ⛔ ON THE DIGI SCREEN THESE FOUR ARE NOT HIDDEN BECAUSE THEY ARE
-         UNTIDY - THEY DO NOT WORK. The FT8/FT4/JS8 engine owns the dial, the
-         firmware refuses band, mode and bandwidth while it is running, and the
-         pane carries its own Band... preset list for the only band change that
+      /* Band/Mode/BW/Zoom/Tune belong to the panadapter's idea of the radio;
+         on the WSPR page that page owns the dial, and Zoom/Tune have nothing
+         to act on either - spec-wrap/wf-wrap are hidden on this same screen
+         a few lines below, so there is no spectrum to zoom and no signal for
+         Tune to find.
+         ⛔ HIDDEN, NOT GREYED (operator, 2026-11-07: Randy N4OPI asked what
+         Zoom/Tune even do on a decode page - a dimmed control still invites
+         the question the Tab5 never gets, because the Tab5 doesn't offer the
+         gesture outside the panadapter screen at all). Greying with
+         `dial-locked` was the old rule; this is the web matching the Tab5's
+         own behaviour instead of inventing a softer refusal. */
+      /* (The pills are set in ONE place, further down - see TOP_PILL_HIDDEN.) */
+      /* ⛔ ON THE DIGI SCREEN THESE ARE NOT HIDDEN BECAUSE THEY ARE UNTIDY -
+         THEY DO NOT WORK. The FT8/FT4/JS8 engine owns the dial, the firmware
+         refuses band, mode and bandwidth while it is running, and the pane
+         carries its own Band... preset list for the only band change that
          makes sense here. RIT is radio state that the slot timing does not
          follow at all. Offering a control and then refusing it is worse than
-         not offering it - the same judgement the WSPR page already made, taken
-         one step further because here there is nothing to grey out FOR.
+         not offering it - the same judgement the WSPR page already made.
 
          Operator, 2026-10-15: "band, mode, bw, rit ... not allowed to change
          and is irrelevant for JS8".
 
-         ⭐ ZOOM, FREQ AND F STAY. Zoom and F belong to the view, not the
-         radio, and the frequency readout is how an off-standard JS8 or FT8
-         frequency is seen and set - which is why freq was already kept out of
-         the WSPR dial-lock set above. Operator's list, unchanged. */
-      ["band", "mode", "bw", "rit"].forEach((id) => {
-        const pill = document.getElementById("pill-" + id);
-        if (pill) pill.style.display = isFt8 ? "none" : "";
-      });
+         ⛔ ZOOM AND TUNE JOINED THIS LIST 2026-11-07, having been kept on the
+         strength of a rule ("Zoom is a view control") that stopped being true
+         once spec-wrap/wf-wrap started hiding on this screen too - by then
+         there was no spectrum left for Zoom to act on, and Tune's SSB
+         estimator still arms on USB (the radio mode FT8/JS8 run in) with
+         nothing to stop it retuning the dial out from under the decoder.
+         Randy N4OPI asked what they did; the honest answer was "nothing you
+         can see, and one of them could move your dial." FREQ AND F STAY -
+         Freq is how an off-standard JS8/FT8 frequency is seen and set, and F
+         was already removed below for having nothing to flatten. */
+      /* ⛔ ONE RULE PER PILL, SET ONCE. This used to be two loops: the WSPR
+         one above hid Band/Mode/BW/Zoom/Tune, and then this FT8 one ran and
+         set display "" on every screen that was not FT8 - so on WSPR it put
+         them all straight back. The Mode block below did the same. Measured
+         on bench1 2026-11-11: screen "wspr", all six pills visible. Operator:
+         "remove the MODE and BW and ZOOM and TUNE and RIT buttons from the
+         top bar - what use are they here anyways on WSPR?" Band goes too: the
+         firmware refuses it on the WSPR page (wspr_owns_the_dial()). */
+      {
+        const TOP_PILL_HIDDEN = {
+          band:     isFt8,
+          mode:     isFt8 || isWspr || isCw,
+          bw:       isFt8 || isWspr,
+          zoom:     isFt8 || isWspr,
+          zerobeat: isFt8 || isWspr,
+          rit:      isFt8 || isWspr,
+        };
+        for (const id in TOP_PILL_HIDDEN) {
+          const pill = document.getElementById("pill-" + id);
+          if (pill) pill.style.display = TOP_PILL_HIDDEN[id] ? "none" : "";
+        }
+        updateRitParkPill();   /* Park follows RIT's screen rule */
+      }
+      /* Mode is its own rule, not folded into the list above: it hides on
+         FT8/JS8 for the same reason the others do (the slot engine owns the
+         dial), AND on CW (operator, 2026-11-09) - the mode-banner above
+         already says "MODE: CW" in the Tab5's own words, and the dial is
+         pinned to CW the same way the Tab5 itself pins the pill (mode_dead
+         in ui.c, "the mode there is PINNED to CW"), it just dims there
+         instead of removing it. Hidden, not dimmed, for the same reason the
+         block above gives: a control that cannot do anything should not be
+         on screen inviting the question. Band/BW/Zoom stay live on CW - it
+         is still a tuning page for everything else. */
+      /* (Mode is in TOP_PILL_HIDDEN above.) */
       /* F (flat-spectrum) goes with them. It is not a pill, so it needs its
          own line - and it is not kept for being a view control either: there
          is no spectrum on this screen to flatten, so the button does nothing
@@ -8574,6 +8795,20 @@ async function tick() {
         fpsEl.classList.remove("bad");
         ft8OptsRefreshBadge();   // fresh count each time this screen comes up
       }
+      /* ⛔ LEAVING FT8/WSPR LEFT THE CHIP SAYING SO FOREVER. Nothing else ever
+         writes fpsEl except this block (FT8/WSPR text, above) and the spectrum
+         WS onmessage handler's own fps counter - which only runs once a frame
+         actually arrives. A CW or Panadapter entry has its own frames inbound
+         (WS is unpaused on the Tab5 the same tick), but the chip sat on
+         whichever protocol-mode text was last painted until the first of those
+         frames both arrived AND got all the way through onmessage - one
+         dropped/delayed frame and it reads "FT8 mode" with CW plainly running
+         underneath it (Randy N4OPI, groups.io 2026-11-06, screenshot showing
+         CW frequency/BW/ticker live under a frozen "FT8 mode" chip). Clear it
+         on the way out instead of waiting on that race. */
+      if (!isFt8 && !isWspr && (wasScreen === "ft8" || wasScreen === "wspr")) {
+        fpsEl.textContent = "connecting";
+      }
     }
 
     /* The heading the Tab5 shows on this screen, in the same words. Repainted
@@ -8593,6 +8828,7 @@ async function tick() {
          ccd435ca; this is the same fix on the same words, because two surfaces
          wording it differently is how an operator decides neither is right. */
       const want = screen === "wspr" ? "MODE: WSPR"
+                 : screen === "cw"   ? "MODE: CW"
                  : screen === "ft8"  ? (ft8Proto() === "JS8"
                                           ? js8SubmodeShort(lastJs8Submode)
                                           : "MODE: " + ft8Proto())
@@ -9012,12 +9248,20 @@ async function tick() {
     }
 
     /* Bottom-right: the link in use - Ethernet (W5500 PoE base) while it has
-       an address, otherwise WiFi - and its IP */
+       an address, otherwise the WiFi network name. The WiFi signal strength
+       left the bar (operator, 2026-11-11: bottom-bar cleanup) and lives in the
+       tooltip. */
     const wifi = s.wifi, eth = s.eth;
-    document.getElementById("wifi").textContent =
-      (eth && eth.in_use) ? ("Ethernet " + eth.mbps + " Mbit/s " + eth.ip)
-      : (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
-                            : "--";
+    const wifiEl = document.getElementById("wifi");
+    if (eth && eth.in_use) {
+      wifiEl.textContent = "Ethernet " + eth.ip;
+      document.getElementById("wifi-wrap").title =
+        "Ethernet (W5500 PoE base), " + eth.mbps + " Mbit/s, " + eth.ip;
+    } else {
+      wifiEl.textContent = (wifi && wifi.ssid) ? wifi.ssid : "--";
+      document.getElementById("wifi-wrap").title =
+        (wifi && wifi.ssid) ? ("WiFi " + wifi.ssid + ", " + wifi.rssi + " dBm") : "WiFi";
+    }
 
     /* QSO count + ADIF/QRZ/eQSL buttons - all hidden until there's at least
        one QSO logged (nothing to download/upload otherwise). */
@@ -9749,6 +9993,13 @@ function drawSpots(ctx, W, H) {
      entirely rather than left as a line pointing at nothing. */
   const cand = [];
   for (const sp of lastSpots) {
+    /* Hard page rule, not the optional mode filter: on the CW page, CW spots
+       only - mirrors spots_lane.c. Tapping a DIGI/SSB spot sets the radio's
+       mode to it (tuneToSpot() -> set_mode), which takes the operator off the
+       CW page's own mode entirely. The Digi sub-band stays reachable for CW
+       operation there; only FT8/FT4/SSB ACTIVITY spots are hidden (operator,
+       2026-11-09: "no DiGi mode to be selected by choosing a FT spot"). */
+    if (lastScreen === "cw" && sp.m !== "cw") continue;
     const opa = spotOpacity(sp.a || 0);
     if (opa <= 0) continue;
     cand.push({ sp, opa, x: freqToPixelX(sp.f, W) });
@@ -10165,11 +10416,44 @@ function pillSay(id, msg, ms) {
    list offers, and a radio set outside it still reports its true speed. */
 const KEYER_WPM_LIST = [0, 8, 10, 12, 14, 16, 18, 20, 22, 25, 28, 30, 35, 40];
 
+/* The deferred half of Tune (Ralph DL1HR, 2026-11-10). When the band is quiet
+   the device answers "listening" and moves the dial (or gives up) up to 8 s
+   later. The Tab5 toasts that ending; this page used to show "listening", go
+   back to the glyph, and never say what happened - which read as the web tune
+   being less precise than the Tab5's. It is the same estimator. The ending now
+   arrives on the status poll as tune_out {seq, msg}, the toast's own words. */
+const ZB_GLYPH = "◎";
+let tuneOutSeq   = 0;      // last outcome seq this page has seen
+let tuneWaitSeq  = -1;     // >= 0 while a press of OURS is listening
+let tuneWaitTmr  = null;
+let zbRestoreTmr = null;
+
+function zbShow(msg, ms) {
+  const val = document.getElementById("zerobeat");
+  if (!val) return;
+  val.textContent = msg;
+  clearTimeout(zbRestoreTmr);
+  zbRestoreTmr = ms ? setTimeout(() => { val.textContent = ZB_GLYPH; }, ms) : null;
+}
+
+function applyTuneOutcome(to) {
+  const seq = (to && typeof to.seq === "number") ? to.seq : 0;
+  /* Only an outcome that arrived AFTER our own press is ours to show. A press
+     on the Tab5 has its own toast, and an old outcome is history. */
+  if (tuneWaitSeq >= 0 && seq !== tuneWaitSeq && to && to.msg) {
+    tuneWaitSeq = -1;
+    clearTimeout(tuneWaitTmr);
+    zbShow(to.msg.replace(/^(Zero-beat|SSB tune): /, ""), 4000);
+  }
+  tuneOutSeq = seq;
+}
+
 async function zeroBeatClick() {
   const val = document.getElementById("zerobeat");
   if (!val) return;
-  const was = val.textContent;
+  const was = ZB_GLYPH;
   val.textContent = "...";
+  const seqAtPress = tuneOutSeq;
   const r = await sendCmd({ action: "cw_tune" });
   /* The device answers with what it DID, including which estimator ran and
      whether it is still listening - say that rather than a bare tick, because
@@ -10182,8 +10466,17 @@ async function zeroBeatClick() {
     msg = r.moved_hz ? ((r.moved_hz > 0 ? "+" : "") + r.moved_hz + " Hz") : "on peak";
   else if (r.ok) msg = "done";
   else msg = r.error || "refused";
-  val.textContent = msg;
-  setTimeout(() => { val.textContent = was; }, 3000);
+  if (r && r.ok && r.listening) {
+    /* Hold "listening" until the outcome lands on the status poll. The
+       device's own windows are 8 s (CW) and 4 s (SSB); 12 s covers both plus
+       a slow poll, and then the pill gives up rather than sticking. */
+    tuneWaitSeq = seqAtPress;
+    zbShow(msg, 0);
+    clearTimeout(tuneWaitTmr);
+    tuneWaitTmr = setTimeout(() => { tuneWaitSeq = -1; zbShow(was, 1); }, 12000);
+    return;
+  }
+  zbShow(msg, 3000);
 }
 
 function updateRitParkPill() {
@@ -10194,7 +10487,9 @@ function updateRitParkPill() {
      you to stop reading it - the same rule the activation pill follows. */
   const canPark    = !!lastRitHz;
   const canRestore = !canPark && !!lastRitParkedHz;
-  pill.style.display = (canPark || canRestore) ? "" : "none";
+  /* Never on a decode page: RIT itself is hidden there (TOP_PILL_HIDDEN). */
+  const decodePage = lastScreen === "ft8" || lastScreen === "wspr";
+  pill.style.display = (!decodePage && (canPark || canRestore)) ? "" : "none";
   if (!canPark && !canRestore) return;
   const hz = canPark ? lastRitHz : lastRitParkedHz;
   document.getElementById("ritpark-lab").textContent = canPark ? "Park" : "Restore";
@@ -10251,62 +10546,377 @@ function openKeyer() {
   toggleDropdown("keyer");
 }
 
+/* T159 (Ralph DL1HR): CW page TX panel. s.cw_tx is only present while the
+   Tab5 is on the CW screen (webserver.c's own gate) - absent means "nothing
+   to show", not "six empty macros", so the panel's visibility already
+   follows the screen-change block above and this only fills it in. */
+function sendCwText(text) {
+  if (!text) return;
+  sendCmd({ action: "cw_send", text: text });
+}
+
+/* Set (or with "" clear) the station the CW page is working. */
+async function cwStnAdopt(call) {
+  const st = document.getElementById("cw-stn-state");
+  try {
+    const r = await fetch("/api/cmd", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "cw_adopt", call: call })
+    });
+    let j = {};
+    try { j = await r.json(); } catch (e) {}
+    if (!r.ok || j.ok === false) {
+      if (st) st.textContent = j.error || ("HTTP " + r.status);
+      return false;
+    }
+    cwStnDirty = false;
+    /* Paint the answer now; the next poll confirms it. */
+    if (lastCwStn) { lastCwStn.target = j.target || ""; lastCwStn.rst_rcvd = ""; }
+    cwStnPaint();
+    return true;
+  } catch (err) {
+    if (st) st.textContent = "No answer from the Tab5.";
+    return false;
+  }
+}
+
+function cwStnPaint() {
+  const row = document.getElementById("cw-stn");
+  if (!row) return;
+  /* Firmware without the station fields: no row, rather than a box that
+     appears to set a callsign and does nothing. */
+  if (!lastCwStn) { row.style.display = "none"; return; }
+  row.style.display = "flex";
+  const inp = document.getElementById("cw-stn-call");
+  if (!cwStnDirty && document.activeElement !== inp) inp.value = lastCwStn.target || "";
+  const st = document.getElementById("cw-stn-state");
+  st.textContent = lastCwStn.target
+    ? "{CALL} sends " + lastCwStn.target
+      + (lastCwStn.rst_rcvd ? " - their report " + lastCwStn.rst_rcvd : "")
+    : "no station set - {CALL} is empty";
+  const hb = document.getElementById("cw-stn-heard");
+  const h = lastCwStn.heard || "";
+  if (h && h !== lastCwStn.target) {
+    hb.style.display = "";
+    hb.textContent = "Use " + h;
+    hb.title = "Decoded " + (lastCwStn.heard_age_s >= 0 ? lastCwStn.heard_age_s + " s ago" : "recently")
+             + " - click to work this station";
+    hb.dataset.call = h;
+  } else hb.style.display = "none";
+}
+
+(function wireCwStation() {
+  const inp = document.getElementById("cw-stn-call");
+  if (!inp) return;
+  inp.addEventListener("input", () => { cwStnDirty = true; });
+  const set = () => { const c = inp.value.trim().toUpperCase(); if (c) cwStnAdopt(c); };
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); set(); inp.blur(); } });
+  document.getElementById("cw-stn-set").addEventListener("click", set);
+  document.getElementById("cw-stn-clear").addEventListener("click", () => { inp.value = ""; cwStnAdopt(""); });
+  document.getElementById("cw-stn-heard").addEventListener("click", (e) => cwStnAdopt(e.currentTarget.dataset.call || ""));
+  document.getElementById("cw-stn-log").addEventListener("click", () => {
+    /* What is typed counts even if Set was not pressed: he is logging THIS call. */
+    const typed = inp.value.trim().toUpperCase();
+    logOpen({ call: typed || (lastCwStn && lastCwStn.target) || "",
+              rstRcvd: (lastCwStn && lastCwStn.rst_rcvd) || "" });
+  });
+})();
+
+function updateCwTx(s) {
+  const ctx = s.cw_tx;
+  /* Off the CW page there is no station - the log window must not pre-fill
+     one that was being worked an hour ago. */
+  lastCwStn = ((s.screen || "panadapter") === "cw" && ctx && typeof ctx.target === "string")
+    ? { target: ctx.target, heard: ctx.heard || "", heard_age_s: ctx.heard_age_s, rst_rcvd: ctx.rst_rcvd || "" }
+    : null;
+  cwStnPaint();
+  // Checked on s.screen directly, not on the wrap's own display style: the
+  // screen-change block that sets that style runs LATER in this same poll
+  // handler, so reading it back here would lag the switch by one tick.
+  if ((s.screen || "panadapter") !== "cw" || !ctx) return;
+  updateCwQueue(ctx);
+
+  const setLbl = document.getElementById("cw-tx-set");
+  if (setLbl) setLbl.textContent = (ctx.set_b ? "Contest set" : "General set") + " ⇄";
+
+  const contestBtn = document.getElementById("cw-tx-contest");
+  if (contestBtn) {
+    lastCwContestName = ctx.contest_name || "";
+    contestBtn.textContent = lastCwContestName ? ("Contest: " + lastCwContestName) : "Set contest…";
+  }
+
+  const lastLbl = document.getElementById("cw-tx-last");
+  if (lastLbl && ctx.last_sent !== lastCwLastSent) {
+    lastCwLastSent = ctx.last_sent;
+    lastLbl.textContent = ctx.last_sent ? ("sent: " + ctx.last_sent) : "";
+  }
+
+  // Rebuild the six buttons only when the text or the active set actually
+  // changed - the poll runs at 1 Hz and a macro edit on the Tab5 is rare.
+  const macros = Array.isArray(ctx.macros) ? ctx.macros : [];
+  const changed = ctx.set_b !== lastCwSetB ||
+                  !lastCwMacros || macros.length !== lastCwMacros.length ||
+                  macros.some((m, i) => m !== lastCwMacros[i]);
+  if (!changed) return;
+  lastCwSetB   = ctx.set_b;
+  lastCwMacros = macros.slice();
+
+  const box = document.getElementById("cw-tx-macros");
+  if (!box) return;
+  box.innerHTML = "";
+  macros.forEach((raw, idx) => {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.gap = "4px";
+
+    const btn = document.createElement("button");
+    btn.textContent = raw && raw.length ? raw : "(empty)";
+    btn.disabled = !raw || !raw.length;
+    btn.title = "Send this macro now - through the QMX's own keyer";
+    btn.style.flex = "1";
+    btn.style.minWidth = "0";
+    btn.style.overflow = "hidden";
+    btn.style.textOverflow = "ellipsis";
+    btn.style.whiteSpace = "nowrap";
+    btn.addEventListener("click", () => sendCwText(raw));
+    row.appendChild(btn);
+
+    // Edit, added on request (Ralph DL1HR/Steffen, 2026-11-06). A plain
+    // prompt() rather than a custom modal: this is an occasional,
+    // auxiliary action next to the six buttons that matter for actually
+    // operating - not worth a dialog of its own for v1.
+    const edit = document.createElement("button");
+    edit.textContent = "✎";   // pencil
+    edit.title = "Edit this macro";
+    edit.style.flex = "0 0 auto";
+    edit.addEventListener("click", () => {
+      const next = window.prompt("Macro " + (idx + 1) +
+        " ({MYCALL} {PARK} {CALL} {RST} {SERIAL} work here too):", raw || "");
+      if (next === null || next === raw) return;   // cancelled or unchanged
+      sendCmd({ action: "cw_macro_edit", idx: idx, text: next });
+      /* No optimistic paint - the save goes to the radio's own settings
+         store, and the next poll's macros array is the only thing that
+         knows it landed (same reasoning as rit_park above). */
+    });
+    row.appendChild(edit);
+
+    box.appendChild(row);
+  });
+}
+
+(function wireCwSetToggle() {
+  const btn = document.getElementById("cw-tx-set");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    const wantB = !lastCwSetB;
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cw_msg_set: wantB ? 1 : 0 })
+    });
+    /* Force the next poll to rebuild the six buttons even if the macro TEXT
+       in the new set happens to match the old one slot-for-slot (unlikely,
+       but the cheap guard is just clearing lastCwSetB). */
+    lastCwSetB = null;
+  });
+})();
+
+(function wireCwContest() {
+  const btn = document.getElementById("cw-tx-contest");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    const next = window.prompt(
+      "Contest name/ID, written onto every CW QSO logged while this is set " +
+      "(ADIF CONTEST_ID - e.g. \"CQ WW CW\", \"ARRL SS CW\"). Empty = not running a contest:",
+      lastCwContestName || "");
+    if (next === null || next === lastCwContestName) return;   // cancelled or unchanged
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cw_contest_name: next })
+    });
+    lastCwContestName = null;   // force the next poll to repaint the button
+  });
+})();
+
+(function wireCwSend() {
+  const btn   = document.getElementById("cw-tx-send-btn");
+  const input = document.getElementById("cw-tx-input");
+  if (!btn || !input) return;
+  const go = () => {
+    const text = input.value.trim();
+    if (!text) return;
+    sendCwText(text);
+    /* Kept, not cleared - a near-identical resend (a cut number corrected, a
+       report added) is the common case, and retyping it punishes that. */
+  };
+  btn.addEventListener("click", go);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+})();
+
+/* Type-ahead (Ralph DL1HR, 2026-11-10). The field only ever holds the word
+   being typed: a finished word (Space) is sent and leaves the field, so there
+   is nothing on screen that looks editable but has already gone. A paste of
+   several words sends every complete one. Enter sends the remainder. Sent
+   words collect in the line below so the operator can see the run. */
+let cwLiveSent = "";
+function cwLiveEcho(t) {
+  cwLiveSent = (cwLiveSent + t).slice(-200);
+  const el = document.getElementById("cw-tx-sentline");
+  if (el) el.textContent = cwLiveSent;
+}
+async function cwLiveSend(t) {
+  if (!t.trim()) return;
+  const r = await sendCmd({ action: "cw_send", text: t });
+  if (r && r.ok === false) {
+    const el = document.getElementById("cw-tx-sentline");
+    if (el) el.textContent = "NOT SENT (" + (r.err || "refused") + "): " + t;
+    return;
+  }
+  cwLiveEcho(t);
+}
+(function wireCwLive() {
+  const input = document.getElementById("cw-tx-live");
+  const stop  = document.getElementById("cw-tx-stop");
+  if (!input || !stop) return;
+  input.addEventListener("input", () => {
+    const v = input.value;
+    const last = v.lastIndexOf(" ");
+    if (last < 0) return;
+    const done = v.slice(0, last + 1).replace(/^ +/, "");
+    input.value = v.slice(last + 1);
+    // Collapse runs of spaces: a double tap of Space would otherwise key a
+    // long gap, and the radio's word space is already in the keyer.
+    if (done.trim()) cwLiveSend(done.replace(/ +/g, " "));
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const rest = input.value.trim();
+    input.value = "";
+    if (rest) cwLiveSend(rest + " ");
+  });
+  stop.addEventListener("click", async () => {
+    const r = await sendCmd({ action: "cw_cancel" });
+    const el = document.getElementById("cw-tx-sentline");
+    if (el && r && r.ok)
+      el.textContent = r.dropped ? ("stopped - " + r.dropped + " char(s) not sent")
+                                 : "stopped - nothing was waiting";
+    cwLiveSent = "";
+  });
+})();
+
+function updateCwQueue(ctx) {
+  const el = document.getElementById("cw-tx-queue");
+  if (!el) return;
+  const q = typeof ctx.queued === "number" ? ctx.queued : 0;
+  const k = typeof ctx.keying === "number" ? ctx.keying : -1;
+  const parts = [];
+  if (k > 0) parts.push("keying " + k + (k >= 9 ? "+" : "") + " left");
+  if (q > 0) parts.push(q + " queued");
+  el.textContent = parts.join(" · ");
+}
+
+const fmtW = (w) => (w / 100).toFixed(2).replace(/0$/, "") + " W";
+
+/* Paints the TX power row in the Radio menu from outPwrInfo: one slider over
+   the band's calibrated levels (they ARE the Calibrate Power sweep's results -
+   see the out_power action for why a free-text wattage is refused). */
+let pwrSayUntil = 0;
 function updateOutPwrPill() {
-  const pill = document.getElementById("pill-outpwr");
-  if (!pill) return;
-  /* Hidden until the ladder has been fetched once AND this band turned out to
-     be calibrated. An uncalibrated band has no levels to offer, and offering
-     a watts box there would invite exactly the free-text wattage the device
-     refuses. */
+  const sl  = document.getElementById("pwr-slider");
+  const val = document.getElementById("pwr-val");
+  if (!sl || !val) return;
   /* ⛔ CASE-INSENSITIVE, AND THIS IS NOT DEFENSIVE PADDING - the two sources
      genuinely disagree. Measured on bench1, 2026-10-31: /api/status reports
      band "20m" and the out_power action reports "20M", because the ladder's
      name comes from adif_log_band_for_freq() (ADIF bands are upper case) and
      the status field comes from ui_get_band_str(). A strict === here meant
-     the pill was NEVER shown on any band, which is exactly what the first
+     the control was NEVER shown on any band, which is exactly what the first
      run on hardware did. */
   const sameBand = outPwrInfo && typeof outPwrInfo.band === "string" &&
                    outPwrInfo.band.toUpperCase() === (lastBandStr || "").toUpperCase();
+  document.getElementById("pwr-band").textContent = lastBandStr ? "(" + lastBandStr + ")" : "";
   const ok = outPwrInfo && outPwrInfo.calibrated && sameBand;
-  pill.style.display = ok ? "" : "none";
-  if (!ok) return;
-  const t = outPwrInfo.target_x100;
-  document.getElementById("outpwr").textContent =
-    (typeof t === "number") ? ((t / 100).toFixed(2).replace(/0$/, "") + " W") : "--";
+  const saying = Date.now() < pwrSayUntil;
+  /* An uncalibrated band has no levels to offer, and a watts box there would
+     invite exactly the free-text wattage the device refuses - so: no slider,
+     and the reason in its place. */
+  if (!ok) {
+    sl.hidden = true;
+    if (!saying) {
+      val.classList.add("say");
+      val.textContent = (outPwrInfo && sameBand) ? "not calibrated - run Calibrate Power on the Tab5" : "--";
+    }
+    return;
+  }
+  const levels = outPwrInfo.watts_x100 || [];
+  sl.hidden = levels.length < 2;
+  sl.max = String(Math.max(0, levels.length - 1));
+  sl._levels = levels;
+  /* Do not move the knob under a finger that is dragging it. */
+  if (!sl._dragging) {
+    const i = levels.indexOf(outPwrInfo.target_x100);
+    sl.value = String(i >= 0 ? i : 0);
+  }
+  if (!saying) {
+    val.classList.remove("say");
+    const i = parseInt(sl.value, 10);
+    val.textContent = levels.length ? fmtW(levels[i] != null ? levels[i] : levels[0]) : "--";
+  }
 }
+
+function pwrSay(msg) {
+  const val = document.getElementById("pwr-val");
+  if (!val) return;
+  pwrSayUntil = Date.now() + 4000;
+  val.classList.add("say");
+  val.textContent = msg;
+  val.title = msg;
+  setTimeout(updateOutPwrPill, 4100);
+}
+
+(function wirePwrSlider() {
+  const sl = document.getElementById("pwr-slider");
+  if (!sl) return;
+  /* While dragging: show the level under the knob, send nothing. */
+  sl.addEventListener("input", () => {
+    sl._dragging = true;
+    const lv = sl._levels || [];
+    const w = lv[parseInt(sl.value, 10)];
+    const val = document.getElementById("pwr-val");
+    if (val && w != null) { val.classList.remove("say"); val.textContent = fmtW(w); }
+  });
+  /* On release: one write. */
+  sl.addEventListener("change", async (e) => {
+    e.stopPropagation();
+    sl._dragging = false;
+    const w = (sl._levels || [])[parseInt(sl.value, 10)];
+    if (w == null) return;
+    const r = await sendCmd({ action: "out_power", watts_x100: w });
+    /* A deferred write is a success that did only half the job, and the
+       device says which - pass it on rather than implying the PA moved
+       while WSPR or a burst still owns it. */
+    if (r && r.ok && r.deferred) pwrSay(r.note || "stored, not applied");
+    else if (r && !r.ok) pwrSay(r.error || "refused");
+    await refreshOutPwr();
+  });
+  /* Keep the menu open while the slider is used. */
+  ["click", "pointerdown"].forEach((ev) => sl.addEventListener(ev, (e) => e.stopPropagation()));
+})();
 
 async function refreshOutPwr() {
   /* On demand only - it reads this band's whole calibration table, which is
-     not something to do at 1 Hz. Called when the pill is opened and when the
-     band changes. */
+     not something to do at 1 Hz. Called on a band change, when the Radio
+     menu opens and after our own write. */
   outPwrInfo = await sendCmd({ action: "out_power" });
   updateOutPwrPill();
 }
 
-async function openOutPwr() {
-  await refreshOutPwr();
-  const dd = document.getElementById("dd-outpwr");
-  if (!dd || !outPwrInfo || !outPwrInfo.calibrated) return;
-  dd.innerHTML = "";
-  (outPwrInfo.watts_x100 || []).forEach(w => {
-    const btn = document.createElement("button");
-    btn.textContent = (w / 100).toFixed(2).replace(/0$/, "") + " W";
-    if (w === outPwrInfo.target_x100) btn.classList.add("active");
-    btn.onclick = async (e) => {
-      e.stopPropagation();
-      closeAllDropdowns();
-      const r = await sendCmd({ action: "out_power", watts_x100: w });
-      /* A deferred write is a success that did only half the job, and the
-         device says which - pass it on rather than letting the pill imply the
-         PA moved while WSPR or a burst still owns it. */
-      if (r && r.ok && r.deferred) pillSay("outpwr", r.note || "stored, not applied", 4000);
-      else if (r && !r.ok) pillSay("outpwr", r.error || "refused", 4000);
-      await refreshOutPwr();
-    };
-    dd.appendChild(btn);
-  });
-  toggleDropdown("outpwr");
-}
+/* Re-read on every opening of the Radio menu, so a level changed on the Tab5
+   is right when the row is looked at - the poll only repaints. */
+document.getElementById("radio-group-btn").addEventListener("click", () => {
+  refreshOutPwr();
+});
 
 /* =====================================================================
    Activation (POTA / SOTA). The pill is only visible while one is RUNNING - the
@@ -10440,8 +11050,16 @@ function logSyncState() {
       : "no activation running";
 }
 
-function logOpen() {
-  document.getElementById('log-call').value = "";
+/* pre: optional { call, rstRcvd } - the CW panel's "Log this contact" hands
+   over the station it is working, so the window does not open empty in the
+   middle of a contact. From the menu on the CW page the same station is used. */
+function logOpen(pre) {
+  if (!pre && lastCwStn && lastCwStn.target)
+    pre = { call: lastCwStn.target, rstRcvd: lastCwStn.rst_rcvd };
+  pre = pre || {};
+  document.getElementById('log-call').value = pre.call || "";
+  for (const id of ['log-name', 'log-qth', 'log-comment'])
+    document.getElementById(id).value = "";
   /* PRE-FILLED FROM THE MODE. A CW window offering 59 would be re-typed for
      every contact; clearing one logs no report rather than a wrong one. */
   document.getElementById('log-rst-s').value = logDefaultRst();
@@ -10454,12 +11072,15 @@ function logOpen() {
     const cw = (lastMode || "").toUpperCase().startsWith("C");
     document.getElementById('log-rst-r').value =
         (u === null) ? logDefaultRst() : (cw ? "5" + u + "9" : "5" + u);
+    /* A report actually copied from the station beats a measured S digit. */
+    if (pre.rstRcvd) document.getElementById('log-rst-r').value = pre.rstRcvd;
   }
   document.getElementById('log-err').textContent = "";
   document.getElementById('log-ok').textContent = "";
   logSyncState();
   document.getElementById('log-modal').style.display = "block";
-  document.getElementById('log-call').focus();
+  /* With the callsign already there, the next thing to type is the name. */
+  document.getElementById(pre.call ? 'log-name' : 'log-call').focus();
 }
 
 async function logSend() {
@@ -10473,7 +11094,10 @@ async function logSend() {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({action: "log_qso", call: call,
                           rst_sent: document.getElementById('log-rst-s').value.trim(),
-                          rst_rcvd: document.getElementById('log-rst-r').value.trim()})
+                          rst_rcvd: document.getElementById('log-rst-r').value.trim(),
+                          name:     document.getElementById('log-name').value.trim(),
+                          qth:      document.getElementById('log-qth').value.trim(),
+                          comment:  document.getElementById('log-comment').value.trim()})
   });
   let j = {};
   try { j = await r.json(); } catch (e) {}
@@ -10489,7 +11113,16 @@ async function logSend() {
       + (j.act_qsos ? "  -  " + j.act_qsos + (j.act_need ? "/" + j.act_need : "")
                     : "");
   document.getElementById('log-call').value = "";
+  /* Name, QTH and remarks belong to THAT contact - unlike the reports, which
+     a run of contacts keeps. */
+  for (const id of ['log-name', 'log-qth', 'log-comment'])
+    document.getElementById(id).value = "";
   document.getElementById('log-call').focus();
+  /* The contact with the CW panel's station is finished: forget it, as the
+     Tab5's own "TU + log" step does, so {CALL} cannot key the last station's
+     callsign into the next contact. */
+  if (lastCwStn && lastCwStn.target && lastCwStn.target === (j.call || call))
+    cwStnAdopt("");
   /* The answer already carries the new count, but the pill and everything else
      reading /api/status should not wait a second to agree with it. */
   tick();
@@ -10504,9 +11137,9 @@ async function logSend() {
   document.getElementById('log-modal').addEventListener('click', (e) => {
     if (e.target.id === 'log-modal') close();
   });
-  /* Enter logs from any of the three fields - the same key the Tab5 window's
-     keyboard action does. */
-  for (const id of ['log-call', 'log-rst-s', 'log-rst-r']) {
+  /* Enter logs from any field - the same key the Tab5 window's keyboard
+     action does. */
+  for (const id of ['log-call', 'log-rst-s', 'log-rst-r', 'log-name', 'log-qth', 'log-comment']) {
     document.getElementById(id).addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); logSend(); }
     });
@@ -11423,19 +12056,22 @@ function checkPageIsStale(running) {
   if (!running) return;
   if (s_fw_seen === null) { s_fw_seen = running; return; }
   if (running === s_fw_seen) return;
-  if (document.getElementById("stale-page")) return;   // already saying so
+  // Names both versions: "it updated" is a different message from "you are
+  // looking at something old", and the operator needs the second one.
+  stalePageBanner("This page was loaded from firmware " + s_fw_seen +
+                  " and the Tab5 is now running " + running +
+                  " - reload to get the current controls.");
+}
 
+function stalePageBanner(text) {
+  if (document.getElementById("stale-page")) return;   // already saying so
   const bar = document.createElement("div");
   bar.id = "stale-page";
   bar.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:99999;" +
     "background:#ffa040;color:#101010;font:600 15px system-ui,sans-serif;" +
     "padding:10px 14px;display:flex;gap:12px;align-items:center;justify-content:center";
   const txt = document.createElement("span");
-  // Names both versions: "it updated" is a different message from "you are
-  // looking at something old", and the operator needs the second one.
-  txt.textContent = "This page was loaded from firmware " + s_fw_seen +
-                    " and the Tab5 is now running " + running +
-                    " - reload to get the current controls.";
+  txt.textContent = text;
   const btn = document.createElement("button");
   btn.textContent = "Reload";
   btn.style.cssText = "font:600 15px system-ui,sans-serif;padding:5px 14px;cursor:pointer";
@@ -11448,6 +12084,42 @@ function checkPageIsStale(running) {
   bar.appendChild(txt); bar.appendChild(btn);
   document.body.appendChild(bar);
 }
+
+// ⛔ THE SECOND WAY TO BE STALE: OLD FROM THE FIRST MOMENT (T180).
+// checkPageIsStale() above compares the firmware at the first poll with the
+// firmware later, so it only catches an update that happens WHILE the page is
+// open. A page the browser shows from its own copy without asking the Tab5 -
+// a restored session, a tab brought back - sees the new firmware from its
+// first poll on, and says nothing. Gyula HA3HZ, 2026-11-10: updated over
+// Wi-Fi, opened Firefox, saw the old page with no banner; later it was right.
+// (Which Firefox path showed him the old copy was not measured.)
+//
+// The server names the page by the firmware's ELF hash (the ETag). So: read
+// the ETag of the copy this browser holds, and ask the Tab5 whether that is
+// still the page - a conditional GET, answered with a bodyless 304 when it
+// is. A 200 with another ETag means this page is not the firmware's page.
+// only-if-cached never touches the network; if the browser holds no copy the
+// first fetch throws and nothing is claimed.
+async function checkPageCopyIsCurrent() {
+  try {
+    const held = await fetch("/", { cache: "only-if-cached", mode: "same-origin" });
+    const tag = held.headers.get("ETag");
+    try { if (held.body) held.body.cancel(); } catch (e) {}
+    if (!tag) return "no-etag";
+    const ac = new AbortController();
+    const now = await fetch("/", { cache: "no-store", headers: { "If-None-Match": tag }, signal: ac.signal });
+    const cur = now.headers.get("ETag");
+    ac.abort();                                  // a 200 carries the whole page: not wanted
+    if (now.status === 200 && cur && cur !== tag) {
+      stalePageBanner("Your browser showed its own old copy of this page - the Tab5 has " +
+                      "newer firmware. Reload to get the current controls.");
+      return "stale";
+    }
+    return "current";
+  } catch (e) { return "unknown"; }
+}
+/* A few seconds in: the page's own first requests go first on this link. */
+setTimeout(checkPageCopyIsCurrent, 4000);
 
 function paintUpdateNotice(s) {
   const el = document.getElementById("tab5fw");
@@ -11559,8 +12231,42 @@ function bpSolveView(wantCenterHz) {
   /* The DIAL lands on a whole kHz, so the box lands within 500 Hz of where it
      was dropped - under two pixels at band scale. */
   let d = Math.round((wantCenterHz - pan) / 1000) * 1000;
-  if (lastBandplan) d = Math.max(lastBandplan.lo, Math.min(lastBandplan.hi, d));
+  /* bpEffectiveRange(), NOT lastBandplan.lo/hi directly - ui.c's bp_solve_view()
+     had the matching bug (legal_band_edges() instead of effective_drag_edges()),
+     which is what let the dial - and so the preview here - land anywhere in the
+     whole band on the CW page instead of staying inside CW+Digi (operator,
+     2026-11-09). Same fix, same reason, both ends of the one gesture. */
+  if (lastBandplan) {
+    const r = bpEffectiveRange(lastBandplan);
+    d = Math.max(r.lo, Math.min(r.hi, d));
+  }
   return { dial: d, center: d + pan };
+}
+
+/* CW page: CW + Digi segments only, re-spanned across the full strip width -
+   mirrors ui.c's cw_digi[] branch (update_bandplan_strip). CW is legal inside
+   the digital sub-band but digital modes are not legal inside the CW one, so
+   CW-only was denying the operator spectrum he is allowed to use; Phone is
+   left out because the page clamps every tune into CW/Digi
+   (cw_bandplan_clamp_hz), so drawing it advertised a destination the page
+   refuses the moment you tap it (operator, 2026-11-09).
+
+   ⛔ drawBandplan() and the drag handler below MUST use the SAME lo/hi - the
+   drag handler used to divide by the full bp.lo/bp.hi span while the strip
+   was drawn (and its knob positioned) across this narrower CW+Digi span, so
+   a pointer px meant a different Hz to each: the knob moved faster than the
+   pointer, and clamping to the full band let it drag past the strip's own
+   edges (operator, 2026-11-09). One pair of functions, used everywhere. */
+function bpEffectiveSegs(bp) {
+  return (lastScreen === "cw")
+    ? bp.segs.filter(s => s.l === "CW" || s.l === "Digi")
+    : bp.segs;
+}
+function bpEffectiveRange(bp) {
+  const segs = bpEffectiveSegs(bp);
+  return segs.length
+    ? { lo: segs[0].lo, hi: segs[segs.length - 1].hi }
+    : { lo: bp.lo, hi: bp.hi };
 }
 
 function drawBandplan(previewHz) {
@@ -11579,8 +12285,9 @@ function drawBandplan(previewHz) {
   // control instead of an absolute one (#216, mirrors ui.c's OOB branch).
   if (!lastBandplan) { drawBandplanOob(ctx, W, H, dpr); return; }
 
-  const bp      = lastBandplan;
-  const bandLo  = bp.lo, bandHi = bp.hi;
+  const bp = lastBandplan;
+  const segs = bpEffectiveSegs(bp);
+  const { lo: bandLo, hi: bandHi } = bpEffectiveRange(bp);
   const span    = Math.max(1, bandHi - bandLo);
   /* previewCenter is a WINDOW centre during a drag, not a dial - the dial only
      moves when the radio cannot reach that window. See bpSolveView. */
@@ -11593,7 +12300,7 @@ function drawBandplan(previewHz) {
   const fadeA = bpFadeAlpha();   // 0 while dragging, ramping back to 1 after
   ctx.textBaseline = "middle";
   ctx.textAlign    = "center";
-  bp.segs.forEach(seg => {
+  segs.forEach(seg => {
     const x0 = Math.round((seg.lo - bandLo) / span * W);
     const x1 = Math.round((seg.hi - bandLo) / span * W);
     const w  = Math.max(1, x1 - x0);
@@ -11727,7 +12434,8 @@ function drawBandplanOob(ctx, W, H, dpr) {
 
   function clamp(hz) {
     hz = Math.round(hz / 1000) * 1000;
-    return Math.max(lastBandplan.lo, Math.min(lastBandplan.hi, hz));
+    const r = bpEffectiveRange(lastBandplan);
+    return Math.max(r.lo, Math.min(r.hi, hz));
   }
 
   canvas.addEventListener("pointerdown", (e) => {
@@ -11784,9 +12492,23 @@ function drawBandplanOob(ctx, W, H, dpr) {
       return;
     }
 
-    const hzPerPx = (lastBandplan.hi - lastBandplan.lo) / rectW;
-    targetCenter = Math.max(lastBandplan.lo,
-                     Math.min(lastBandplan.hi, startCenter + dx * hzPerPx));
+    const r = bpEffectiveRange(lastBandplan);
+    const hzPerPx = (r.hi - r.lo) / rectW;
+    /* ⛔ Clamp the CENTRE to [lo + span/2, hi - span/2], NOT to [lo, hi]
+       directly - mirrors ui.c's touch_event_cb fix. The visible-span BOX is
+       spanHz wide, drawn centred on targetCenter; clamping only its centre
+       let up to half the box hang off either end, pixel-clipped at the strip
+       so it LOOKED stopped while the window it represents did not (operator,
+       2026-11-09: "it has to stop whenever the edges touch the end or start
+       of the band plan"). Same spanHz drawBandplan() uses for the box. */
+    const spanHz = lastView ? lastView.span : 48000 / lastZoom;
+    const half = spanHz / 2;
+    if (r.hi - r.lo <= spanHz) {
+      targetCenter = (r.lo + r.hi) / 2;   // box wider than the track: no room to slide
+    } else {
+      targetCenter = Math.max(r.lo + half,
+                       Math.min(r.hi - half, startCenter + dx * hzPerPx));
+    }
     drawBandplan(targetCenter);
     /* Usually unchanged - a drag inside the radio's reach moves the window and
        leaves the dial alone, which is the point of the gesture. */
@@ -11847,8 +12569,9 @@ function drawBandplanOob(ctx, W, H, dpr) {
       commitCenter(targetCenter);
     } else {
       const rect = canvas.getBoundingClientRect();
-      const hzPerPx = (lastBandplan.hi - lastBandplan.lo) / rect.width;
-      commit(clamp(lastBandplan.lo + (startX - rect.left) * hzPerPx));
+      const r = bpEffectiveRange(lastBandplan);
+      const hzPerPx = (r.hi - r.lo) / rect.width;
+      commit(clamp(r.lo + (startX - rect.left) * hzPerPx));
     }
     bpDragging = false;
   });
@@ -12207,12 +12930,23 @@ function drawSpectrumRaw(bytes) {
   const W = specPxW, H = specPxH;
   sctx.fillStyle = "#000"; sctx.fillRect(0, 0, W, H);
 
+  /* The Tab5's dB range (display.db_min/db_max, from /api/status) fills the
+     height, exactly as db_to_y() in ui.c does. This used to draw the WIRE scale
+     (-150..-30 dBm) instead, so moving the range sliders changed the Tab5 and
+     the browser's labels but not the browser's trace (Samuel W7STF, v1.26.0).
+     lastDbRange was stored for that since 48037789 and never read. The wire
+     scale is only the fallback for firmware that does not send db_lo/db_hi. */
+  const rng = (lastDbRange && lastDbRange.hi > lastDbRange.lo)
+            ? lastDbRange : { lo: WS_DB_MIN, hi: WS_DB_MAX };
+  const dbY = (db) => {
+    const d = Math.min(rng.hi, Math.max(rng.lo, db));
+    return H - 1 - Math.round((d - rng.lo) * (H-1) / (rng.hi - rng.lo));
+  };
+  const byteY = (q) => dbY(WS_DB_MIN + q / WS_COUNTS_PER_DB);
+  const gridDb = lastDbLines || [-40, -60, -80, -100, -120];
+
   sctx.fillStyle = "#1f2530";
-  for (const db of [-120, -100, -80, -60, -40]) {
-    const q = dbToByte(db);
-    const y = H - 1 - Math.round(q * (H-1) / 255);
-    sctx.fillRect(0, y, W, 1);
-  }
+  for (const db of gridDb) sctx.fillRect(0, dbY(db), W, 1);
 
   drawPassbandTint(sctx, W, H);
 
@@ -12235,20 +12969,20 @@ function drawSpectrumRaw(bytes) {
   for (let i = 0; i < W; i++) {
     const b = getBinR(i);
     if (b === null) { sctx.stroke(); sctx.beginPath(); continue; }  /* leave it empty */
-    sctx.lineTo(i, H - 1 - Math.round(bytes[b] * (H-1) / 255));
+    sctx.lineTo(i, byteY(bytes[b]));
   }
   sctx.lineTo(W, H); sctx.closePath();
   sctx.fillStyle = "#003800"; sctx.fill();
 
   sctx.beginPath();
-  sctx.moveTo(0, H - 1 - Math.round(bytes[getBinR(0)] * (H-1) / 255));
+  sctx.moveTo(0, byteY(bytes[getBinR(0)]));
   for (let i = 1; i < W; i++)
-    sctx.lineTo(i, H - 1 - Math.round(bytes[getBinR(i)] * (H-1) / 255));
+    sctx.lineTo(i, byteY(bytes[getBinR(i)]));
   sctx.strokeStyle = "#07e007"; sctx.lineWidth = 1.5; sctx.stroke();
-  if (peakBegin(W, H, "raw|" + (frameDialHz || radioFreqHz) + "|" + lastZoom + "|" + lastPanBins + "|" + lastZoomDecim)) {
+  if (peakBegin(W, H, "raw|" + (frameDialHz || radioFreqHz) + "|" + lastZoom + "|" + lastPanBins + "|" + lastZoomDecim + "|" + rng.lo + "|" + rng.hi)) {
     for (let i = 0; i < W; i++) {
       const b = getBinR(i);
-      peakFeed(i, b === null ? null : H - 1 - Math.round(bytes[b] * (H-1) / 255));
+      peakFeed(i, b === null ? null : byteY(bytes[b]));
     }
     peakStroke(W);
   }
@@ -12265,9 +12999,8 @@ function drawSpectrumRaw(bytes) {
      changed while the browser's labels went on describing a scale that was no
      longer there. That is precisely the bug db_gridlines.c exists to fix, and
      the browser had never been given the answer. */
-  for (const db of (lastDbLines || [-40, -60, -80, -100, -120])) {
-    const q = dbToByte(db);
-    const y = H - 1 - Math.round(q * (H-1) / 255);
+  for (const db of gridDb) {
+    const y = dbY(db);
     if (y > 8 && y < H - 2) sctx.fillText(db + " dBm", W - 3, y - 2);
   }
   sctx.textAlign = "left";
@@ -13247,6 +13980,505 @@ fpsEl.addEventListener("click", wsReclaim);
  * small enough that the correction is rare and audible as nothing much, and a
  * rate loop against a transport delay is the thing that rang in rx_audio.c
  * (2026-09-22). */
+/* NR-BEGIN ------------------------------------------------------------------
+ * T18 - noise reduction for SSB and AM, in the BROWSER (Sam W7STF's ask).
+ *
+ * RNNoise v0.1.1 (xiph, BSD-3), built to WASM by tools/build_rnnoise_wasm.sh
+ * and served as /rnnoise.wasm. It runs here on the 12 kHz stream after the
+ * mu-law decode, so it costs the Tab5 only the 141 KB of flash the file
+ * takes - no CPU, no RAM. ⛔ NOT v0.2: its model is 13.5 MB gzipped.
+ *
+ * RNNoise is a speech model. It removes what is NOT speech, which includes a
+ * CW note and every data tone - so it is offered for USB, LSB and AM only.
+ *
+ * RNNoise wants 48 kHz in 480-sample frames, int16-scaled floats. We have
+ * 12 kHz: up x4 through a 65-tap low-pass, 480 at a time through the model,
+ * and down x4 through the same filter. 65 taps is chosen so that both group
+ * delays (32 + 32 samples at 48 kHz) add up to a WHOLE number of 12 kHz
+ * samples (16), which the dry path has to be delayed by exactly - see
+ * NR_LATENCY_12K.
+ *
+ * Strength is a wet/dry mix with the dry path time-aligned: Low leaves the
+ * noise 6 dB down, Medium 14 dB, High takes all RNNoise removes. Without
+ * the alignment the mix is a comb filter.
+ *
+ * This block is extracted verbatim by test/web_nr_harness.mjs - keep it
+ * self-contained (no DOM, no globals from outside it). */
+const NR_LEVELS = [
+  /* wet: RNNoise's wet/dry mix. floor: the spectral NR's least gain per bin
+     (T184, further down) - 6, 12 and 20 dB. */
+  { name: "Off",  wet: 0.0, floor: 1.0 },
+  { name: "Low",  wet: 0.5, floor: 0.5 },
+  { name: "Med",  wet: 0.8, floor: 0.25 },
+  { name: "High", wet: 1.0, floor: 0.1 },
+];
+const NR_TAPS = 65;
+const NR_FRAME48 = 480;
+/* Dry-path delay, in 12 kHz samples, that lines the dry signal up with the
+   wet one: NR_PLC_HOLD for the hole concealment, 16 for the two filters, 120
+   for RNNoise's own one-frame overlap-add delay, 120 for the primed output
+   FIFO. The dry ring covers all but the first, since the dry path is taken
+   AFTER the concealment. MEASURED by the harness
+   (cross-correlation peak), not only derived - it refuses if they differ. */
+/* Hole concealment ahead of the model - see nrPlc(). PLC_HOLD is its fixed
+   look-ahead: the longest hole it patches (700) plus both 10 ms fades (2 x 120)
+   fits inside it, so a hole is always whole before any of it is emitted. */
+const NR_PLC_HOLD = 1024;
+const NR_PLC_MIN = 100, NR_PLC_MAX = 700, NR_PLC_FADE = 120, NR_PLC_XF = 24;
+const NR_LATENCY_12K = NR_PLC_HOLD + 16 + 120 + 120;
+const NR_FIR = (() => {
+  /* Windowed sinc, Blackman, cutoff 5.6 kHz at 48 kHz: flat to the 12 kHz
+     stream's useful band, and down far enough at 6 kHz+ to keep the images
+     of the x4 stuffing out of the model's input. */
+  const h = new Float32Array(NR_TAPS), M = NR_TAPS - 1, fc = 5600 / 48000;
+  let sum = 0;
+  for (let i = 0; i < NR_TAPS; i++) {
+    const n = i - M / 2;
+    const sinc = n === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * n) / (Math.PI * n);
+    const w = 0.42 - 0.5 * Math.cos(2 * Math.PI * i / M) + 0.08 * Math.cos(4 * Math.PI * i / M);
+    h[i] = sinc * w; sum += h[i];
+  }
+  for (let i = 0; i < NR_TAPS; i++) h[i] /= sum;   /* unity DC gain */
+  return h;
+})();
+
+async function nrCreate(wasmBytes) {
+  const { instance } = await WebAssembly.instantiate(wasmBytes, {});
+  const ex = instance.exports;
+  if (ex._initialize) ex._initialize();
+  const inPtr = ex.malloc(NR_FRAME48 * 4), outPtr = ex.malloc(NR_FRAME48 * 4);
+  return nrReset({ ex, st: 0, inPtr, outPtr });
+}
+
+/* Back to the state of a new instance, without a second instantiate: the
+   page calls this every time NR starts or the mode changes, so the model
+   never carries the previous signal's noise estimate into the next one.
+   The harness checks a reset instance against a new one, sample for sample. */
+function nrReset(nr) {
+  if (nr.st) nr.ex.rnnoise_destroy(nr.st);
+  nr.st = nr.ex.rnnoise_create(0);            /* 0 = the built-in model */
+  nr.upHist = new Float32Array(Math.ceil(NR_TAPS / 4));   /* last x[n-k], k=0.. */
+  nr.dnHist = new Float32Array(NR_TAPS);                   /* last 48 kHz samples */
+  /* 3, not 0: the decimator then keeps 48 kHz samples 0, 4, 8... - the
+     phase the x4 stuffing put the input on. Started at 0 it kept 3, 7,
+     11..., and the wet path lagged by 255.25 samples at 12 kHz: measured
+     by the harness as 255 against the dry ring's 256, a quarter-sample
+     skew that turns the wet/dry mix into a gentle comb. */
+  nr.dnPos = 3;                                            /* 48 kHz phase, 0..3 */
+  nr.acc = new Float32Array(NR_FRAME48); nr.accN = 0;
+  nr.fifo = new Float32Array(4096); nr.fifoN = 120; nr.fifoR = 0;  /* primed - see LATENCY */
+  nr.dry = new Float32Array(NR_LATENCY_12K - NR_PLC_HOLD); nr.dryPos = 0;
+  /* PLC: [2048 of history already emitted | pending]; primed with
+     NR_PLC_HOLD zeros so every call can emit exactly what it was given */
+  nr.plc = new Float32Array(2048 + NR_PLC_HOLD + 8192); nr.plcN = 2048 + NR_PLC_HOLD;
+  nr.plcPatched = 0;
+  nr.vad = 0;
+  return nr;
+}
+
+function nrDestroy(nr) {
+  try { nr.ex.free(nr.inPtr); nr.ex.free(nr.outPtr); nr.ex.rnnoise_destroy(nr.st); }
+  catch (e) {}
+}
+
+/* One RNNoise frame: nr.acc (48 kHz, -1..1) in, 120 samples at 12 kHz onto
+   the FIFO. The heap view is re-taken every call - malloc may have grown the
+   memory, and a stale Float32Array over a detached buffer reads as zeros. */
+function nrRunFrame(nr) {
+  const heap = new Float32Array(nr.ex.memory.buffer);
+  const ib = nr.inPtr >> 2, ob = nr.outPtr >> 2;
+  for (let i = 0; i < NR_FRAME48; i++) heap[ib + i] = nr.acc[i] * 32768;
+  nr.vad = nr.ex.rnnoise_process_frame(nr.st, nr.outPtr, nr.inPtr);
+  const h = NR_FIR, d = nr.dnHist;
+  if (nr.fifoR > 0) {                             /* compact once per frame */
+    nr.fifo.copyWithin(0, nr.fifoR, nr.fifoN); nr.fifoN -= nr.fifoR; nr.fifoR = 0;
+  }
+  if (nr.fifoN + 120 > nr.fifo.length) {          /* cannot happen in steady state */
+    const f = new Float32Array(nr.fifo.length * 2); f.set(nr.fifo); nr.fifo = f;
+  }
+  for (let i = 0; i < NR_FRAME48; i++) {
+    d.copyWithin(1, 0, NR_TAPS - 1);
+    d[0] = heap[ob + i] / 32768;
+    if (++nr.dnPos === 4) {
+      nr.dnPos = 0;
+      let y = 0;
+      for (let j = 0; j < NR_TAPS; j++) y += h[j] * d[j];
+      nr.fifo[nr.fifoN++] = y;
+    }
+  }
+}
+
+/* ⛔ HOLES IN THE STREAM DEFEAT THE MODEL, so they are concealed first.
+ *
+ * MEASURED 2026-11-10 on bench1, twelve 20-40 s captures of 20 m noise: the
+ * web stream carries 1-3 holes a second of EXACT digital zero, 135 samples
+ * long (or 392 / 648 for two or three in a row). They are rx_audio.c's
+ * read-timeout gap frames - 1024 pairs at 48 kHz, 10 ms faded, the rest
+ * zero - which the web tap copies from the speaker output along with
+ * everything else. That file measured them as WiFi/SDIO contention (3.08/s
+ * with WiFi up, 0.42/s without), and streaming to a browser means WiFi is up.
+ *
+ * RNNoise reads the restart after every hole as the start of speech and opens
+ * up: on the raw capture it flagged 19 % of frames as voice and took the noise
+ * down only 8 dB. The same capture with the holes spliced out: VAD 2 %,
+ * median -24 dB. The same spectrum with its time structure scrambled: -60 dB.
+ *
+ * Fixing it on the Tab5 is not the cheap side: the gap frames are part of the
+ * stream's sample count, so dropping them there would leave the browser ~21 ms
+ * short per hole - 2-6 %, beyond its +-3 % rate trim.
+ *
+ * So: a run of NR_PLC_MIN..NR_PLC_MAX exact zeros, plus the 10 ms fade either
+ * side, is replaced by a copy of the audio just before it, cross-faded in and
+ * out. On band noise a 30 ms repeat is inaudible; on speech it is far milder
+ * than a hole. A LONGER zero run is left alone - that is a closed squelch or
+ * a real outage, and silence is what it should sound like. */
+function nrPlc(nr, x) {
+  const H = 2048, P = nr.plc;
+  if (nr.plcN + x.length > P.length) {           /* a catch-up burst: grow */
+    const g = new Float32Array((nr.plcN + x.length) * 2); g.set(P.subarray(0, nr.plcN)); nr.plc = g;
+  }
+  const B = nr.plc;
+  B.set(x, nr.plcN); nr.plcN += x.length;
+  /* scan the pending part for complete zero runs with their trailing fade */
+  let i = H;                                     /* everything before H is emitted */
+  while (i < nr.plcN) {
+    if (B[i] !== 0) { i++; continue; }
+    let e = i; while (e < nr.plcN && B[e] === 0) e++;
+    const run = e - i;
+    if (e + NR_PLC_FADE > nr.plcN) break;         /* not whole yet - next call */
+    if (run >= NR_PLC_MIN && run <= NR_PLC_MAX && !nr.plcDisabled) {   /* plcDisabled: harness mutation only */
+      const r0 = i - NR_PLC_FADE, r1 = e + NR_PLC_FADE, len = r1 - r0;
+      const s0 = r0 - len;                          /* the audio just before it */
+      if (s0 >= 0) {
+        for (let k = 0; k < len; k++) {
+          const fi = k < NR_PLC_XF ? k / NR_PLC_XF : 1;              /* into the copy */
+          const fo = k >= len - NR_PLC_XF ? (len - k) / NR_PLC_XF : 1; /* back out */
+          const w = Math.min(fi, fo);
+          B[r0 + k] = w * B[s0 + k] + (1 - w) * B[r0 + k];
+        }
+        nr.plcPatched++;
+      }
+    }
+    i = e;
+  }
+  /* emit the oldest x.length pending samples, keep H of history */
+  const out = B.slice(H, H + x.length);
+  B.copyWithin(0, x.length, nr.plcN); nr.plcN -= x.length;
+  return out;
+}
+
+/* x: 12 kHz samples, -1..1. Returns a NEW array of the same length, delayed
+   by NR_LATENCY_12K, mixing wet and aligned dry by `wet` (0..1). */
+function nrProcess(nr, x0, wet, an) {
+  const x = nrPlc(nr, x0);
+  if (an) anProcess(an, x);                       /* after the concealment - see anProcess() */
+  const h = NR_FIR, K = nr.upHist.length, out = new Float32Array(x.length);
+  for (let n = 0; n < x.length; n++) {
+    nr.upHist.copyWithin(1, 0, K - 1);
+    nr.upHist[0] = x[n];
+    for (let p = 0; p < 4; p++) {
+      let y = 0;
+      for (let k = 0, j = p; j < NR_TAPS; k++, j += 4) y += h[j] * nr.upHist[k];
+      nr.acc[nr.accN++] = 4 * y;
+      if (nr.accN === NR_FRAME48) { nrRunFrame(nr); nr.accN = 0; }
+    }
+    /* dry: a ring of NR_LATENCY_12K - NR_PLC_HOLD (the concealment's own
+       delay is already in x) */
+    const dly = nr.dry[nr.dryPos];
+    nr.dry[nr.dryPos] = x[n];
+    if (++nr.dryPos === nr.dry.length) nr.dryPos = 0;
+    /* wet: the FIFO is primed with 120 and refilled 120 per 120 inputs, so
+       it never runs dry here */
+    const w = nr.fifo[nr.fifoR++];
+    out[n] = wet * w + (1 - wet) * dly;
+  }
+  return out;
+}
+
+/* ---- T184: spectral noise reduction and auto-notch, plain JavaScript -------
+ *
+ * RNNoise above is a speech model: it removes a CW note, so CW listeners had
+ * no noise reduction at all. This one is not a speech model. It makes no
+ * assumption about the signal except that the NOISE changes slowly:
+ *
+ *   STFT, 256 points at 12 kHz (46.9 Hz bins), hop 64, Hann in and Hann out.
+ *   Per bin: a noise floor tracked through the gaps in the signal (MCRA -
+ *   the minimum of the smoothed power over 0.6-1.2 s says where the floor is,
+ *   and the floor estimate is only updated while the bin sits near it), then
+ *   a Wiener gain from the decision-directed a-priori SNR.
+ *
+ * Strength is the gain FLOOR: no bin is ever turned down further than the
+ * level allows (Low 6 dB, Med 12 dB, High 20 dB). A floor of 1 is the input
+ * delayed by SN_LATENCY_12K, which the harness checks.
+ *
+ * A carrier that never keys is, to this tracker, noise: it is taken down to
+ * the floor after about a second, in every mode. A CW signal is not, because
+ * it has gaps - the harness keys one at 12 and 35 WPM to prove it.
+ *
+ * Same hole concealment as RNNoise (nrPlc): a hole of exact zeros is a false
+ * minimum, and the tracker would take it for the floor. */
+const SN_N = 256, SN_HOP = 64, SN_BINS = SN_N / 2 + 1;
+const SN_LATENCY_12K = NR_PLC_HOLD + SN_N;
+const SN_AS = 0.7;        /* smoothing of the power the minimum is taken over */
+const SN_WIN_FRAMES = 110;/* minimum window: 110-220 frames = 0.59-1.17 s */
+const SN_DELTA = 5;       /* power / minimum above this = signal present */
+const SN_AP = 0.2;        /* smoothing of that presence decision */
+const SN_AD = 0.95;       /* floor update rate while the signal is absent */
+const SN_DD = 0.96;       /* decision-directed weight on the previous frame */
+const SN_OVER = 1.0;      /* the floor estimate is taken this much too high */
+const SN_WIN = (() => {
+  /* periodic Hann, scaled so that analysis x synthesis overlap-adds to 1 at
+     hop N/4 (the sum of hann^2 over four overlaps is 1.5) */
+  const w = new Float32Array(SN_N), g = Math.sqrt(1 / 1.5);
+  for (let i = 0; i < SN_N; i++) w[i] = g * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / SN_N));
+  return w;
+})();
+/* In-place radix-2 complex FFT of size N (a power of two); inv = inverse,
+   scaled by 1/N. A factory because the notch detector wants 2048 points. */
+function nrFftMake(N) {
+  const c = new Float64Array(N / 2), s = new Float64Array(N / 2), rev = new Uint16Array(N);
+  for (let i = 0; i < N / 2; i++) { c[i] = Math.cos(2 * Math.PI * i / N); s[i] = Math.sin(2 * Math.PI * i / N); }
+  for (let i = 0, bits = Math.log2(N); i < N; i++) {
+    let r = 0; for (let b = 0; b < bits; b++) if (i & (1 << b)) r |= 1 << (bits - 1 - b);
+    rev[i] = r;
+  }
+  return (re, im, inv) => {
+    for (let i = 0; i < N; i++) { const j = rev[i]; if (j > i) {
+      let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let len = 2; len <= N; len <<= 1) {
+      const half = len >> 1, step = N / len;
+      for (let i = 0; i < N; i += len) for (let j = 0, k = 0; j < half; j++, k += step) {
+        const wr = c[k], wi = inv ? s[k] : -s[k], a = i + j, b = a + half;
+        const xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+      }
+    }
+    if (inv) for (let i = 0; i < N; i++) { re[i] /= N; im[i] /= N; }
+  };
+}
+const snFft = nrFftMake(SN_N);
+
+function snCreate() { return snReset({}); }
+function snReset(sn) {
+  sn.buf = new Float32Array(SN_N); sn.cnt = 0;       /* last SN_N inputs */
+  sn.ola = new Float32Array(SN_N);
+  sn.fifo = new Float32Array(SN_HOP * 4); sn.fifoN = SN_HOP; sn.fifoR = 0;  /* primed: latency = SN_N */
+  sn.re = new Float64Array(SN_N); sn.im = new Float64Array(SN_N);
+  sn.S = new Float64Array(SN_BINS); sn.Smin = new Float64Array(SN_BINS); sn.Stmp = new Float64Array(SN_BINS);
+  sn.p = new Float64Array(SN_BINS); sn.Nz = new Float64Array(SN_BINS);
+  sn.A2 = new Float64Array(SN_BINS);                 /* previous frame's clean-signal power estimate */
+  sn.p2 = new Float64Array(SN_BINS);
+  sn.frames = 0;                                     /* frames WITH signal seen so far */
+  /* the same concealment state nrPlc() keeps in an RNNoise instance */
+  sn.plc = new Float32Array(2048 + NR_PLC_HOLD + 8192); sn.plcN = 2048 + NR_PLC_HOLD;
+  sn.plcPatched = 0;
+  return sn;
+}
+
+/* One frame: sn.buf in, SN_HOP finished samples onto the FIFO. */
+function snFrame(sn, floor) {
+  const re = sn.re, im = sn.im, w = SN_WIN, p2 = sn.p2;
+  let e = 0;
+  for (let i = 0; i < SN_N; i++) { re[i] = sn.buf[i] * w[i]; im[i] = 0; e += re[i] * re[i]; }
+  snFft(re, im, false);
+  for (let k = 0; k < SN_BINS; k++) p2[k] = re[k] * re[k] + im[k] * im[k];
+  /* ⛔ Silence teaches the tracker nothing. The buffer starts as zeros and a
+     closed squelch is zeros: a minimum of 0 would mark every later frame as
+     "signal present" until the window rolled over, with a floor estimate of
+     0 - a second of no noise reduction at every start. Skip those frames. */
+  const live = e > 1e-12;
+  if (live) {
+    const first = sn.frames === 0, early = sn.frames < 30;
+    for (let k = 0; k < SN_BINS; k++) {
+      const sf = 0.25 * p2[k > 0 ? k - 1 : k] + 0.5 * p2[k] + 0.25 * p2[k < SN_BINS - 1 ? k + 1 : k];
+      if (first) { sn.S[k] = sf; sn.Smin[k] = sf; sn.Stmp[k] = sf; sn.Nz[k] = p2[k]; sn.p[k] = 0; continue; }
+      const S = sn.S[k] = SN_AS * sn.S[k] + (1 - SN_AS) * sf;
+      if (S < sn.Smin[k]) sn.Smin[k] = S;
+      if (S < sn.Stmp[k]) sn.Stmp[k] = S;
+      const pr = sn.p[k] = SN_AP * sn.p[k] + (1 - SN_AP) * (S > SN_DELTA * sn.Smin[k] ? 1 : 0);
+      /* the first 30 frames (160 ms) are taken as noise, as every such
+         tracker does: there is no minimum to compare against yet */
+      const ad = early ? 0.8 : SN_AD + (1 - SN_AD) * pr;
+      sn.Nz[k] = ad * sn.Nz[k] + (1 - ad) * p2[k];
+    }
+    if (++sn.frames % SN_WIN_FRAMES === 0) for (let k = 0; k < SN_BINS; k++) {
+      sn.Smin[k] = Math.min(sn.Stmp[k], sn.S[k]); sn.Stmp[k] = sn.S[k];
+    }
+  }
+  for (let k = 0; k < SN_BINS; k++) {
+    let g = 1;
+    if (floor < 1 && sn.frames > 0) {
+      const nz = SN_OVER * sn.Nz[k] + 1e-20, post = p2[k] / nz;
+      const prio = Math.max(SN_DD * sn.A2[k] / nz + (1 - SN_DD) * Math.max(post - 1, 0), 0.003);
+      g = prio / (1 + prio);
+      sn.A2[k] = g * g * p2[k];
+      if (g < floor) g = floor;
+      if (sn.identity) g = 1;                       /* harness mutation only */
+    }
+    re[k] *= g; im[k] *= g;
+    if (k > 0 && k < SN_N / 2) { re[SN_N - k] = re[k]; im[SN_N - k] = -im[k]; }
+  }
+  snFft(re, im, true);
+  const o = sn.ola;
+  for (let i = 0; i < SN_N; i++) o[i] += re[i] * w[i];
+  if (sn.fifoR > 0) { sn.fifo.copyWithin(0, sn.fifoR, sn.fifoN); sn.fifoN -= sn.fifoR; sn.fifoR = 0; }
+  sn.fifo.set(o.subarray(0, SN_HOP), sn.fifoN); sn.fifoN += SN_HOP;
+  o.copyWithin(0, SN_HOP); o.fill(0, SN_N - SN_HOP);
+  sn.buf.copyWithin(0, SN_HOP);
+}
+
+/* x: 12 kHz samples, -1..1. Returns a NEW array of the same length, delayed
+   by SN_LATENCY_12K. `floor` is the least gain any bin gets (1 = untouched). */
+function snProcess(sn, x0, floor, an) {
+  const x = nrPlc(sn, x0);
+  if (an) anProcess(an, x);
+  const out = new Float32Array(x.length);
+  for (let n = 0; n < x.length; n++) {
+    sn.buf[SN_N - SN_HOP + sn.cnt] = x[n];
+    if (++sn.cnt === SN_HOP) { snFrame(sn, floor); sn.cnt = 0; }
+    out[n] = sn.fifo[sn.fifoR++];
+  }
+  return out;
+}
+
+/* Auto-notch: takes a steady carrier out of the audio (the 1107 Hz tone on
+ * 14.273 MHz, 2026-11-10; a broadcast carrier beside an SSB signal).
+ *
+ * It FINDS the carrier and then puts a narrow filter on it:
+ *   - a 2048-point spectrum (5.9 Hz bins) every 43 ms, lightly averaged;
+ *   - a carrier is a peak AN_PEAK above the median of the 230 Hz either side
+ *     of it, present in the newest frame as well as the average, that stays
+ *     within two bins of where it was first seen for AN_ON frames in a row
+ *     (0.85 s). The reference point may follow it by 2 Hz a second, which is
+ *     a drifting transmitter and not a voice;
+ *   - each one found gets a biquad notch AN_BW wide at its interpolated
+ *     frequency, faded in over 20 ms; up to AN_MAX at once;
+ *   - gone for AN_OFF frames (0.43 s) and the notch fades out again. "Gone"
+ *     is judged on the newest frame: the average alone holds a strong
+ *     carrier for two seconds after it has stopped (measured).
+ * Speech does not qualify: a voice harmonic does not hold one 6 Hz bin for
+ * most of a second, and the gaps between words reset the count.
+ *
+ * With no carrier found the audio passes through UNTOUCHED, bit for bit -
+ * the harness checks that on noise and after a carrier has gone.
+ *
+ * ⛔ DEAD END, MEASURED 2026-11-10: the textbook LMS auto-notch (predict the
+ * sample from the audio 32..96 samples back, subtract the prediction; 64 and
+ * 128 taps, five step sizes). On synthetic noise it looked right: -30..-45 dB
+ * on a strong carrier, noise and a test voice untouched. On the three real
+ * SSB captures, which hold NO carrier, it changed the audio all the time: the
+ * difference from the input was 5..12 dB under the input itself, one setting
+ * made that difference LARGER than the input (+2.5 dB), and a carrier 10 dB
+ * under the audio came down only 10-16 dB. Do not go back to it on a
+ * synthetic result. (Why the real audio is predictable was not measured.)
+ *
+ * ⛔ NOT FOR CW: a CW note held for a second is a carrier. The page offers
+ * the notch in USB, LSB and AM only.
+ *
+ * No delay: the filters sit in the path, the detector looks on from the
+ * side. Works IN PLACE and returns x. Runs AFTER the hole concealment when
+ * NR is on, so the detector sees no holes either. */
+const AN_N = 2048, AN_HOP = 512, AN_MAX = 4;
+const AN_LO_HZ = 100, AN_HI_HZ = 3600;
+const AN_PEAK = 8;        /* x the local median = 9 dB */
+const AN_ON = 20, AN_OFF = 10;
+const AN_BW = 40;         /* Hz, -3 dB width of each notch */
+const AN_AVG = 0.8;       /* spectrum smoothing: 5 frames = 0.21 s */
+const AN_RAMP = 240;      /* fade, samples */
+const AN_WIN = (() => { const w = new Float64Array(AN_N);
+  for (let i = 0; i < AN_N; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / AN_N); return w; })();
+const anFft = nrFftMake(AN_N);
+
+function anCreate() { return anReset({}); }
+function anReset(an) {
+  an.buf = new Float32Array(AN_N); an.cnt = 0; an.fill = 0;
+  an.re = new Float64Array(AN_N); an.im = new Float64Array(AN_N);
+  an.A = new Float64Array(AN_N / 2 + 1); an.P = new Float64Array(AN_N / 2 + 1); an.have = false;
+  an.tr = [];             /* tracks: { f, f0, hits, miss, on, dead, mix, k, b1, a1, a2, z1, z2 } */
+  an.med = new Float64Array(70);
+  return an;
+}
+function anCoef(t) {
+  const w0 = 2 * Math.PI * t.f / 12000, alpha = Math.sin(w0) * AN_BW / (2 * t.f), a0 = 1 + alpha;
+  t.k = 1 / a0; t.b1 = -2 * Math.cos(w0) / a0; t.a1 = t.b1; t.a2 = (1 - alpha) / a0;
+}
+/* One detector frame over an.buf. */
+function anDetect(an) {
+  const re = an.re, im = an.im, A = an.A, P = an.P, H = AN_N / 2;
+  for (let i = 0; i < AN_N; i++) { re[i] = an.buf[i] * AN_WIN[i]; im[i] = 0; }
+  anFft(re, im, false);
+  for (let k = 0; k <= H; k++) {
+    const p = P[k] = re[k] * re[k] + im[k] * im[k];
+    A[k] = an.have ? AN_AVG * A[k] + (1 - AN_AVG) * p : p;
+  }
+  an.have = true;
+  const hzBin = 12000 / AN_N, lo = Math.max(42, Math.round(AN_LO_HZ / hzBin)), hi = Math.min(H - 42, Math.round(AN_HI_HZ / hzBin));
+  const cand = [];
+  for (let k = lo; k <= hi && !an.frozen; k++) {       /* frozen: harness mutation only */
+    const v = A[k];
+    if (!(v > A[k - 1] && v >= A[k + 1] && v > A[k - 2] && v > A[k + 2]) || v < 1e-14) continue;
+    const m = an.med; let n = 0;
+    for (let j = 6; j <= 40; j++) { m[n++] = A[k - j]; m[n++] = A[k + j]; }
+    m.sort();
+    if (v < AN_PEAK * m[n >> 1]) continue;
+    /* ...and there NOW, at half that. Measured at a quarter (2 x the median):
+       one noise frame in three passes it, and a notch then stayed 2 s on a
+       carrier that had stopped. */
+    if (Math.max(P[k - 1], P[k], P[k + 1]) < 0.5 * AN_PEAK * m[n >> 1]) continue;
+    /* parabola through the log of the three top bins: the frequency to a
+       fraction of a hertz, which is what the depth of a 40 Hz notch needs */
+    const la = Math.log(A[k - 1] + 1e-30), lb = Math.log(v), lc = Math.log(A[k + 1] + 1e-30);
+    const d = 0.5 * (la - lc) / (la - 2 * lb + lc);
+    cand.push({ f: (k + d) * hzBin, v, used: false });
+  }
+  for (const t of an.tr) {
+    let best = null;
+    for (const c of cand) if (!c.used && Math.abs(c.f - t.f0) <= 2 * hzBin && (!best || c.v > best.v)) best = c;
+    if (best) {
+      best.used = true; t.hits++; t.miss = 0;
+      t.f0 += Math.max(-0.1, Math.min(0.1, best.f - t.f0));
+      if (Math.abs(best.f - t.f) > 0.2) { t.f = 0.5 * t.f + 0.5 * best.f; anCoef(t); }
+    } else if (++t.miss > AN_OFF) { t.on = false; t.dead = true; }
+    else if (!t.on) t.hits = 0;                        /* in a row, or it does not count */
+    if (!t.on && !t.dead && t.hits >= AN_ON && an.tr.filter(u => u.on).length < AN_MAX) {
+      t.on = true; t.z1 = 0; t.z2 = 0;
+    }
+  }
+  an.tr = an.tr.filter(t => !(t.dead && t.mix <= 0));
+  cand.sort((p, q) => q.v - p.v);
+  for (const c of cand) {
+    if (c.used || an.tr.length >= 12) continue;
+    const t = { f: c.f, f0: c.f, hits: 1, miss: 0, on: false, dead: false, mix: 0, z1: 0, z2: 0 };
+    anCoef(t); an.tr.push(t);
+  }
+}
+function anProcess(an, x) {
+  for (let n = 0; n < x.length; n++) {
+    const v = x[n];
+    an.buf[AN_N - AN_HOP + an.cnt] = v;
+    let y = v;
+    for (let i = 0; i < an.tr.length; i++) {
+      const t = an.tr[i];
+      if (!t.on && t.mix <= 0) continue;
+      /* transposed direct form II; b0 = b2 = k */
+      const o = t.k * y + t.z1;
+      t.z1 = t.b1 * y - t.a1 * o + t.z2;
+      t.z2 = t.k * y - t.a2 * o;
+      t.mix = t.on ? Math.min(1, t.mix + 1 / AN_RAMP) : Math.max(0, t.mix - 1 / AN_RAMP);
+      y += t.mix * (o - y);
+    }
+    x[n] = y;
+    if (++an.cnt === AN_HOP) {
+      an.cnt = 0;
+      if (an.fill < AN_N) an.fill += AN_HOP;
+      if (an.fill >= AN_N) anDetect(an);               /* not on a half-empty buffer */
+      an.buf.copyWithin(0, AN_HOP);
+    }
+  }
+  return x;
+}
+/* NR-END ------------------------------------------------------------------ */
+
 let audioCtx = null, audioGain = null, audioNext = 0;
 let audioWantOn = false, audioSeq = -1, audioFrames = 0, audioGaps = 0, audioGapsPainted = 0;
 /* ⛔ RIDE THROUGH A RECONNECT INSTEAD OF GOING SILENT UNTIL SOMEBODY CLICKS.
@@ -13374,6 +14606,7 @@ function audioStopAndTell() {
 
 function audioStop() {
   audioWantOn = false;
+  nrRunKey = "";              /* the next start resets the model */
   audioNext = 0;
   if (audioCtx) { try { audioCtx.suspend(); } catch (e) {} }
   audioSeq = -1;
@@ -13442,6 +14675,32 @@ function audioFrame(buf) {
   const src = new Float32Array(T + n);
   src.set(audioTail, 0);
   for (let i = 0; i < n; i++) src[T + i] = ULAW[buf[AUDIO_HDR_LEN + i]];
+
+  /* T18 / T184 noise reduction and auto-notch, on the decoded 12 kHz samples
+     and before the resampler. Same sample count in and out, so nothing below
+     changes.
+     ⛔ Everything off, a mode none of it is offered for, or a speech model not
+     loaded yet all SKIP this - the samples above reach the resampler untouched. */
+  {
+    let eng = nrEngine();
+    if (eng === 1 && !nrInst) { nrLoad(); eng = 0; }     /* lazy, once; dry until it lands */
+    const notch = anWanted();
+    if ((eng || notch) && rate === 12000) {
+      /* A new start, another mode, another engine: begin from nothing, so no
+         noise estimate and no notch is carried from one signal to the next. */
+      const key = eng + "|" + lastMode + "|" + (notch ? 1 : 0);
+      if (key !== nrRunKey) {
+        if (eng === 1) nrReset(nrInst);
+        if (eng === 2) snInst = snInst ? snReset(snInst) : snCreate();
+        if (notch) anInst = anInst ? anReset(anInst) : anCreate();
+        nrRunKey = key;
+      }
+      const seg = src.subarray(T), an = notch ? anInst : null, lv = NR_LEVELS[nrLevel];
+      if (eng === 1) src.set(nrProcess(nrInst, seg, lv.wet, an), T);
+      else if (eng === 2) src.set(snProcess(snInst, seg, lv.floor, an), T);
+      else anProcess(an, seg);                           /* notch alone: in place, no delay */
+    } else nrRunKey = "";
+  }
 
   /* ⛔ TRIM THE RATE, DO NOT WAIT TO DROP A CHUNK.
    *
@@ -13557,7 +14816,7 @@ function listenPaint() {
     : (audioFrames === 0
        ? "Asked for audio - nothing arriving yet. The Tab5 only demodulates "
          + "CW, CW-R, USB, LSB and AM; in any other mode there is nothing to send."
-       : "Listening. " + audioGaps + " frame gap(s), " + audioLate
+       : "Listening. Noise reduction for voice is in the Radio menu. " + audioGaps + " frame gap(s), " + audioLate
          + " re-prime(s), " + audioDropped + " chunk(s) dropped to clock drift. "
          + "Click to stop.");
 }
@@ -13621,6 +14880,101 @@ async function listenToggle() {
   const b = document.getElementById("listenbtn");
   if (b) b.addEventListener("click", listenToggle);
   listenPaint();
+})();
+
+/* T18 - the NR row in the Radio menu. The DSP is the NR-BEGIN block above; this is only the
+   level, the lazy load of /rnnoise.wasm (141 KB, fetched the first time NR is
+   actually needed and never by a page that leaves it Off) and the paint.
+   The level is this browser's, not the device's: the Tab5 does none of it. */
+/* Off until switched on, and Med when it is. Operator, 2026-11-10, after
+   the A/B files of real 40 m and 20 m SSB (Off/Low/Med/High): "Med". Measured
+   on those clips: Med takes the noise between words down 12-13 dB; High takes
+   19-31 dB but costs the voice more. */
+let nrOn = false, nrLevel = 2, nrInst = null, nrLoading = false, nrLoadErr = "";
+/* T184. nrType: what the voice modes use - 0 the speech model (RNNoise), 1 the
+   spectral NR. CW always uses the spectral one. anOn: the auto-notch, its own
+   switch. nrRunKey names what audioFrame() is running, "" when nothing is. */
+let nrType = 0, anOn = false, snInst = null, anInst = null, nrRunKey = "";
+try {
+  nrOn = localStorage.getItem("nrOn") === "1";
+  const v = parseInt(localStorage.getItem("nrLevel"), 10);
+  if (v >= 1 && v < NR_LEVELS.length) nrLevel = v;
+  nrType = localStorage.getItem("nrType") === "1" ? 1 : 0;
+  anOn = localStorage.getItem("anOn") === "1";
+} catch (e) {}
+
+function nrVoice() { return lastMode === "USB" || lastMode === "LSB" || lastMode === "AM"; }
+function nrCw() { return (lastMode || "").toUpperCase().startsWith("CW"); }
+/* 0 nothing, 1 the speech model, 2 spectral. The digital modes get nothing:
+   nobody listens to them, and a decoder is not fed from this audio. */
+function nrEngine() {
+  if (!nrOn) return 0;
+  if (nrCw()) return 2;
+  return nrVoice() ? (nrType === 1 ? 2 : 1) : 0;
+}
+function anWanted() { return anOn && nrVoice(); }
+
+async function nrLoad() {
+  if (nrInst || nrLoading) return;
+  nrLoading = true; nrLoadErr = ""; nrPaint();
+  try {
+    const r = await fetch("/rnnoise.wasm");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    nrInst = await nrCreate(await r.arrayBuffer());
+  } catch (err) {
+    /* Back to Off, or audioFrame() would ask again ten times a second. The
+       saved setting is left alone - a reload tries once more. */
+    nrLoadErr = String(err && err.message || err);
+    nrOn = false;
+  }
+  nrLoading = false; nrPaint();
+}
+
+function nrPaint() {
+  const row = document.getElementById("nr-row"), on = document.getElementById("nr-on");
+  const st = document.getElementById("nr-state"), an = document.getElementById("an-on");
+  if (!row || !on || !st || !an) return;
+  on.checked = nrOn; an.checked = anOn;
+  row.querySelectorAll('input[name="nr-level"]').forEach((r) => {
+    r.checked = Number(r.value) === nrLevel;
+  });
+  row.querySelectorAll('input[name="nr-type"]').forEach((r) => {
+    r.checked = Number(r.value) === nrType;
+  });
+  const eng = nrEngine(), notes = [];
+  if (nrLoadErr) notes.push("speech model could not load (" + nrLoadErr + ")");
+  else if (nrOn && !eng) notes.push("NR is not active in " + lastMode);
+  else if (eng === 1 && !nrInst) notes.push("loading...");
+  else if (nrOn && nrCw() && nrType === 0) notes.push("CW uses Spectral");
+  if (anOn && !nrVoice()) notes.push("notch is not active in " + lastMode);
+  st.textContent = notes.join(" - ");
+  row.title = "Noise reduction and auto-notch for the audio Listen plays on this page. "
+    + "They run in this browser, not on the Tab5. Noise reduction adds about 0.1 s of "
+    + "delay; the notch adds none. The speech model works in USB, LSB and AM only - it "
+    + "would remove a CW note - so CW uses the spectral one.";
+}
+
+(() => {
+  const row = document.getElementById("nr-row");
+  if (!row) return;
+  /* stopPropagation: the bar's click-anywhere handler would close the Radio
+     menu on every click, and the level is tried several times in a row. */
+  row.addEventListener("click", (ev) => ev.stopPropagation());
+  row.addEventListener("change", (ev) => {
+    const t = ev.target;
+    if (t.id === "nr-on") nrOn = t.checked;
+    else if (t.id === "an-on") anOn = t.checked;
+    else if (t.name === "nr-level") { nrLevel = Number(t.value); nrOn = true; }  /* picking a level means "on" */
+    else if (t.name === "nr-type") nrType = Number(t.value);
+    nrLoadErr = "";
+    try { localStorage.setItem("nrOn", nrOn ? "1" : "0");
+          localStorage.setItem("nrLevel", String(nrLevel));
+          localStorage.setItem("nrType", String(nrType));
+          localStorage.setItem("anOn", anOn ? "1" : "0"); } catch (e) {}
+    if (nrEngine() === 1) nrLoad();     /* asked for - do not wait for Listen */
+    nrPaint();
+  });
+  nrPaint();
 })();
 
 /* Clear the decoded-CW window - Bryan N0LUF. The DEVICE is cleared, not a copy

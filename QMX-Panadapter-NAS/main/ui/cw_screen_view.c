@@ -39,6 +39,7 @@
 #include "cw_decode.h"   // cw_squelch_push() - the SHARED noise filter
 #include "util/dxcc.h"
 #include "adif/adif_log.h"
+#include "manual_log_modal.h"
 
 #include <string.h>
 #include <strings.h>   // strncasecmp
@@ -111,6 +112,8 @@ static lv_obj_t *s_lbl_wpm   = NULL;
 static lv_obj_t *s_wpm_panel = NULL;   /* numeric entry popup - built lazily */
 static lv_obj_t *s_lbl_park  = NULL;
 static lv_obj_t *s_lbl_status = NULL;
+static lv_obj_t *s_btn_stop   = NULL;   // T145 - shares the status line's slot
+static lv_obj_t *s_lbl_stop   = NULL;
 static lv_timer_t *s_timer   = NULL;
 static bool      s_shown     = false;
 
@@ -127,6 +130,19 @@ static lv_obj_t *s_card       = NULL;
 static lv_obj_t *s_card_call  = NULL;
 static lv_obj_t *s_card_info  = NULL;
 static lv_obj_t *s_card_hint  = NULL;
+
+// Small always-present manual call-entry button, independent of the card's
+// own visibility (operator ask, 2026-11-09) - see its build site for why.
+static lv_obj_t *s_call_entry_btn = NULL;
+
+// Manual callsign entry: tapping the card while nothing is heard or adopted
+// opens this (Gyula HA3HZ, groups.io 2026-11-06 - no way to key in a call you
+// already know, only capture-from-air or tap-to-adopt a heard one). Built on
+// the park-reference editor's exact pattern (same styled lv_keyboard, same
+// modal/panel recipe) - see park_build() below.
+static lv_obj_t *s_callentry_modal = NULL;
+static lv_obj_t *s_callentry_ta    = NULL;
+static lv_obj_t *s_callentry_kb    = NULL;
 
 // ---- decode ring (written from the CDC RX context, read by the timer) ------
 /* ⭐ THE SECOND MODEL IS GONE (2026-11-02). This file used to keep its own
@@ -1016,6 +1032,90 @@ static bool has_token_ci(const char *hay, const char *needle)
     return false;
 }
 
+// Last text actually sent (expanded), and the web-interface pending-send
+// slot - see cw_screen_view_request_send()'s header comment for the deferral
+// reason. Both touched from the HTTP task (write the pending slot, read
+// s_last_sent for the status poll) and the LVGL thread (tick_cb drains the
+// slot, send_cw_text() writes s_last_sent) - a single char buffer written
+// whole by snprintf and read whole by the status poll needs no lock here,
+// the same argument ft8_screen_view's pending-flag fields already rely on.
+static char s_last_sent[CW_SEND_MAX + 1] = "";
+
+/* ⛔ The web's pending text is APPENDED, not replaced (type-ahead, Ralph
+ * DL1HR 2026-11-10). It was one slot written whole, so two words typed inside
+ * one 500 ms tick kept only the second. Now a short FIFO under a spinlock -
+ * the single-buffer no-lock argument above no longer holds once the HTTP task
+ * appends while the LVGL task drains. */
+#define CW_WEB_PENDING_CAP 256
+static char         s_web_pending[CW_WEB_PENDING_CAP + 1] = "";
+static int          s_web_pending_len = 0;
+static portMUX_TYPE s_web_pending_mux = portMUX_INITIALIZER_UNLOCKED;
+
+const char *cw_screen_view_last_sent(void) { return s_last_sent; }
+
+bool cw_screen_view_request_send(const char *raw_text)
+{
+    if (!raw_text || !raw_text[0]) return true;
+    int n = (int)strlen(raw_text);
+    bool ok;
+    portENTER_CRITICAL(&s_web_pending_mux);
+    ok = s_web_pending_len + n <= CW_WEB_PENDING_CAP;
+    if (ok) {
+        memcpy(s_web_pending + s_web_pending_len, raw_text, (size_t)n);
+        s_web_pending_len += n;
+        s_web_pending[s_web_pending_len] = '\0';
+    }
+    portEXIT_CRITICAL(&s_web_pending_mux);
+    return ok;
+}
+
+int cw_screen_view_cancel_send(void)
+{
+    portENTER_CRITICAL(&s_web_pending_mux);
+    int n = s_web_pending_len;
+    s_web_pending_len = 0;
+    s_web_pending[0] = '\0';
+    portEXIT_CRITICAL(&s_web_pending_mux);
+    return n + cat_cw_send_cancel();
+}
+
+int cw_screen_view_queued(void)
+{
+    portENTER_CRITICAL(&s_web_pending_mux);
+    int n = s_web_pending_len;
+    portEXIT_CRITICAL(&s_web_pending_mux);
+    return n + cat_cw_send_queued();
+}
+
+/* Take one piece of the web's pending text, cut after a space so a macro
+ * placeholder or a word is never split, and short enough that its expansion
+ * fits CW_SEND_MAX ({MYCALL} etc. grow). Returns false when empty. */
+#define CW_WEB_PIECE_MAX 48
+static bool web_pending_take(char *out, size_t out_sz)
+{
+    bool got = false;
+    portENTER_CRITICAL(&s_web_pending_mux);
+    if (s_web_pending_len > 0) {
+        int max = CW_WEB_PIECE_MAX;
+        if (max > (int)out_sz - 1) max = (int)out_sz - 1;
+        int n = s_web_pending_len;
+        if (n > max) {
+            int cut = -1;
+            for (int i = max - 1; i > 0; i--)
+                if (s_web_pending[i] == ' ') { cut = i + 1; break; }
+            n = cut > 0 ? cut : max;
+        }
+        memcpy(out, s_web_pending, (size_t)n);
+        out[n] = '\0';
+        memmove(s_web_pending, s_web_pending + n, (size_t)(s_web_pending_len - n));
+        s_web_pending_len -= n;
+        s_web_pending[s_web_pending_len] = '\0';
+        got = true;
+    }
+    portEXIT_CRITICAL(&s_web_pending_mux);
+    return got;
+}
+
 // ---- sending ----------------------------------------------------------------
 // The ONE path every CW transmission takes (memory buttons and the ESM NEXT
 // button): macro expansion, the simulation-mode interlock (sim never reaches
@@ -1045,7 +1145,10 @@ static bool send_cw_text(const char *raw)
         cw_screen_feed_decoded(" ", 1);   // keep the stream's token boundary honest
     } else {
         if (!cat_is_ready()) { ui_toast("No QMX connected"); return false; }
-        cat_request_cw_send(exp);
+        if (!cat_request_cw_send(exp)) {
+            ui_toast("CW queue full - wait for it to drain");
+            return false;
+        }
         // {SERIAL} advances only on a real send that actually keys the radio -
         // never on sim (a phantom QSO must not burn a real contest number) and
         // never on the 500 ms preview tick (that only ever reads the current
@@ -1055,6 +1158,7 @@ static bool send_cw_text(const char *raw)
     }
     cw_qso_note_sent(exp);
     ESP_LOGI(TAG, "CW send: '%s'%s", exp, cw_sim ? " [SIM]" : "");
+    snprintf(s_last_sent, sizeof(s_last_sent), "%s", exp);
     if (s_lbl_status) {
         // T142: "Keying:" in red claims the radio is transmitting. A sim send
         // never reaches CAT (see above) - the bezel already warns the whole
@@ -1097,6 +1201,22 @@ static uint32_t s_mem_press_tick = 0;
 static int      s_mem_sel        = -1;   // highlighted button, -1 = none
 static bool     s_mem_fired      = false; // editor already opened by the hold
 
+/* T186: a sideways slide ABANDONS the touch. Until 2026-11-10 every release on
+ * a macro button transmitted, and KY has no abort. Measured from the code: the
+ * left-edge grip (4 x 120 px, screen y 300..420) lies in front of macro buttons
+ * 1-3 (y 292..436), and its swipe strip is only 30 px wide. A stylus or finger
+ * that lands at x >= 30 is on a macro button, so reaching for the page picker
+ * sent CQ (Gyula HA3HZ, 8 mm stylus: "CQ, CQ POTA and CALL are located there").
+ * Sideways travel is measured from the press point and must exceed the vertical
+ * travel, so a vertical re-pick that strays sideways still works (see
+ * mem_hit_test). Once abandoned the touch stays dead until the finger lifts. */
+#define MEM_SLIDE_PX        40    // sideways travel that abandons the touch
+#define MEM_EDGE_SWIPE_PX   60    // = ui.c EDGE_SWIPE_MIN_DX
+#define MEM_EDGE_START_PX  120    // a swipe that starts this near the left edge opens the page picker
+static lv_point_t s_mem_press_pt;
+static bool       s_mem_cancelled   = false;
+static bool       s_mem_drawer_done = false;
+
 static void mem_highlight(int idx)
 {
     for (int i = 0; i < N_CW_MEM; i++) {
@@ -1128,6 +1248,10 @@ static void mem_pressed_cb(lv_event_t *e)
     s_mem_sel = idx;
     s_mem_press_tick = lv_tick_get();
     s_mem_fired = false;
+    s_mem_cancelled = false;
+    s_mem_drawer_done = false;
+    lv_indev_t *indev = lv_indev_active();
+    if (indev) lv_indev_get_point(indev, &s_mem_press_pt);
     mem_highlight(idx);
 }
 
@@ -1139,6 +1263,24 @@ static void mem_pressing_cb(lv_event_t *e)
     if (!indev) return;
     lv_point_t p;
     lv_indev_get_point(indev, &p);
+    int dx = (int)p.x - (int)s_mem_press_pt.x;
+    int dy = (int)p.y - (int)s_mem_press_pt.y;
+    int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+    if (!s_mem_cancelled && adx >= MEM_SLIDE_PX && adx > ady) {
+        s_mem_cancelled = true;
+        s_mem_sel = -1;
+        s_mem_press_tick = 0;
+        mem_highlight(-1);
+    }
+    if (s_mem_cancelled) {
+        /* The swipe the operator meant: it started beside the grip, on a button. */
+        if (!s_mem_drawer_done && dx >= MEM_EDGE_SWIPE_PX &&
+            s_mem_press_pt.x < MEM_EDGE_START_PX) {
+            s_mem_drawer_done = true;
+            ui_left_drawer_open();
+        }
+        return;
+    }
     int idx = mem_hit_test(&p);
     if (idx >= 0 && idx != s_mem_sel) {
         s_mem_sel = idx;
@@ -1166,12 +1308,13 @@ static void mem_released_cb(lv_event_t *e)
 {
     (void)e;
     int idx = s_mem_sel;
-    bool fired = s_mem_fired;
+    bool fired = s_mem_fired || s_mem_cancelled;
     s_mem_sel = -1;
     s_mem_press_tick = 0;
     s_mem_fired = false;
+    s_mem_cancelled = false;
     mem_highlight(-1);
-    if (fired) return;                  // the hold already opened the editor
+    if (fired) return;                  // the hold opened the editor, or a slide abandoned it
     if (idx < 0 || idx >= N_CW_MEM) return;
 
     qmx_settings_t s;
@@ -1187,6 +1330,7 @@ static void mem_press_lost_cb(lv_event_t *e)
     s_mem_sel = -1;
     s_mem_press_tick = 0;
     s_mem_fired = false;
+    s_mem_cancelled = false;
     mem_highlight(-1);
 }
 
@@ -1219,6 +1363,18 @@ static void next_pressed_cb(lv_event_t *e)
     s_next_press_tick = lv_tick_get();
 }
 
+/* T145: drop everything the radio has not received. What it already holds
+ * runs to the end - the toast says so, so the operator is not surprised. */
+static void stop_clicked_cb(lv_event_t *e)
+{
+    (void)e;
+    int n = cw_screen_view_cancel_send();
+    char msg[80];
+    snprintf(msg, sizeof msg, "Stopped - %d char%s not sent. The radio finishes what it holds.",
+             n, n == 1 ? "" : "s");
+    ui_toast(msg);
+}
+
 static void next_clicked_cb(lv_event_t *e)
 {
     (void)e;
@@ -1246,7 +1402,147 @@ static void next_clicked_cb(lv_event_t *e)
     refresh_next_label();
 }
 
+// ---- manual callsign entry ---------------------------------------------------
+static void refresh_card(void);   // fwd - defined below, card redraw after adopt
+static void callentry_close(void)
+{
+    if (s_callentry_modal) lv_obj_add_flag(s_callentry_modal, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void callentry_save_cb(lv_event_t *e)
+{
+    (void)e;
+    char buf[16] = {0};
+    const char *raw = s_callentry_ta ? lv_textarea_get_text(s_callentry_ta) : NULL;
+    if (raw) snprintf(buf, sizeof(buf), "%s", raw);
+    for (char *p = buf; *p; p++) *p = (char)toupper((unsigned char)*p);
+    callentry_close();
+    if (!buf[0]) return;   // Cancel-by-emptying: nothing typed, adopt nothing
+    cw_qso_adopt(buf);
+    ESP_LOGI(TAG, "manual target entered: %s", buf);
+    refresh_card();
+    refresh_next_label();
+}
+
+static void callentry_cancel_cb(lv_event_t *e) { (void)e; callentry_close(); }
+
+static void callentry_kb_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL)
+        lv_obj_add_flag(s_callentry_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void callentry_ta_focused_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_callentry_kb) return;
+    lv_keyboard_set_textarea(s_callentry_kb, s_callentry_ta);
+    lv_obj_clear_flag(s_callentry_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_callentry_kb);
+}
+
+static void callentry_build(void)
+{
+    if (s_callentry_modal) return;
+    lv_obj_t *scr = lv_screen_active();
+
+    s_callentry_modal = lv_obj_create(scr);
+    lv_obj_set_size(s_callentry_modal, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(s_callentry_modal, 0, 0);
+    lv_obj_set_style_bg_color(s_callentry_modal, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_callentry_modal, UI_OPA_MODAL_SCRIM, 0);
+    lv_obj_set_style_border_width(s_callentry_modal, 0, 0);
+    lv_obj_set_style_pad_all(s_callentry_modal, 0, 0);
+    lv_obj_clear_flag(s_callentry_modal, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_callentry_modal, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *panel = lv_obj_create(s_callentry_modal);
+    lv_obj_set_size(panel, 700, 150);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x1c2128), 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_radius(panel, 10, 0);
+    lv_obj_set_style_pad_all(panel, 16, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(panel);
+    lv_label_set_text(title, "Work this station");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    s_callentry_ta = lv_textarea_create(panel);
+    lv_obj_set_size(s_callentry_ta, 320, 56);
+    lv_obj_align(s_callentry_ta, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_textarea_set_one_line(s_callentry_ta, true);
+    lv_textarea_set_max_length(s_callentry_ta, 12);
+    lv_textarea_set_placeholder_text(s_callentry_ta, "K4XYZ");
+    lv_obj_set_style_text_font(s_callentry_ta, &lv_font_montserrat_24, 0);
+    ui_theme_style_textarea(s_callentry_ta);
+    lv_obj_add_event_cb(s_callentry_ta, callentry_ta_focused_cb, LV_EVENT_FOCUSED, NULL);
+
+    lv_obj_t *btn_cancel = lv_btn_create(panel);
+    lv_obj_set_size(btn_cancel, 150, 56);
+    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -166, 0);
+    lv_obj_set_style_bg_color(btn_cancel, lv_color_hex(0x962020), 0);
+    lv_obj_set_style_radius(btn_cancel, 8, 0);
+    lv_obj_add_event_cb(btn_cancel, callentry_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lc = lv_label_create(btn_cancel);
+    lv_label_set_text(lc, "Cancel");
+    lv_obj_set_style_text_color(lc, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lc, &lv_font_montserrat_24, 0);
+    lv_obj_center(lc);
+
+    lv_obj_t *btn_save = lv_btn_create(panel);
+    lv_obj_set_size(btn_save, 150, 56);
+    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(btn_save, lv_color_hex(0x2e8b3a), 0);
+    lv_obj_set_style_radius(btn_save, 8, 0);
+    lv_obj_add_event_cb(btn_save, callentry_save_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ls = lv_label_create(btn_save);
+    lv_label_set_text(ls, "Work");
+    lv_obj_set_style_text_color(ls, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(ls, &lv_font_montserrat_24, 0);
+    lv_obj_center(ls);
+    ui_kbd_set_buttons(btn_save, btn_cancel);
+
+    s_callentry_kb = lv_keyboard_create(s_callentry_modal);
+    style_edit_keyboard(s_callentry_kb);
+    lv_obj_add_event_cb(s_callentry_kb, callentry_kb_event_cb, LV_EVENT_READY, NULL);
+    lv_obj_add_event_cb(s_callentry_kb, callentry_kb_event_cb, LV_EVENT_CANCEL, NULL);
+}
+
+static void callentry_open(void)
+{
+    callentry_build();
+    lv_textarea_set_text(s_callentry_ta, "");
+    lv_obj_remove_state(s_callentry_ta, LV_STATE_FOCUSED);
+    lv_obj_add_flag(s_callentry_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_callentry_modal, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_callentry_modal);
+}
+
+// Always-present affordance (operator ask, 2026-11-09): the station card
+// itself used to BE the "tap to enter a callsign" prompt whenever nothing
+// was heard, which put a permanent box in the way during ordinary
+// CQ/browsing - most sessions never need it. This small icon stays up
+// instead, and works regardless of card state - including a populated card,
+// which fixes a second gap: before this, a wrongly auto-adopted call had no
+// way to be corrected (tapping a populated card only drops the QSO, see
+// card_clicked_cb).
+static void call_entry_btn_clicked_cb(lv_event_t *e) { (void)e; callentry_open(); }
+
 // ---- station card -----------------------------------------------------------
+static void log_btn_clicked_cb(lv_event_t *e)
+{
+    (void)e;
+    char tgt[16];
+    cw_qso_get_target(tgt, sizeof(tgt));
+    manual_log_modal_show_for(tgt);
+}
+
 static void card_clicked_cb(lv_event_t *e)
 {
     (void)e;
@@ -1260,6 +1556,8 @@ static void card_clicked_cb(lv_event_t *e)
         ui_toast(msg);
     } else if (cw_qso_get_heard(heard, sizeof(heard), &age) && heard[0]) {
         cw_qso_adopt(heard);
+    } else {
+        callentry_open();   // nothing heard yet - let the operator type one in
     }
     refresh_next_label();
 }
@@ -1278,6 +1576,15 @@ static void refresh_card(void)
 
     const char *call = tgt[0] ? tgt : (have_heard && age < 120) ? heard : NULL;
     if (!call) {
+        // Nothing heard: hide the card - it is dead real estate during
+        // ordinary CQ/browsing, which is most of the time. The permanent
+        // "tap to enter a callsign" prompt this used to show solved Gyula
+        // HA3HZ's gap but put a box in the way for everyone else; the small
+        // always-present icon button (built alongside the card, below) is
+        // the manual-entry path now, independent of whether this card shows.
+        lv_label_set_text(s_card_call, "");
+        lv_label_set_text(s_card_info, "");
+        lv_label_set_text(s_card_hint, "");
         lv_obj_add_flag(s_card, LV_OBJ_FLAG_HIDDEN);
         return;
     }
@@ -1291,9 +1598,15 @@ static void refresh_card(void)
         snprintf(worked, sizeof(worked), "worked before - new band");
     else
         snprintf(worked, sizeof(worked), "new station");
-    char rst[4], park[12];
+    char rst[4], park[12], serial[8];
     cw_qso_get_rst_rcvd(rst, sizeof(rst));
+    cw_qso_get_serial_rcvd(serial, sizeof(serial));
     bool have_park = cw_qso_get_heard_park(park, sizeof(park));
+    // RST and a received contest serial are shown together - a serial with
+    // no RST next to it cannot happen (cw_qso.c only ever captures one right
+    // after the other), so gating on rst[0] alone is enough for both.
+    char rst_disp[12];
+    snprintf(rst_disp, sizeof(rst_disp), "%s%s%s", rst, serial[0] ? " " : "", serial);
     // ASCII separators only - a middle dot is outside the compiled montserrat
     // glyph range and renders as a tofu box (hardware-observed 2026-08-02).
     // The park reference earns its place on the second line when there is
@@ -1302,10 +1615,10 @@ static void refresh_card(void)
         lv_label_set_text_fmt(s_card_info, "%s\npark %s%s%s",
                               country ? country : "?", park,
                               (tgt[0] && rst[0]) ? " - rcvd " : "",
-                              (tgt[0] && rst[0]) ? rst : "");
+                              (tgt[0] && rst[0]) ? rst_disp : "");
     else if (tgt[0] && rst[0])
         lv_label_set_text_fmt(s_card_info, "%s\n%s - rcvd %s",
-                              country ? country : "?", worked, rst);
+                              country ? country : "?", worked, rst_disp);
     else
         lv_label_set_text_fmt(s_card_info, "%s\n%s",
                               country ? country : "?", worked);
@@ -1688,6 +2001,17 @@ static void tick_cb(lv_timer_t *t)
     (void)t;
     if (!s_shown) return;
 
+    // Web-requested send, drained here rather than acted on directly by the
+    // HTTP task - see cw_screen_view_request_send()'s header comment.
+    {
+        char piece[CW_WEB_PIECE_MAX + 1];
+        while (web_pending_take(piece, sizeof piece)) {
+            /* A refusal (queue full, identity missing, no QMX) has toasted;
+             * what is still pending would only meet the same refusal. */
+            if (!send_cw_text(piece)) { cw_screen_view_cancel_send(); break; }
+        }
+    }
+
     /* Draw cw_decode.c's grid - the same one the panadapter and the browser
      * draw. Three disjoint layers per row; see where the labels are declared.
      * The boundary between `now` and `prev` IS the cursor, which is why no
@@ -1773,12 +2097,41 @@ static void tick_cb(lv_timer_t *t)
         qmx_settings_t qs;
         settings_load_all(&qs);
         if (qs.cw_sim_en) cw_qso_sim_tick();
+
+        /* ⛔ cw_msg_set CAN ALSO CHANGE WHILE THIS PAGE IS UP, same class of
+         * gap as the activation check above. The web's General/Contest
+         * toggle (set_toggle_cb's own web twin) goes through
+         * settings_set_cw_msg_set() same as this page's local button, but
+         * nothing here noticed unless THIS page's own tap fired it - so the
+         * highlighted button and the six macro previews (both read
+         * cw_msg_set) went stale until the page was left and re-entered.
+         * Operator, 2026-11-09: "toggling General/Contest set does not
+         * change the Tab5 setting" - it had, just not the display. */
+        static int s_msg_set_seen = -1;
+        if ((int)qs.cw_msg_set != s_msg_set_seen) {
+            s_msg_set_seen = qs.cw_msg_set;
+            refresh_set_toggle();
+            refresh_mem_labels();
+        }
     }
     refresh_card();
     refresh_next_label();
     refresh_hint();
 
     int rem = cat_get_cw_tx_remaining();
+
+    /* T145: STOP replaces the status line while anything is queued. */
+    int queued = cw_screen_view_queued();
+    if (s_btn_stop && s_lbl_status) {
+        if (queued > 0) {
+            lv_label_set_text_fmt(s_lbl_stop, "STOP - drop %d queued", queued);
+            lv_obj_remove_flag(s_btn_stop, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_btn_stop, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     if (s_lbl_status) {
         if (!cat_is_ready()) {
             lv_label_set_text(s_lbl_status, "No QMX connected");
@@ -1995,6 +2348,21 @@ void cw_screen_view_init(lv_obj_t *parent)
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
 
+    /* T145: STOP, in the status line's own slot. The pane has 8 px of slack,
+     * so there is no row to add; the status line yields to it only while
+     * there is text the radio has NOT received yet - the one thing a stop can
+     * drop. While the radio keys with nothing queued it stays hidden: KY has
+     * no abort (measured 2026-11-02), and a button that cannot do anything
+     * would teach the operator that it does. tick_cb swaps the two. */
+    s_btn_stop = make_pane_btn(s_pane, 10, y + 4, PANE_W - 20, 44, 0x8b1e1e, 0xc03030);
+    lv_obj_add_event_cb(s_btn_stop, stop_clicked_cb, LV_EVENT_CLICKED, NULL);
+    s_lbl_stop = lv_label_create(s_btn_stop);
+    lv_label_set_text(s_lbl_stop, "STOP");
+    lv_obj_set_style_text_color(s_lbl_stop, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(s_lbl_stop, &lv_font_montserrat_20, 0);
+    lv_obj_center(s_lbl_stop);
+    lv_obj_add_flag(s_btn_stop, LV_OBJ_FLAG_HIDDEN);
+
     // Macro set toggle (General/Contest) - moved to the very bottom of the
     // pane 2026-11-03, see the note above the WPM row for why. Anchored to
     // MID_H so it always sits flush with the pane's bottom edge regardless
@@ -2130,6 +2498,53 @@ void cw_screen_view_init(lv_obj_t *parent)
     lv_obj_set_width(s_card_hint, 310);
     lv_label_set_long_mode(s_card_hint, LV_LABEL_LONG_DOT);
     lv_obj_align(s_card_hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    // Manual call-entry icon, directly above the card's right edge - same
+    // column, so it reads as belonging to the card without depending on the
+    // card being shown. Parented to s_container (not s_card): it must stay
+    // up when the card is hidden, which is the normal CQ/browsing state.
+    // 44x44 - the project's own measured touch-target minimum.
+    s_call_entry_btn = lv_obj_create(s_container);
+    lv_obj_set_size(s_call_entry_btn, 44, 44);
+    // T185: one row higher than before (-100, was -50). The Log button below
+    // took the row directly above the card - layout shown to the operator
+    // 2026-11-10 ("under the pen icon?").
+    lv_obj_set_pos(s_call_entry_btn, MID_W - 370 + 330 - 44,
+                   MID_H - TICKER_H - BANDPLAN_H - 132 - 100);
+    lv_obj_set_style_bg_color(s_call_entry_btn, lv_color_hex(0x1c2128), 0);
+    lv_obj_set_style_bg_opa(s_call_entry_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_call_entry_btn, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(s_call_entry_btn, 2, 0);
+    lv_obj_set_style_radius(s_call_entry_btn, 8, 0);
+    lv_obj_clear_flag(s_call_entry_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_call_entry_btn, call_entry_btn_clicked_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ce_icon = lv_label_create(s_call_entry_btn);
+    lv_label_set_text(ce_icon, LV_SYMBOL_EDIT);
+    lv_obj_set_style_text_color(ce_icon, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(ce_icon, &lv_font_montserrat_24, 0);
+    lv_obj_center(ce_icon);
+
+    // T185 (Gyula HA3HZ, 2026-11-10): the Log window, one tap from the CW
+    // page. It was two - the drawer, then its "Log a contact" row. Under the
+    // pen, right-aligned with the card. 120x44, not a 44x44 icon: the
+    // operator measured 44x44 against his fingertip as too small (see the TX
+    // offset button above). Opens with the page's target station filled in.
+    lv_obj_t *blog = lv_obj_create(s_container);
+    lv_obj_set_size(blog, 120, 44);
+    lv_obj_set_pos(blog, MID_W - 370 + 330 - 120,
+                   MID_H - TICKER_H - BANDPLAN_H - 132 - 50);
+    lv_obj_set_style_bg_color(blog, lv_color_hex(0x1c2128), 0);
+    lv_obj_set_style_bg_opa(blog, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(blog, lv_color_hex(0x555555), 0);
+    lv_obj_set_style_border_width(blog, 2, 0);
+    lv_obj_set_style_radius(blog, 8, 0);
+    lv_obj_clear_flag(blog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(blog, log_btn_clicked_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *llog = lv_label_create(blog);
+    lv_label_set_text(llog, "Log");
+    lv_obj_set_style_text_color(llog, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(llog, &lv_font_montserrat_22, 0);
+    lv_obj_center(llog);
 
     ESP_LOGI(TAG, "CW screen built");
 }

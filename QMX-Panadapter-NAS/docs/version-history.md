@@ -4489,8 +4489,131 @@ what shipped. Newest first.
 - **A finished QSO no longer says the other station never answered** *(Randy N4OPI)*. After a completed contact the browser could show "QSO complete" and "*call* has not acknowledged" at the same time, and the second one stayed up for five minutes: *"I still see this conflicting information after a successful exchange."* The device keeps watching for a few minutes in case your final was missed, and that is worth keeping — but nothing ever ended the watch when the other station plainly *had* heard you. Now their RR73, 73 or RRR closes it, and a closing 73 of your own starts no watch at all, because reaching that point means you already had their acknowledgement. Going quiet still does **not** end it: a station that falls silent and then repeats the report is the case the watch exists for. The wording changed too — it says "Still listening for *call*", which is what is actually known.
 - **A diagnostic could abort the device on a boot where WiFi failed to start.** If the WiFi co-processor does not answer at boot, the network stack is never created — and the heap watchdog's ten-second socket check does not fail in that state, it aborts. One reboot and the unit came back, so this shows up as a single unexplained restart about sixteen seconds after power-on. Seen once here. Running with WiFi switched off was never affected.
 
+### Shipped in v1.24.0 — 2026-11-03
 
-### v1.14.2
+**A MODE: CW page, as a beta, and an internet radio player for when the bands are quiet. Audio and binaural CW graduate out of beta. Two-finger pinch now pans while it zooms, on both the Panadapter and the CW page.**
+
+- **MODE: CW, as a beta.** A dedicated CW page: the radio's own decode ticker with squelch for a quiet band's endless lone `T`s, a copilot hint line that says what the copy *meant*, a station card, and two named macro sets — **General** and **Contest** — switched by a toggle at the bottom of the panel, placed there and away from the memory buttons on purpose so it cannot be mis-hit while working them. Keying the radio over CAT is confirmed working, off air. **There is no abort for a message in progress** — both `RX;` and a mode bounce were tried on the bench and neither stops an in-flight send, so a macro runs to completion once started. The page ships **on** as this release's own beta; turn it off with `cw_page_enabled = no` or `{"action":"cw_enable","on":false}` if you would rather not have it yet.
+- **Web Radio.** An internet radio player on the Tab5 — search and genre filter over the radio-browser.info directory, six memory slots (tap plays, long-press stores), the station's live ICY title, and playback that keeps running in the background after you close the player. Decoded on the Tab5; the QMX and its I/Q are untouched.
+- **Audio, and binaural CW, are no longer a beta.** First shipped in v1.16.0; tried, reported on, and settled.
+- **Two-finger pinch now pans while it zooms**, on the Panadapter and the CW page. It always computed a pan from how far the midpoint between your fingers moved, but handed it to the same function a zoom-preset button uses — which recentres on the passband and threw the pinch's own pan away every time. Fixed: the pinch gesture now keeps the pan it computed.
+- **Pinch-zoom and one-finger pan now work on the CW page too** — previously restricted to the Panadapter page from before the CW page existed.
+- **Three-finger hold toggles CW's own Simulation Mode**, the same gesture FT8 already used for its simulator.
+- **A genuinely real trailing letter on a quiet band is no longer lost.** The CW decoder's noise squelch could hold a real `E` or `T` forever if nothing settled it before the band went quiet — "`CQ TTTTTTTT DE`" rendered "`CQ D`". A time-based flush now releases it after a short wait with nothing new arriving.
+- **The diagnostic log on the SD card now keeps its history, instead of deleting it** *(Michael K Johnson KZ4LY)*. It used to rotate at 5 MB and throw away the previous generation, about 10 MB total regardless of card size. It now moves into a `history/` folder on rotation and is only pruned, oldest first, once the card's free space drops under 50 MB.
+- **A manual FT8 pounce now gives up on a busy target immediately**, the same as the robot already did *(Gyula HA3HZ)*. It used to wait roughly 7.5 minutes before moving on.
+
+Audio graduating out of beta does not include the 3.5 mm line-in path, which is still a declared beta.
+
+### Shipped in v1.24.1 — 2026-11-03
+
+**A two-fix patch on v1.24.0: an FT8 CQ-answer reboot, and a manual pounce that held on a station that had actually signed off.**
+
+- **Fixed a reboot when answering a CQ caller on FT8** *(Randy N4OPI, Rick Trommer W5NR)*. Tapping a station calling CQ could crash the Tab5 with a stack overflow; replying to CQ was the one path affected.
+- **A manual pounce now lets go of a busy target that signed off with RRR, not only RR73 or 73** *(Gyula HA3HZ)*. Many stations close a QSO with a bare RRR and no separate 73; that was read as still busy, so a target who was actually free kept holding your pounce.
+
+### Shipped in v1.24.2 — 2026-11-04
+
+**WSPR decoding dead after a visit to FT8 is fixed for good. Two new CW page controls: a TX offset shortcut and Semi QSK break-in delay. A pileup crash and an RRR bug fixed. Plus a one-frame screen flash, found and fixed the same night it was introduced.**
+
+- **WSPR could stop decoding entirely after a visit to the FT8 page, for the rest of the session** *(Gyula HA3HZ and others)*. FT8's memory pool and WSPR's own capture buffers were landing side by side in PSRAM, so when FT8 later freed its pool the memory couldn't join back into one contiguous block big enough for WSPR's candidate search. WSPR now waits for FT8 to fully release its memory before claiming any of its own.
+- **CW TX offset, from the CW page itself.** A new button beside Park opens a popup to shift your transmit frequency away from zero-beat on the station you're calling, without touching the dial.
+- **Semi QSK — the radio's CW break-in delay — is now exposed in the settings drawer** *(Michael K Johnson KZ4LY, Gyula HA3HZ)*. Six modes (Off/Auto/Contest/three Custom units) plus a 0-999 delay value, read from and written straight to the radio.
+- **Tap the WPM number for direct numeric entry**, instead of stepping one WPM at a time with +/-.
+- **A new `{SERIAL}` macro** for a send-time contest serial number, and an `{RST}` placeholder for a signal report.
+- **Fixed a crash from clicking into an FT8 pileup** — a manual reply built from a pileup row could overflow the stack.
+- **Fixed WAIT_RPT reading a bare RRR as a signal report instead of a direct acknowledgement** *(Gyula HA3HZ, Randy N4OPI)*.
+- **The help screen links to the full online manual**, not only the on-device pages.
+- **A one-frame cyan screen flash**, introduced while chasing the WSPR fix above, found and fixed before it shipped: a boot-time memory diagnostic was doing a full PSRAM heap scan with interrupts off.
+- **esp_hosted's SDIO driver now survives a failed memory allocation instead of crashing the device.**
+- **A full SD card can now recover on its own**: history pruning used to run only on a log-size trigger, so a card that was already full before that triggered could never free space.
+- **Downloading or uploading a file in the SD browser now mutes the Tab5 speaker for the duration**, the same protection the diagnostic log mirror already had.
+
+### Shipped in v1.25.0 — 2026-11-09
+
+**The MODE: CW page is now also on the web, at parity with the Tab5. The CW page's band-plan fence covers the Digi sub-band too, on both screens — and closes the one gesture (a spot tap, from the browser) that could still tune outside it. Contest logging, manual callsign entry, and an automatic sidetone fix.**
+
+- **CW on the web.** The browser now shows a CW panel when the Tab5 is on the CW page: "MODE: CW" in the top bar, the band-plan strip drawing CW+Digi only (not Phone), a "Switch to CW" entry in the Radio menu, six tap-to-send macro buttons plus a free-text box (`{MYCALL}`/`{PARK}`/`{CALL}`/`{RST}`/`{SERIAL}` all expand here too), a pencil icon to edit each macro, the General/Contest toggle, and a **Set contest…** button. Also corrected the FT8/FT4/WSPR menu entry colours, which had drifted from the Tab5 drawer's own constants.
+- **Contest logging.** A contest name, set from the web CW panel or `[cw] contest =` in a config file, is written as ADIF `CONTEST_ID` on every CW QSO logged while it is set, alongside the actual serial sent (`STX_STRING`) and received (`SRX_STRING`) — not an assumed or invented one. Mutually exclusive with ARRL Field Day logging.
+- **Manual callsign entry on the CW page.** The station card now shows "tap to enter a callsign" when nothing has been heard, and a pencil icon beside it always opens the same manual-entry keyboard — including to correct a wrongly auto-adopted call without first dropping the contact.
+- **The CW page's band-plan fence now covers Digi, not just CW** — on the Tab5 and from the web. CW is legal inside the digital sub-band, but digital modes are not legal inside the CW one, so the old CW-only clamp was denying spectrum you are actually allowed to use. The band-plan strip, the band-plan drag/slider, and every tuning path (tap, drag, keypad, spot tap, band preset) now agree on the same CW+Digi range. ⛔ **The band-plan slider could also be dragged until its own edges hung half off the strip**, even though its centre was correctly clamped — fixed to behave like a scrollbar thumb, stopping once either edge reaches the track.
+- **Spots on the CW page are CW-only**, not CW+Digi, even though Digi is in reach for tuning: tapping an FT8/FT4 activity spot would switch the radio's mode away from CW, which this page has no business offering.
+- ⛔ **The web's own tap-to-tune, keypad entry and band presets could tune the CW page outside its band-plan fence entirely** — found while tracing the spot-tap report above. Unlike every Tab5 gesture, the browser's `set_freq`/`set_band` endpoints never routed through the CW-page clamp at all. Both now do.
+- **40 m's Digi segment was 24 kHz short of where FT8 actually operates.** The coarse band-plan table's Digi range (7040–7050 kHz) matched the printed IARU Region 1 allocation for narrow-band legacy digimodes, but FT8's worldwide standard dial — 7074 kHz, the same in every region — sits above it, inside what the table called Phone. Widened to 7040–7078 kHz (Region 1 and Region 3); does not affect transmit-legality checks, which use the whole-band edges, not this sub-segment split.
+- **The sidetone's Absolute/Relative setting now switches itself.** Entering the CW page checks the radio's `Sidetone abs/rel`, and if it reads Relative, switches it to Absolute and mirrors the **QMX volume** slider into **Sidetone volume** (15% floor, so it can never go fully silent) — so turning down your receive volume no longer takes your keying monitor with it. Leaving the page restores Relative. Does nothing if the radio is already Absolute.
+- **RBN and DX cluster spots moved off a persistent connection onto periodic spothole.app polling**, the same pattern SOTA spots already used — band-filtered, 60-second period backing off to 900 seconds if unreachable. One trade-off: spothole's feed carries no signal-strength field, so the SNR column for an RBN/cluster spot now reads 0.
+- **A CW decode-ticker misclassification is fixed**: the very last character of your own macro send was being shown as received (cyan) rather than sent (orange), every time.
+- **The CW macro-set toggle (General/Contest) now stays in sync** between the Tab5 and the web regardless of which one last changed it.
+- **A jumpy two-finger pinch-zoom on the CW/Panadapter pages is fixed** — the waterfall was clearing itself on almost every tick of an active pinch; it now freezes at its last scale during the gesture and clears once, cleanly, when it ends.
+- **Dead Zoom/Tune controls on the FT8/JS8 top bar now hide outright**, matching Band/Mode/BW/RIT, instead of sitting there doing nothing.
+- **A real bug in the web FT8 grey-list view is fixed**: a hand-skipped station and an auto-grey-listed one were shown — and cleared — as if they were the same list.
+
+### Shipped in v1.26.0 — 2026-11-10
+
+**Noise reduction and an auto-notch in the browser, at no cost to the Tab5. Each band remembers its frequency and its mode across a restart. The CW page gets a Log button, a STOP for queued text, type-ahead sending from the browser and a band guard on every send.**
+
+- **Web DSP: noise reduction and auto-notch in the browser** *(Samuel W7STF)*. The web page can clean the audio that **Listen** plays. **Speech model** (RNNoise) is for SSB and AM voice. **Spectral** follows the noise floor in each 47 Hz slice of the audio and also works on CW; CW always uses it. **Auto-notch** finds a steady carrier in about a second and filters out up to four at once. Low, Med and High; Med is the default. All of it runs in the browser, so it costs the Tab5 no CPU and no memory. Measured on real SSB at Med: noise between words about 13 dB down with the speech model, 5 to 10 dB down with Spectral. Measured on real CW: gaps of 60 ms and longer reach the level's limit (6 / 12 / 19-20 dB), and a strong note is 0.3 dB down. It adds about 0.1 s of delay; the notch adds none. ⚠ **Spectral on SSB and the auto-notch are measured, not yet judged by ear on a live band.** The speech model on SSB and Spectral on CW were both heard live. See [Web DSP](mkdocs/guide/web-dsp.md).
+- **Each band remembers its frequency and its mode, across a restart.** The per-band frequency used to last only until power-off, and the mode was never recalled: USB on 20 m stayed USB on 40 m. Both are now stored. A band you have not visited starts in LSB below 10 MHz and USB above.
+- **CW type-ahead from the browser** *(Ralph DL1HR)*. A new box on the web CW page: Space keys each word, Enter keys the rest, and you can continue to type while the radio keys. The Tab5 holds up to 256 characters and gives the radio the next part only when the radio's own buffer is empty. **Stop** drops what the radio has not been given yet. ⚠ Tested in a host harness; not exercised separately on the radio.
+- **A STOP button on the Tab5 CW page.** While text is queued, the status line becomes a red **STOP - drop N queued**. The part the radio already holds still runs to the end, because the QMX has no command to stop it.
+- **A Station row and a Log button on the web CW page; Name, QTH and Remarks in the log window** *(Gyula HA3HZ)*. Type the other station's callsign in the browser, so `{CALL}` works on a signal too weak to decode. **Log this contact** opens the log window with the callsign and report filled in. The three new fields are written to ADIF as `NAME`, `QTH` and `COMMENT`.
+- **A Log button on the Tab5 CW page** *(Gyula HA3HZ)*. One tap above the station card, where it used to be a trip through the settings drawer.
+- **A CW macro touch can be abandoned** *(Gyula HA3HZ)*. The left-edge grip lies in front of the first three macro buttons, so a swipe that started there sent a macro. A sideways slide of about 40 px now abandons the touch, and a slide to the right from near the left edge opens the page picker.
+- **A tap on the left or right edge grip opens its drawer**, as a Bluetooth mouse click always did. The bottom grip is unchanged.
+- ⛔ **CW sent from the Tab5 now passes the band guard.** FT8, FT4, JS8, WSPR and Antenna Tune were checked; a CW macro or typed text was not. It is now refused outside your region's band plan. ⚠ **Behaviour change: with no IARU region set, CW send is refused**, as FT8 already was. Set the region, or a grid for the Tab5 to work it out from. A paddle or key on the QMX is not checked, because the radio keys itself.
+- **Web Tune shows its result** *(Ralph DL1HR)*. On a quiet band the Tune button answers "listening" and moves the dial up to 8 seconds later. The Tab5 showed that result; the web page did not. It does now.
+- **The Tab5 waterfall adds no rows while you transmit CW** *(Bryan N0LUF)*, including when you key by hand, so your own signal is not painted over the band. ⚠ Implemented; not yet measured against a hand key. The browser's waterfall is not covered.
+- **SSB Tune refuses fewer good signals.** In the test set it accepted 93 % of the signals it should and now accepts 96 to 97 %; the signals it wrongly refused all had a 200 Hz pitch. Not re-graded on live SSB.
+- **The web page says when it is out of date** *(Gyula HA3HZ)*. After an update a browser could show its own stored copy of the page with the old controls. The page now checks and shows a banner. ⚠ Proven in Chromium only, not in Firefox.
+
+**Fixes**
+
+- **The web spectrum could stay dead for a whole session.** The task that feeds it was created once, at the moment the Tab5 has the least free memory. When that failed, browsers connected and received nothing. Seen in 12 of 573 starts on the bench. It is now created when a browser connects.
+- **A spectrum frame could be written into the next web reply** after a browser left, which corrupted that reply. Measured in 4 of 11 test rounds on v1.25.0; 0 of 40 after the fix.
+- **A web command longer than 255 bytes was cut and refused as "bad json".** The limit is now 1024 bytes, and a longer one is refused with a reason.
+- **The CW page kept the Panadapter's band-plan strip** when you arrived from a zoomed view, and showed "Digi | Phone" with no CW segment.
+- **60 m no longer has its own sideband rule.** Every band below 10 MHz starts in LSB.
+
+**Documentation**
+
+- A new chapter, [Web DSP](mkdocs/guide/web-dsp.md).
+- The [Web API](mkdocs/reference/web-api.md) page had about 25 errors, some of them old: wrong status codes and reply bodies, a WebSocket frame described as 1026 bytes when it is 1063, and a Python example that no longer worked. All corrected against the code, and the CW actions added.
+- Gesture, tuning-step, mode-colour and page-picker descriptions corrected in the manual and the PDF.
+
+**Known, not fixed**
+
+- One capture showed the first CW message after a QMX power cycle held by the radio for 33 seconds and then sent ahead of the next one. It has not been reproduced and the cause is not known.
+- The web audio stream carries 1 to 3 short holes a second (11 ms each) when the Tab5's WiFi is busy. With noise reduction on, the browser patches them.
+
+### Shipped in v1.26.1 — 2026-11-11
+
+**WSPR decodes every cycle again: from v1.24.2 to v1.26.0 the WSPR page decoded the first cycle after it opened and then nothing. The WSPR search is a third faster. The web spectrum follows your dB range, TX power is a slider in the Radio menu, and the web top and bottom bars are cleaned up.**
+
+**Fixes**
+
+- ⛔ **WSPR decodes every cycle again** *(Samuel W7STF)*. From v1.24.2 to v1.26.0 the WSPR page decoded the first cycle after you opened it, then logged `NO MEMORY for the candidate search` for every cycle after that, so it looked like a bad antenna or a dead band. The receiver now takes all the memory it needs once, when you open the page, and allocates nothing during a cycle. If the memory is not there, the page says so once, with the numbers. On the bench: 22 cycles and repeated page re-entries with no failure, against 4 failures in 4 cycles on v1.26.0.
+- **The WSPR search is a third faster: 8.3 s instead of 12.8 s.** While the WSPR page was showing, the Tab5 kept drawing the hidden panadapter behind it and took about a third of the processor the decoder runs on. That time now goes to decoding, two searches per cycle.
+- **A memory leak on every visit to the WSPR page is fixed** (16 KB a visit). The same fault, smaller, is fixed in the WiFi scan, WiFi on/off, the Reader page, the QMX terminal and the Bluetooth start. The firmware build now refuses this fault.
+- **The web spectrum follows the dB range** *(Samuel W7STF)*. The browser drew the spectrum on its own fixed scale and ignored the floor and ceiling set on the Tab5. It now uses them (with **F** off, as on the Tab5).
+- **The web WSPR page shows only the controls that work there.** Mode, BW, Zoom, Tune and RIT did nothing on the WSPR page, or were refused, and are no longer shown. **Band** stays and lists the WSPR bands: a pick does what the WSPR page's own band button does.
+- **The FT8 boot self-test says SKIPPED, not FAIL, when it cannot get memory** - for example when the Tab5 starts straight into the WSPR page. It used to report that as a decoding fault.
+
+**Web page**
+
+- **TX power moved from the top bar to the Radio menu**, as a slider with one stop per level your Calibrate Power sweep measured - 0.1 W steps where the radio has them. The top bar no longer scrolls sideways.
+- The top bar's frequency and S-meter, and the bottom bar's clock, are smaller. The bottom bar shows the WiFi network name; the signal strength is in its tooltip. **Miscellaneous** is now **Misc**.
+- The bottom-bar menus are never taller than the window; on a short window a menu scrolls instead of losing its top.
+
+**Documentation**
+
+- The [Web DSP](mkdocs/guide/web-dsp.md) chapter link on tab5.lav.dk works again, and the site now publishes itself on every release.
+
+**Known, not fixed**
+
+- One capture showed the first CW message after a QMX power cycle held by the radio for 33 seconds and then sent ahead of the next one. It has not been reproduced and the cause is not known.
+- The web audio stream carries 1 to 3 short holes a second (11 ms each) when the Tab5's WiFi is busy. With noise reduction on, the browser patches them.
+
+### Shipped in v1.14.2
 
 **v1.14.2 (2026-09-16/17) - the MQTT client was contending with taskLVGL for core 0, and it was doing it from boot regardless of whether SelfSpotter was ever opened.** ⭐⭐ Randy N4OPI reported general sluggishness "since v1.13.0" - the first release to ship SelfSpotter - including with the map screen closed, which a rendering-cost theory alone could never explain. `net/pskr_self.c`'s esp-mqtt client runs at esp-mqtt's Kconfig **default priority 5**, above taskLVGL's 4, with `tskNO_AFFINITY` - so it could float onto core 0 and preempt the UI thread on every incoming PSK Reporter publish, for the whole session, because the feed connects at boot independent of the map ever being opened. Pinned to **priority 3, core 1** (`CONFIG_MQTT_TASK_CORE_SELECTION_ENABLED` + `CORE_1`, both `sdkconfig` and `.defaults` so a `fullclean` can't drop it) - no IDF-tree patch needed, this one is pure Kconfig. Verified: client still connects, a live `cpu_owners` sample shows no more mqtt_task contention. **Not yet confirmed by Randy on his own hardware** - that's the actual test. ⭐ **`cat_set_mode()` had no `s_poll_paused` guard** - the one blocking CDC writer in `cat.c` without one. Randy: the web UI's "find open slot -> Apply" hung on "Applying" and lost CAT contact about half the time, needing a QMX power cycle, only mid-QSO/CQ-run. `cat_set_mode()` is called from `ft8_tx_arm()`'s Digi pre-flight and `wspr_tx.c`'s pre-TX mode set, both outside `ft8_tx`'s own lock, so it could race an already-ACTIVE burst's `TX;`/`TA;` writes on the same pipe - exactly the "mid-exchange, ~50%" shape. Now refuses cleanly instead of colliding, same as every other CDC writer already does. Also fixed the web UI's flatly wrong tone-apply warning text (said a change would be refused while transmitting; it's actually queued and auto-applied - the other half of what Randy reported) and added an 8s client-side Apply timeout. ⭐ **Gyula HA3HZ: "output power was so low" right after Calibrate Power finished, and the slider that would have explained it went unnoticed.** `output_power_area_refresh()` defaulted an unset per-band target to the LOWEST calibrated step and wrote it to the radio unconditionally - exactly the state right after calibration, which only measures the voltage->watts curve and sets no target of its own. Now reflects the radio's own current voltage when nothing is persisted (calibration already restores the pre-calibration voltage on its way out, so the write becomes a no-op), falling back to the HIGHEST step rather than the lowest if genuinely unknown - a wrong-direction mistake should read louder than expected, never silently near-zero. **SelfSpotter**: coastline decimation was picking points by INDEX across giant fused landmass rings (Italy is not its own ring - it's fused into one Africa+Eurasia polygon), so a peninsula's shape-defining vertices were exactly the ones a fixed stride skipped, rendering as a box (operator: "almost a square box"). Now decimates by ON-SCREEN DISTANCE instead, so detail survives regardless of a point's position in a 7,700-point ring. Zoom ceiling raised 10x -> 50x past where the coastline data still shows real detail; drawer couldn't scroll (content overran the panel ~60px, Flush was silently clipped off the bottom with no scrollbar hint) - fixed, and decluttered (dropped "Age" heading, hid the empty grid-warning row). Header line added (Gyula: a screenshot with no callsign/time/freq in it "doesn't convey much information" on its own) - reads the same sources the rest of the UI already trusts (`settings_get_my_callsign()`, `cat_get_frequency()`, `time(NULL)`/`gmtime_r()`), not new ones. Screenshot downloads now carry a timestamped filename instead of a fixed `ss.bmp`. **Colour audit** (a four-palette sweep found "amber"/"green" meaning three different hexes in three different places): CW/Digi/WSPR collapsed into `ui_theme.h`'s shared palette (was a hand-shifted brighter fork kept in sync only by a comment); live-spots-lane mode tags now use the shared palette instead of inheriting the spot's source colour (needed a second LVGL label per spot - LVGL 9 dropped the old inline `#RRGGBB text#` recolour markup); `UI_COLOR_MODE_USB` brightened (0x8B3A2B -> 0xD9634B, was nearly invisible on the near-black backgrounds it's used against). Network drawer's spot checkboxes reordered/coloured to match what `spots_lane.c` actually draws. **Waterfall scroll speed** (operator: "is wf speed always the same or where do i set it?") - was a compile-time `#define`; generalised a dead diagnostic leftover (`render_set_waterfall_2x()`, unused since the feature it served was removed) into a real 1x-4x drawer setting, persisted, exported/imported with config backup. Spectrum/S-meter cadence untouched either way.
 

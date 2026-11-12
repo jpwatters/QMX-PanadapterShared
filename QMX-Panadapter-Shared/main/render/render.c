@@ -13,6 +13,7 @@
 #include "ui_mode.h"
 #include <limits.h>        /* UINT_MAX, for the push-spacing min */
 #include "render_waterfall.h"
+#include "cat.h"            /* cat_radio_transmitting - T129 */
 #include <string.h>
 
 static const char *TAG = "render";
@@ -383,8 +384,17 @@ static void render_task(void *arg)
          * pixels nobody can see - which is exactly the reasoning the overlay
          * gate beside it already states. The browser keeps its full rate
          * because ws_push_task reads dsp_get_spectrum() on its own path. */
-        bool pan_visible = (ui_mode_get() != UI_MODE_FT8) && !ui_any_overlay_active()
-                           && !ui_get_server_mode();
+        /* ⛔ WSPR JOINS FT8 HERE (T193, 2026-11-11). The WSPR page is the same
+         * opaque 1280 x MID_H container as the FT8 page, yet only FT8 was in
+         * this gate - so on WSPR this task kept drawing the hidden panadapter
+         * at full rate, at priority 3 on core 1, the same core as wspr_dec at
+         * priority 1. cpu_owners 5 s into a search on bench1: wspr_dec 51.8 %,
+         * render 36.5 %. The search took 12.8 s, about twice its own compute;
+         * T193's "search grew from 9.5 s to 13-16 s" was this task, not the
+         * search. CW stays: that page shows the spectrum. */
+        const ui_mode_t mode_now = ui_mode_get();
+        bool pan_visible = (mode_now != UI_MODE_FT8) && (mode_now != UI_MODE_WSPR)
+                           && !ui_any_overlay_active() && !ui_get_server_mode();
         bool have_spectrum = false;
 
         if (pan_visible) {
@@ -556,7 +566,18 @@ static void render_task(void *arg)
              * rows * dt_ms and emit per whole 1000. At dt_ms = 100 this is
              * arithmetically the old expression, so the timer path is
              * unchanged. */
-            s_wf_acc += (uint32_t)s_wf_rows * dt_ms;
+            /* T129 (Bryan N0LUF): no rows while the radio transmits. His own
+             * 2.5 W CW, keyed by hand, painted a carpet across the waterfall -
+             * the radio's front end leaks it into the I/Q (T124). The rows are
+             * SKIPPED, not painted dark, so the waterfall shows what was heard
+             * and the overs simply do not appear. The accumulator is cleared
+             * so un-keying does not dump a burst of catch-up rows. The live
+             * spectrum line above still draws. */
+            if (cat_radio_transmitting()) {
+                s_wf_acc = 0;
+            } else {
+                s_wf_acc += (uint32_t)s_wf_rows * dt_ms;
+            }
             while (s_wf_acc >= 1000) {
                 s_wf_acc -= 1000;
                 render_waterfall_tick(s_wf_smoothed, DSP_FFT_SIZE);

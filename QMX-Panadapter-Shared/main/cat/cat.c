@@ -1,6 +1,7 @@
 #include "cat.h"
 #include "cat_keying_cmds.h"
 #include "tx_band_guard.h"
+#include "cw_txq.h"
 #include "util/cat_restore.h"   // what the band scan sends to undo itself
 
 #include <string.h>
@@ -185,6 +186,45 @@ static volatile uint32_t s_fa_expect_hz = 0;
 static volatile uint32_t s_fa_expect_from_hz = 0;
 static volatile int64_t  s_fa_expect_us = 0;
 static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
+
+/* ⭐ T129 (Bryan N0LUF): IS THE RADIO TRANSMITTING, WHOEVER KEYED IT.
+ *
+ * The Tab5 knew about a transmission only when it started one, so a paddle or
+ * straight key on the QMX painted the operator's own CW across the waterfall
+ * (T124: 1.0 W into a dummy load lifts the I/Q ~6 dB - the radio's own front
+ * end). In CW the poll now asks "KD;SW;" ~4x a second:
+ *   KD; - key state, KD1 = key down. CW only (DiGi answers ?;).
+ *   SW; - a value only while transmitting; bare "SW;" in receive. This is the
+ *         behaviour cat_query_power_swr() already relies on.
+ * ⚠ NEITHER HAS BEEN MEASURED AGAINST A HAND KEY. KD may follow each element
+ * (key up between dits), SW the whole T/R state. So "transmitting" is EITHER,
+ * held for CAT_TX_HANG_US after the last sighting so the gaps between elements
+ * do not unblank the waterfall row by row - and every change of either is
+ * logged with both readings, so the first paddle session says which tracks.
+ * Read by render.c to stop adding waterfall rows. */
+#define CAT_TX_POLL_US 250000
+#define CAT_TX_HANG_US 700000
+static volatile int64_t s_tx_seen_us = 0;
+static volatile bool    s_kd_down = false, s_sw_tx = false;
+static int64_t          s_last_txpoll_us = 0;
+
+static void tx_sense_note(char which, bool tx)
+{
+    bool *slot = (which == 'K') ? (bool *)&s_kd_down : (bool *)&s_sw_tx;
+    if (*slot != tx) {
+        *slot = tx;
+        ESP_LOGI(TAG, "TX sense: %s -> %s (KD %d, SW %d)",
+                 which == 'K' ? "KD" : "SW", tx ? "TX" : "RX",
+                 (int)s_kd_down, (int)s_sw_tx);
+    }
+    if (tx) s_tx_seen_us = esp_timer_get_time();
+}
+
+bool cat_radio_transmitting(void)
+{
+    int64_t t = s_tx_seen_us;
+    return t != 0 && (esp_timer_get_time() - t) < CAT_TX_HANG_US;
+}
 static int  s_cw_offset_hz = 700;   // CW LO offset read from QMX at connect, default 700
 // Which VFO the radio RECEIVES on, from "FR;": 0 = VFO A, 1 = VFO B, 2 = Split.
 // -1 = not asked yet / no answer. We poll and write FA, i.e. VFO A ONLY, so a radio
@@ -700,6 +740,30 @@ int cat_get_sidetone_vol(void)      { return s_sidetone_vol; }
 int cat_get_sidetone_absolute(void) { return s_sidetone_abs; }
 uint16_t cat_sidetone_vol_max(void) { return s_sidetone_vol_max; }
 
+/* ---- CW-page sidetone auto-management - see cat.h for the why ----------- */
+static volatile bool s_sidetone_automirror = false;
+
+void cat_sidetone_set_automirror(bool on) { s_sidetone_automirror = on; }
+bool cat_sidetone_automirror_active(void) { return s_sidetone_automirror; }
+
+void cat_sidetone_mirror_from_af_gain(uint16_t ag)
+{
+    if (!s_sidetone_automirror) return;
+    uint16_t top = s_sidetone_vol_max;
+    if (!top) return;   // range not discovered - same guard as cat_request_sidetone_vol()
+    uint32_t db = ag / 4;
+    if (db > CAT_AF_GAIN_DB_MAX) db = CAT_AF_GAIN_DB_MAX;
+    /* 15% floor: the point of this feature is that the sidetone must never go
+     * silent, which plain Relative does not guarantee (it has no floor at
+     * all) - so this is a deliberate improvement over Relative, not a copy
+     * of it. The rest of the range is a straight line in dB, same unit the
+     * QMX volume slider already uses. */
+    uint16_t floor = (uint16_t)((uint32_t)top * 3 / 20);
+    uint16_t span  = (uint16_t)(top - floor);
+    uint16_t target = (uint16_t)(floor + (uint32_t)span * db / CAT_AF_GAIN_DB_MAX);
+    cat_request_sidetone_vol(target);
+}
+
 int cat_get_cw_offset_hz(void) { return s_cw_offset_hz; }
 bool cat_qmx_gps_source_internal(void) { return s_qmx_gps_source_internal; }
 bool cat_qmx_gps_source_known(void)    { return s_qmx_gps_source_known; }
@@ -724,10 +788,16 @@ static volatile bool s_tune_poll_active = false;
 void cat_tune_poll_set_active(bool active) { s_tune_poll_active = active; }
 
 // ---- CW keyer / decoder surface (CW page, v1.4) ----------------------------
-// KY send text is staged here by the LVGL thread and drained by the poll task
-// (same pattern as s_pending_ssb_bw). The buffer holds ONE pending message:
-// the QMX's own 80-char circular KY buffer does the real queuing, so a second
-// tap before the first drained just replaces an un-sent staging copy.
+// KY send text is APPENDED to a queue (cw_txq.c) by the LVGL thread and handed
+// to the radio by the poll task, one chunk at a time, each only once the TB
+// t-field says the previous one has finished - see cw_txq.h for why it waits
+// for EMPTY rather than topping the radio's buffer up.
+//
+// ⛔ THIS USED TO BE ONE STAGING SLOT, and a second send before the first
+// drained REPLACED it. The comment here said the radio's "80-char circular KY
+// buffer does the real queuing" - nobody had measured that, and nothing could
+// be typed while the radio keyed (Ralph DL1HR asked for type-ahead,
+// 2026-11-10) or stopped before it was keyed (T145, Michael KZ4LY).
 // KY message format. The QMX has TWO separate KY implementations selected by
 // its own "KY TS480" System Config item: the default QRP Labs / Elecraft-like
 // free-length form ("KY <text>;") and the Kenwood TS480 form (a FIXED
@@ -743,20 +813,38 @@ void cat_tune_poll_set_active(bool active) { s_tune_poll_active = active; }
 // answer lives: in that mode a message of ALL SPACES stops sending.
 #define CAT_KY_TS480_LEN 24
 static volatile bool    s_ky_ts480_compat = false;  // EXPERIMENT 2026-08-04
-static char             s_pending_cw_send[96];
+static cw_txq_t         s_cw_txq;                     // zero-init == cw_txq_init()
 static portMUX_TYPE     s_cw_send_mux = portMUX_INITIALIZER_UNLOCKED;
 /* s_keyer_wpm is declared once near the top - the branch had its own copy,
  * removed with the rest of its keyer pipeline (merge 2026-10-19). */
 static volatile int     s_cw_tx_remaining = -1;       // TB t-field, -1 unknown
 static volatile bool    s_cw_poll_active = false;     // TB; poll while CW page shown
 
-void cat_request_cw_send(const char *text)
+bool cat_request_cw_send(const char *text)
 {
-    if (!text || !text[0]) return;
+    if (!text || !text[0]) return true;
     portENTER_CRITICAL(&s_cw_send_mux);
-    strncpy(s_pending_cw_send, text, sizeof(s_pending_cw_send) - 1);
-    s_pending_cw_send[sizeof(s_pending_cw_send) - 1] = '\0';
+    bool ok = cw_txq_push(&s_cw_txq, text);
     portEXIT_CRITICAL(&s_cw_send_mux);
+    if (!ok) ESP_LOGW(TAG, "CW queue full - refused '%s'", text);
+    return ok;
+}
+
+int cat_cw_send_cancel(void)
+{
+    portENTER_CRITICAL(&s_cw_send_mux);
+    int n = cw_txq_cancel(&s_cw_txq);
+    portEXIT_CRITICAL(&s_cw_send_mux);
+    if (n) ESP_LOGI(TAG, "CW queue cancelled - %d char(s) never sent", n);
+    return n;
+}
+
+int cat_cw_send_queued(void)
+{
+    portENTER_CRITICAL(&s_cw_send_mux);
+    int n = cw_txq_queued(&s_cw_txq);
+    portEXIT_CRITICAL(&s_cw_send_mux);
+    return n;
 }
 
 int  cat_get_cw_tx_remaining(void) { return s_cw_tx_remaining; }
@@ -764,7 +852,13 @@ int  cat_get_cw_tx_remaining(void) { return s_cw_tx_remaining; }
 void cat_cw_poll_set_active(bool active)
 {
     s_cw_poll_active = active;
-    if (!active) s_cw_tx_remaining = -1;   // stale TX-progress must not linger
+    if (!active) {
+        s_cw_tx_remaining = -1;   // stale TX-progress must not linger
+        /* Leaving the CW page stops what has not been keyed yet. Typed-ahead
+         * text going out after the operator has left the page that shows it
+         * would be transmission nobody is watching. */
+        cat_cw_send_cancel();
+    }
 }
 esp_err_t cat_send_raw_cmd(const char *fmt, ...)
 {
@@ -1216,6 +1310,11 @@ static void process_cat_message(const char *msg, size_t len)
         int  cw_n = cw_decode_parse_tb(msg, cw_buf, sizeof(cw_buf), &tx_pending);
         if (cw_n >= 0) {
             s_cw_tx_remaining = tx_pending;
+            /* The type-ahead queue's only clock: the next chunk goes when this
+             * reads empty (cw_txq.h). */
+            portENTER_CRITICAL(&s_cw_send_mux);
+            cw_txq_on_tb(&s_cw_txq, tx_pending, esp_timer_get_time());
+            portEXIT_CRITICAL(&s_cw_send_mux);
             cw_decode_feed(msg);                          /* line model + web */
             if (cw_n > 0) cw_screen_feed_decoded(cw_buf, cw_n);  /* CW page */
         } else {
@@ -1460,6 +1559,13 @@ static void process_cat_message(const char *msg, size_t len)
         s_sw_resp_len = len < sizeof(s_sw_resp) ? len : sizeof(s_sw_resp) - 1;
         memcpy(s_sw_resp, msg, s_sw_resp_len);
         s_sw_resp[s_sw_resp_len] = '\0';
+        tx_sense_note('S', len > 3);    // T129: a value only while transmitting
+        return;
+    }
+    // KD response: "KD0;" key up, "KD1;" key down. CW only - DiGi answers ?;.
+    // Only ever sent as the READ "KD;" (T129 poll); this firmware never sets it.
+    if (len == 4 && msg[0] == 'K' && msg[1] == 'D' && (msg[2] == '0' || msg[2] == '1')) {
+        tx_sense_note('K', msg[2] == '1');
         return;
     }
     // QMX returns "?;" for unsupported commands; we just log once.
@@ -2930,15 +3036,57 @@ static void poll_task(void *arg)
         // keying), a keyer-speed set/query, and, while the page is visible,
         // poll TB; at ~1 Hz for the QMX's decoded-CW buffer + KY TX progress.
         {
-            char msg[96];
+            char msg[CW_TXQ_MAX_CHUNK + 1];
             msg[0] = '\0';
             portENTER_CRITICAL(&s_cw_send_mux);
-            if (s_pending_cw_send[0]) {
-                memcpy(msg, s_pending_cw_send, sizeof(msg));
-                msg[sizeof(msg) - 1] = '\0';
-                s_pending_cw_send[0] = '\0';
-            }
+            int took = cw_txq_take(&s_cw_txq, esp_timer_get_time(), msg, sizeof(msg));
             portEXIT_CRITICAL(&s_cw_send_mux);
+            if (took < 0) {
+                /* No TB answer for the whole stall window after a send: the
+                 * poll or the link is gone. The queue was DROPPED - sending more
+                 * into a radio we cannot see is the wrong way to fail. */
+                ESP_LOGW(TAG, "CW queue dropped - no TB reply after the last send");
+                ui_toast("CW: radio stopped answering - queued text dropped");
+                msg[0] = '\0';
+            }
+            /* ⛔ THE BAND GUARD, BEFORE EITHER KY FORM BELOW (T48).
+             *
+             * KY keys the radio's own keyer: RF on the TX frequency for as long
+             * as the text takes. tools/check_tx_guard.py said "this firmware
+             * never keys CW", which was true when it was written and false from
+             * the day the CW page shipped - so the one internal path that keys
+             * CW had no band check, while the raw-CAT door (cat_keying_cmds.c)
+             * had guarded KY since 2026-10-22. Found 2026-11-10 while adding
+             * type-ahead. The tune clamp keeps the CW page's DIAL in the CW
+             * segment, but the dial can be moved on the radio's own knob, and a
+             * clamp on tuning is not a check on transmitting.
+             *
+             * The emitted RF is the dial, or dial + the CW TX offset when
+             * cw_split_maintain() has engaged split. Both ends are checked, so
+             * the answer does not depend on whether split has landed yet. An
+             * unknown dial refuses, as the raw door does. */
+            if (msg[0]) {
+                uint32_t dial = s_last_freq_hz;
+                int32_t  off  = (int32_t)settings_get_cw_tx_offset_hz();
+                uint32_t a = dial, b = (uint32_t)((int32_t)dial + off);
+                uint32_t lo = a < b ? a : b, hi = a < b ? b : a;
+                char why[96];
+                bool ok = dial != 0;
+                if (!ok) snprintf(why, sizeof why, "the dial is not known yet");
+                else     ok = tx_band_guard_allows(lo, hi, "CW send", why, sizeof why);
+                if (!ok) {
+                    int dropped = cat_cw_send_cancel();
+                    portENTER_CRITICAL(&s_cw_send_mux);
+                    cw_txq_abort_flight(&s_cw_txq);
+                    portEXIT_CRITICAL(&s_cw_send_mux);
+                    ESP_LOGW(TAG, "CW send REFUSED at %lu-%lu Hz: %s ('%s' + %d queued dropped)",
+                             (unsigned long)lo, (unsigned long)hi, why, msg, dropped);
+                    char t[128];
+                    snprintf(t, sizeof t, "CW not sent: %s", why);
+                    ui_toast(t);
+                    msg[0] = '\0';
+                }
+            }
             char ky[112];
             ky[0] = '\0';
             if (msg[0]) {
@@ -2989,6 +3137,16 @@ static void poll_task(void *arg)
                 esp_err_t e = cdc_acm_host_data_tx_blocking(s_cdc_dev, (const uint8_t *)ky,
                                                             strlen(ky), 200);
                 ESP_LOGI(TAG, "CW send -> %s (%s)", ky, e == ESP_OK ? "ok" : "fail");
+                if (e != ESP_OK) {
+                    /* Never reached the radio: there is nothing in flight to
+                     * wait for, and the rest of the queue is dropped rather than
+                     * sent with a hole in it. */
+                    int dropped = cat_cw_send_cancel();
+                    portENTER_CRITICAL(&s_cw_send_mux);
+                    cw_txq_abort_flight(&s_cw_txq);
+                    portEXIT_CRITICAL(&s_cw_send_mux);
+                    if (dropped) ui_toast("CW send failed - queued text dropped");
+                }
                 // One KY; readback 300 ms after the send. Deliberately NOT a
                 // drain probe any more: the 2026-08-04 baseline experiment
                 // (poll KY; on an IDLE radio) showed an idle QMX answers
@@ -3089,8 +3247,16 @@ static void poll_task(void *arg)
                          // ~48x margin - asking five times a second bought
                          // nothing and put needless traffic on the CAT link.
                          int64_t now_tb = esp_timer_get_time();
-                         if (now_tb - s_last_tb_us < TB_POLL_MIN_US) { cmd = NULL; }
-                         else { s_last_tb_us = now_tb; cmd = "TB;"; cmd_len = 3; }
+                         if (now_tb - s_last_tb_us >= TB_POLL_MIN_US) {
+                             s_last_tb_us = now_tb; cmd = "TB;"; cmd_len = 3;
+                         } else if (now_tb - s_last_txpoll_us >= CAT_TX_POLL_US) {
+                             /* T129: who is transmitting - see tx_sense_note().
+                              * Only reachable in CW (this phase exists only
+                              * when cw_poll), where KD; is understood. */
+                             s_last_txpoll_us = now_tb; cmd = "KD;SW;"; cmd_len = 6;
+                         } else {
+                             cmd = NULL;
+                         }
                      }
                      break;
         }

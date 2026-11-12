@@ -2,6 +2,7 @@
 
 #include "spots_lane.h"
 #include "ui.h"
+#include "ui_mode.h"
 #include "ui_theme.h"
 #include "net/spots.h"
 #include "adif/adif_log.h"
@@ -374,6 +375,26 @@ static void repaint(void)
         }
     }
 
+    /* Hard page rule, NOT the optional filter above: CW-only, not CW+DiGi.
+     * First cut (2026-11-09 earlier) kept DIGI too, reasoning that the Digi
+     * sub-band is reachable from here - true, but reachability and SPOT
+     * SELECTION are different questions. Tapping a DIGI spot sets the mode to
+     * DIGI (tune_to_spot() -> cat_mode_for_spot()), which takes the operator
+     * OFF the CW page's own mode entirely - "no DiGi mode to be selected by
+     * choosing a FT spot" (operator, 2026-11-09). The Digi sub-band itself
+     * stays in reach for CW operation there (ui_page_range_hz(),
+     * ui_cw_tune_clamp_hz() still allow it) - only FT8/FT4 ACTIVITY spots are
+     * hidden, because a CW page has no business advertising a digital QSO to
+     * tune into. SPOT_MODE_OTHER (unknown) is dropped too - an unlabelled spot
+     * might be SSB or DIGI, and the page cannot afford to guess. */
+    if (ui_mode_get() == UI_MODE_CW) {
+        int keep = 0;
+        for (int i = 0; i < n; i++)
+            if (s_w->buf[i].mode == SPOT_MODE_CW)
+                s_w->buf[keep++] = s_w->buf[i];
+        n = keep;
+    }
+
     hide_all();
     s_sel = -1;             // labels are about to be reassigned
     s_label_n = 0;
@@ -675,22 +696,32 @@ static const char *cat_mode_for_spot(uint8_t mode, uint32_t hz)
 static void tune_to_spot(const tap_target_t *t, const char *what)
 {
     if (!t->freq_hz) return;
-    const char *mode = cat_mode_for_spot(t->mode, t->freq_hz);
-    ESP_LOGI(TAG, "%s -> %lu Hz mode=%s", what, (unsigned long)t->freq_hz,
+    /* ⛔ This call BYPASSES ui_tune_commit() - it writes cat_set_frequency_forced()
+     * directly, below - and was the one gesture that still could walk the CW page
+     * out of its own band segment (operator, 2026-11-09: "the spots can ALSO send
+     * the RX far outside the band plan"). ui_cw_tune_clamp_hz() is a no-op outside
+     * CW mode, so this costs nothing anywhere else. */
+    uint32_t hz = ui_cw_tune_clamp_hz(t->freq_hz);
+    if (hz != t->freq_hz) {
+        ESP_LOGI(TAG, "%s: %lu Hz is outside the CW page's range -> %lu Hz",
+                 what, (unsigned long)t->freq_hz, (unsigned long)hz);
+    }
+    const char *mode = cat_mode_for_spot(t->mode, hz);
+    ESP_LOGI(TAG, "%s -> %lu Hz mode=%s", what, (unsigned long)hz,
              mode ? mode : "(unchanged)");
     /* The still display must re-frame on this rather than hold: the operator
      * picked this signal, so it belongs on screen and not at an edge (Roy
      * KI0ER). Before the tune - the flag is consumed by the update it causes. */
     ui_note_frequency_jump();
-    cat_set_frequency_forced(t->freq_hz);   // deliberate user action, bypass the rate limiter
-    ui_update_frequency(t->freq_hz);        // optimistic, same as tap-to-tune on the spectrum
+    cat_set_frequency_forced(hz);   // deliberate user action, bypass the rate limiter
+    ui_update_frequency(hz);        // optimistic, same as tap-to-tune on the spectrum
     // Via the poll task: the LVGL thread must never write the CDC pipe directly
     // (it races the FA/MD/FW poll and the QMX answers '?;').
     if (mode) cat_request_mode(mode);
     /* Remember WHO, so the manual log window opens with the callsign already
      * in it. Kept in spots.c rather than here because the pick outlives this
      * lane - the operator tunes, works the station, then opens the log. */
-    spots_note_pick(t->call, t->mode, t->freq_hz);
+    spots_note_pick(t->call, t->mode, hz);
 }
 
 // Highlight: the callsign inverts - its own colour becomes the fill and the text

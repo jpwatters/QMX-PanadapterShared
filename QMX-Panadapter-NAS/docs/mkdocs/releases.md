@@ -4,26 +4,68 @@ All releases are available on [GitHub Releases](https://github.com/SteffenLav/qm
 
 ## Latest Release
 
-**v1.24.2** - 2026-11-04
+**v1.26.1** - 2026-11-11
+
+**WSPR decodes every cycle again: from v1.24.2 to v1.26.0 the WSPR page decoded the first cycle after it opened and then nothing. The WSPR search is a third faster. The web spectrum follows your dB range, TX power is a slider in the Radio menu, and the web top and bottom bars are cleaned up.**
+
+**Fixes**
+
+- ⛔ **WSPR decodes every cycle again** *(Samuel W7STF)*. From v1.24.2 to v1.26.0 the WSPR page decoded the first cycle after you opened it, then logged `NO MEMORY for the candidate search` for every cycle after that, so it looked like a bad antenna or a dead band. The receiver now takes all the memory it needs once, when you open the page, and allocates nothing during a cycle. If the memory is not there, the page says so once, with the numbers. On the bench: 22 cycles and repeated page re-entries with no failure, against 4 failures in 4 cycles on v1.26.0.
+- **The WSPR search is a third faster: 8.3 s instead of 12.8 s.** While the WSPR page was showing, the Tab5 kept drawing the hidden panadapter behind it and took about a third of the processor the decoder runs on. That time now goes to decoding, two searches per cycle.
+- **A memory leak on every visit to the WSPR page is fixed** (16 KB a visit). The same fault, smaller, is fixed in the WiFi scan, WiFi on/off, the Reader page, the QMX terminal and the Bluetooth start. The firmware build now refuses this fault.
+- **The web spectrum follows the dB range** *(Samuel W7STF)*. The browser drew the spectrum on its own fixed scale and ignored the floor and ceiling set on the Tab5. It now uses them (with **F** off, as on the Tab5).
+- **The web WSPR page shows only the controls that work there.** Mode, BW, Zoom, Tune and RIT did nothing on the WSPR page, or were refused, and are no longer shown. **Band** stays and lists the WSPR bands: a pick does what the WSPR page's own band button does.
+- **The FT8 boot self-test says SKIPPED, not FAIL, when it cannot get memory** - for example when the Tab5 starts straight into the WSPR page. It used to report that as a decoding fault.
+
+**Web page**
+
+- **TX power moved from the top bar to the Radio menu**, as a slider with one stop per level your Calibrate Power sweep measured - 0.1 W steps where the radio has them. The top bar no longer scrolls sideways.
+- The top bar's frequency and S-meter, and the bottom bar's clock, are smaller. The bottom bar shows the WiFi network name; the signal strength is in its tooltip. **Miscellaneous** is now **Misc**.
+- The bottom-bar menus are never taller than the window; on a short window a menu scrolls instead of losing its top.
+
+**Documentation**
+
+- The [Web DSP](guide/web-dsp.md) chapter link on tab5.lav.dk works again, and the site now publishes itself on every release.
+
+**Known, not fixed**
+
+- One capture showed the first CW message after a QMX power cycle held by the radio for 33 seconds and then sent ahead of the next one. It has not been reproduced and the cause is not known.
+- The web audio stream carries 1 to 3 short holes a second (11 ms each) when the Tab5's WiFi is busy. With noise reduction on, the browser patches them.
+
+## Previous Releases
+
+### v1.26.0 - 2026-11-10
+
+**Noise reduction and an auto-notch in the browser, at no cost to the Tab5. Each band remembers its frequency and its mode across a restart. The CW page gets a Log button, a STOP for queued text, type-ahead sending from the browser and a band guard on every send.**
+
+- Web DSP: a speech model and a spectral noise reduction, and an auto-notch, all in the browser.
+- Each band remembers its frequency and mode across a restart.
+- CW: type-ahead from the browser, a STOP for queued text, a Log button on both screens, a Station row on the web.
+- CW sent from the Tab5 passes the band guard; with no IARU region set, CW send is refused.
+- Fixes: a web spectrum that could stay dead for a session, a frame written into the next web reply, web commands over 255 bytes.
+
+### v1.25.0 - 2026-11-09
+
+**The MODE: CW page is now also on the web, at parity with the Tab5. The CW page's band-plan fence covers the Digi sub-band too, on both screens — and closes the one gesture (a spot tap, from the browser) that could still tune outside it. Contest logging, manual callsign entry, and an automatic sidetone fix.**
+
+- The MODE: CW page in the browser: tap-to-send macros, free text, macro editing, the General/Contest toggle and a contest name.
+- Contest logging: `CONTEST_ID` and the serials actually sent and received.
+- Manual callsign entry on the CW page's station card.
+- The CW page's band-plan fence covers Digi as well as CW, on both screens, and the web's tuning paths now honour it.
+- The sidetone's Absolute/Relative setting switches itself on entering and leaving the CW page.
+- RBN and DX cluster spots moved to periodic polling.
+- Fixes: the last character of a macro shown as received, a jumpy pinch-zoom, dead Zoom/Tune controls on the FT8 top bar, the web grey-list view.
+
+### v1.24.2 - 2026-11-04
 
 **WSPR decoding dead after a visit to FT8 is fixed for good. Two new CW page controls: a TX offset shortcut and Semi QSK break-in delay. A pileup crash and an RRR bug fixed. Plus a one-frame screen flash, found and fixed the same night it was introduced.**
 
-A note before the list: this release adds more small controls to the CW page than any single release should, really. I'm aware the app is edging toward being a Swiss-army knife, and I don't want that to become the norm — a simple, easy-to-understand UI matters more to me than a complete feature checklist. Expect me to start saying no to requests, and to occasionally retire something, so the app stays something one person can maintain and everyone can still find their way around.
-
-- **WSPR could stop decoding entirely after a visit to the FT8 page, for the rest of the session** *(Gyula HA3HZ and others, a recurring report)*. Not a timing race as first suspected: FT8's memory pool and WSPR's own capture buffers were landing side by side in PSRAM, so when FT8 later freed its pool the memory couldn't join back into one contiguous block big enough for WSPR's candidate search. Total free memory looked fine; the layout was just permanently split. WSPR now waits for FT8 to fully release its memory before claiming any of its own, closing the gap for good. Verified live: switching FT8 -> WSPR now decodes candidates every single cycle.
-- **CW TX offset, from the CW page itself.** A new button beside Park opens a popup to shift your transmit frequency away from zero-beat on the station you're calling, without touching the dial — previously only reachable through the settings drawer. See [TX offset](guide/cw.md#tx-offset) in the guide.
-- **Semi QSK — the radio's CW break-in delay — is now exposed in the settings drawer** *(Michael K Johnson KZ4LY, Gyula HA3HZ)*. Six modes (Off/Auto/Contest/three Custom units) plus a 0-999 delay value, read from and written straight to the radio. Useful if you run an amplifier or relay that needs the receiver quiet for the whole transmission. See [Semi QSK](guide/settings.md#radio) in the guide.
-- **Tap the WPM number for direct numeric entry**, instead of stepping one WPM at a time with +/-.
-- **Fixed a crash from clicking into an FT8 pileup** — a manual reply built from a pileup row could overflow the stack; now shares the same safe path as every other manual reply.
-- **Fixed WAIT_RPT reading a bare RRR as a signal report instead of a direct acknowledgement** *(Gyula HA3HZ, Randy N4OPI)*. A station that had already said RRR and would not repeat itself was left sitting in the wrong wait state until timeout.
-- **A new `{SERIAL}` macro** for a send-time contest serial number, and an `{RST}` placeholder for a signal report.
-- **The help screen links to the full online manual**, not only the on-device pages.
-- **A one-frame cyan screen flash, introduced earlier the same evening while chasing the WSPR fix above, was found and fixed before it shipped.** A boot-time memory diagnostic was doing a full PSRAM heap scan with interrupts off — the exact pattern a resolved hardware investigation months ago had already ruled out everywhere else in this codebase. Caught on the same bench, same night.
-- **esp_hosted's SDIO driver now survives a failed memory allocation instead of crashing the device** — closes one specific crash site found during a 14-hour WSPR soak test. The underlying memory pressure that led to it is still being tracked down; this stops that one crash from taking the radio down while that continues.
-- **A full SD card can now recover on its own**: history pruning used to run only on a log-size trigger, so a card that was already full before that triggered could never free space. It now prunes directly on a full-card write failure too.
-- **Downloading or uploading a file in the SD browser now mutes the Tab5 speaker for the duration**, the same protection the diagnostic log mirror already had, so the file transfer can't glitch the audio.
-
-## Previous Releases
+- WSPR could stop decoding entirely after a visit to the FT8 page, for the rest of the session — a PSRAM fragmentation issue, now fixed for good.
+- CW TX offset, from the CW page itself, and a numeric keypad for the WPM number.
+- Semi QSK — the radio's CW break-in delay — exposed in the settings drawer.
+- A new `{SERIAL}` macro and an `{RST}` placeholder for CW macros.
+- Fixed a crash from clicking into an FT8 pileup, and WAIT_RPT reading a bare RRR as a signal report.
+- esp_hosted's SDIO driver now survives a failed memory allocation instead of crashing the device; a full SD card can now recover on its own; the SD browser now mutes the Tab5 speaker during a file transfer.
 
 ### v1.24.1 - 2026-11-03
 
@@ -1254,7 +1296,7 @@ See [Full Version History](https://github.com/SteffenLav/qmx-panadapter/blob/mai
 
 - **Source code:** [GitHub Repository](https://github.com/SteffenLav/qmx-panadapter)
 - **Releases:** [GitHub Releases](https://github.com/SteffenLav/qmx-panadapter/releases)
-- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v1.24.2.pdf) or [Web](quick-start.md)
+- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v1.26.1.pdf) or [Web](quick-start.md)
 - **Build Guide:** [Build from Source](build/build.md)
 - **Technical Details:** [CLAUDE.md](https://github.com/SteffenLav/qmx-panadapter/blob/main/CLAUDE.md)
 

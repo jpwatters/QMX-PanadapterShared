@@ -260,18 +260,64 @@ static void compute_passband_edges_hz(int32_t *out_low, int32_t *out_high);
 static void update_bandplan_strip(uint32_t freq_hz);
 
 // ---- Band preset popup ------------------------------------------------
-// Per-band last-used frequency (session memory, not persisted).
-// Index mirrors cat_get_band_list(). 0 = never visited, use center_hz.
+// Per-band last-used frequency. s_band_last_hz[] is this session's working
+// copy (index mirrors cat_get_band_list(); 0 = not visited this session).
+//
+// T188 (operator, 2026-11-10): "remember freq and mode on any band I visit",
+// kept across a reboot. Until then this was session-only - band_preset_cb's
+// comment called it "NVS-persisted" and it never was - and the MODE was not
+// recalled at all: USB on 20 m, band button to 40 m, still USB.
+//   - leaving a band stores its frequency and the mode in use there
+//     (settings_band_mem_set, straight to NVS; ui_update_frequency());
+//   - a mode chosen while staying on a band is stored for that band
+//     (ui_update_mode());
+//   - a band BUTTON, here or on the web page, recalls both
+//     (ui_band_recall_mode()). A band never visited gets the sideband rule:
+//     LSB below 10 MHz, USB above. No exception: 60 m is LSB too (operator,
+//     2026-11-10: "all bands less than 10MHz shall default to lsb and vice
+//     versa"). I had added USB on 60 m by convention; he did not ask for it.
+// Only the band buttons recall. A spot, a memory channel and the FT8/WSPR
+// pages set their own mode, and a recall fired from the frequency change
+// itself would arrive after theirs and override it.
 static uint32_t s_band_last_hz[CAT_MAX_BANDS] = {0};
+static int64_t  s_band_change_us = 0;     // when the dial last moved to another band
+static char     s_current_mode[8];        // fwd: defined with the top-bar statics
 
 uint32_t ui_band_last_hz(uint32_t center_hz)
 {
     int band_count = 0;
     const cat_band_entry_t *bands = cat_get_band_list(&band_count);
     for (int i = 0; i < band_count; i++) {
-        if (bands[i].center_hz == center_hz) return s_band_last_hz[i];
+        if (bands[i].center_hz == center_hz && s_band_last_hz[i]) return s_band_last_hz[i];
     }
-    return 0;
+    uint32_t stored = 0;
+    settings_band_mem_get(center_hz, &stored, NULL, 0);
+    return stored;
+}
+
+static bool band_mem_mode_ok(const char *m)
+{
+    return m && (!strcmp(m, "USB") || !strcmp(m, "LSB") || !strcmp(m, "AM") ||
+                 !strcmp(m, "CW")  || !strcmp(m, "DIGI"));
+}
+
+/* Called by a band button AFTER it has retuned (so ui_update_frequency() has
+ * already stored the band being left, with the mode still in use there).
+ * Panadapter page only: the CW, FT8 and WSPR pages own the mode. */
+void ui_band_recall_mode(uint32_t center_hz, uint32_t target_hz)
+{
+    if (ui_mode_get() != UI_MODE_PANADAPTER) return;
+    char want[8] = "";
+    settings_band_mem_get(center_hz, NULL, want, sizeof(want));
+    if (!band_mem_mode_ok(want)) {
+        /* Never visited. The sideband convention, and only when the radio is
+           in a sideband now - an operator in CW or DIGI keeps it. */
+        if (strcmp(s_current_mode, "USB") != 0 && strcmp(s_current_mode, "LSB") != 0) return;
+        snprintf(want, sizeof(want), "%s", target_hz < 10000000u ? "LSB" : "USB");
+    }
+    if (strcmp(want, s_current_mode) == 0) return;
+    ESP_LOGI("ui", "band recall: %lu Hz -> mode %s (was %s)", (unsigned long)target_hz, want, s_current_mode);
+    cat_request_mode(want);
 }
 
 static lv_obj_t *s_band_popup = NULL;
@@ -381,7 +427,7 @@ static void band_preset_cb(lv_event_t *e)
 {
     uint32_t center_hz = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     band_popup_close();
-    // Recall the last-visited (NVS-persisted) frequency on this band - KEEP this,
+    // Recall the last-visited frequency on this band (NVS-persisted since T188) - KEEP this,
     // it's a deliberate per-band-memory feature. Fall back to the always-legal
     // band center ONLY when the remembered spot was parked OUTSIDE the legal
     // allocation: the QMX rejects an out-of-band recall, which made the band look
@@ -418,6 +464,7 @@ static void band_preset_cb(lv_event_t *e)
     // can lag or be briefly garbled after a CDC write) so the band button always
     // visibly retunes the Tab5 immediately.
     ui_update_frequency(target);
+    ui_band_recall_mode(center_hz, target);   // T188 - after the retune, see its comment
 }
 
 static void band_overlay_cb(lv_event_t *e)
@@ -2745,6 +2792,13 @@ typedef struct {
 static ui_mode_snapshot_t s_pan_snapshot = {0};
 static ui_mode_snapshot_t s_ft8_snapshot = {0};
 static ui_mode_snapshot_t s_cw_snapshot  = {0};   // CW page (v1.4): sticky freq, mode always "CW"
+
+// True only while THIS code is the one holding the radio in Absolute for the
+// CW-page sidetone auto-management (see cat.h). Set on a CW entry that found
+// confirmed Relative; cleared (and Relative restored) on the matching exit.
+// Left false - and the radio left alone - when it was already Absolute, which
+// is someone's own deliberate choice (Michael KZ4LY's binaural T139 setup).
+static bool s_cw_sidetone_managing = false;
 
 // CAT writes share a 200 ms TX rate-limiter; restoring freq+mode+bw
 // back-to-back would drop all but the first. Stagger them on a 250 ms
@@ -6285,7 +6339,7 @@ static void build_top_bar(lv_obj_t *parent)
 
     // Slim grip on the right screen edge, purely a visual hint that the
     // settings drawer lives off-screen there. Non-clickable by design -
-    // opening the drawer is swipe-only (right_edge_swipe_cb, on its own
+    // opening the drawer is a swipe or a tap on this grip (right_edge_swipe_cb, on its own
     // always-on-top overlay strip below), same as the left/bottom grips.
     // LVGL skips non-clickable objects during hit-testing, so touches here
     // fall through to that strip underneath.
@@ -6655,6 +6709,14 @@ typedef struct {
     int32_t  pan_hz;
     int32_t  pb_lo_hz, pb_hi_hz;
     bool     dragging;
+    /* ⛔ THE PAGE IS AN INPUT. The CW page draws this strip differently - at
+     * x=320, CW and DiGi only - and the page was not in this key. MEASURED
+     * 2026-11-10 (T190): panadapter on 14.027 CW at zoom x8, then the CW page
+     * with nothing else changed: the gate skipped the repaint and the CW page
+     * showed the panadapter's whole-band strip, with its CW segment hidden
+     * under the left pane ("Phone? And where is CW?"). A 10 Hz dial move
+     * repainted it correctly. */
+    uint8_t  page;
 } bp_inputs_t;
 static bp_inputs_t s_bp_last_in;
 
@@ -6709,6 +6771,7 @@ static void update_bandplan_strip(uint32_t freq_hz)
     in.pan_hz   = (int32_t)(s_bp_dragging ? s_bp_preview_pan_hz
                                           : ui_get_pan_offset_hz());
     in.dragging = s_bp_dragging;
+    in.page     = (uint8_t)ui_mode_get();
     compute_passband_edges_hz(&in.pb_lo_hz, &in.pb_hi_hz);
 
     if (s_bp_last_in.valid && bp_caches_valid &&
@@ -6987,8 +7050,15 @@ static void bp_solve_view(int64_t view_center_hz, uint32_t *dial_out, int64_t *p
      * the box instead would drift the pan by the remainder on every drag. */
     int64_t d = ((view_center_hz - pan) + 500) / 1000 * 1000;
 
+    /* ⛔ effective_drag_edges(), NOT legal_band_edges() directly - this is one
+     * of the five places the comment at effective_drag_edges() warns about.
+     * legal_band_edges() alone let the band-plan knob (Tab5 release AND the
+     * web's view_center, both funnel through here) land the dial anywhere in
+     * the WHOLE band on the CW page, so the window could be dragged past the
+     * CW+Digi segments the strip now paints - "the spectrum cannot extend out
+     * over the band plan" (operator, 2026-11-09). */
     uint32_t lo, hi;
-    if (legal_band_edges(s_last_qmx_freq_hz, &lo, &hi)) {
+    if (effective_drag_edges(s_last_qmx_freq_hz, &lo, &hi)) {
         if (d < (int64_t)lo) d = (int64_t)lo;
         if (d > (int64_t)hi) d = (int64_t)hi;
     }
@@ -8211,6 +8281,33 @@ static bool grip_mouse_click(lv_event_t *e, lv_obj_t *grip)
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     return point_on_grip(grip, p.x, p.y);
+}
+
+/* T186: a TOUCH tap on the left or right grip opens its drawer, as the mouse
+ * click does (operator, 2026-11-10: "a tap on both right and left grip should
+ * open both r and l drawer... exactly the same way ble mouse do it"). Until
+ * then touch was swipe-only, and Gyula HA3HZ tapped the left grip with an 8 mm
+ * stylus: nothing opened, and a tap that landed 30+ px in sent a CW macro.
+ * The event is already on the 30 px strip, so x needs no test; y must be on the
+ * grip (a fingertip is wider than the mouse's 10 px slop), and the touch must
+ * not have travelled - a short swipe is not a tap.
+ * ⛔ NOT the bottom grip: a tap there must keep doing nothing, see
+ * grip_mouse_click(). */
+#define GRIP_TAP_SLOP_Y_PX  24
+#define GRIP_TAP_MAX_DX_PX  15
+static bool grip_touch_tap(lv_event_t *e, lv_obj_t *grip, int start_x)
+{
+    lv_indev_t *indev = lv_event_get_indev(e);
+    if (!indev || indev == s_mouse_indev || start_x < 0) return false;
+    if (!grip || lv_obj_has_flag(grip, LV_OBJ_FLAG_HIDDEN)) return false;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    int dx = (int)p.x - start_x;
+    if (dx < 0) dx = -dx;
+    lv_area_t a;
+    lv_obj_get_coords(grip, &a);
+    return dx <= GRIP_TAP_MAX_DX_PX &&
+           p.y >= a.y1 - GRIP_TAP_SLOP_Y_PX && p.y <= a.y2 + GRIP_TAP_SLOP_Y_PX;
 }
 
 // One wheel click moves this many pixels. A touch UI has large rows, so a
@@ -9956,6 +10053,35 @@ void ui_update_frequency(uint32_t freq_hz)
                            : bands[i].center_hz - freq_hz;
             if (d <= 1500000u && d < best_dist) { best_dist = d; current_band_idx = i; }
         }
+        // ⛔ THE BAND THE TAB5 BOOTED ON WAS NEVER REGISTERED. MEASURED
+        // 2026-11-10 on bench1: the one frequency update after boot came at
+        // 21.6 s and the radio's band list at 29.7 s, so that update found no
+        // bands and left s_last_band_idx at -1. The dial then did not move
+        // until the band button, and leaving 20 m stored nothing - 20 m came
+        // back with an older frequency. The previous dial is still known
+        // here, so the band it was on is worked out now, with the same
+        // nearest-centre rule.
+        if (s_last_band_idx < 0 && s_last_qmx_freq_hz != 0) {
+            uint32_t bd = 1500000u + 1u;
+            for (int i = 0; i < band_count; i++) {
+                uint32_t d = (s_last_qmx_freq_hz > bands[i].center_hz)
+                               ? s_last_qmx_freq_hz - bands[i].center_hz
+                               : bands[i].center_hz - s_last_qmx_freq_hz;
+                if (d <= 1500000u && d < bd) { bd = d; s_last_band_idx = i; }
+            }
+            if (s_last_band_idx >= 0) s_band_last_hz[s_last_band_idx] = s_last_qmx_freq_hz;
+        }
+        // T188: the band being LEFT is stored now, with its last frequency and
+        // the mode still in use there - before the new frequency overwrites
+        // anything. Once per band change, so NVS sees a handful of writes a day.
+        if (current_band_idx != s_last_band_idx) {
+            if (s_last_band_idx >= 0 && s_last_band_idx < band_count && s_band_last_hz[s_last_band_idx]) {
+                bool pan = ui_mode_get() == UI_MODE_PANADAPTER;
+                settings_band_mem_set(bands[s_last_band_idx].center_hz, s_band_last_hz[s_last_band_idx],
+                                      (pan && band_mem_mode_ok(s_current_mode)) ? s_current_mode : NULL);
+            }
+            s_band_change_us = esp_timer_get_time();
+        }
         if (current_band_idx >= 0) s_band_last_hz[current_band_idx] = freq_hz;
         // Band changed: flush decode list (stale signals from different band)
         if (current_band_idx != s_last_band_idx) {
@@ -10073,8 +10199,21 @@ void ui_update_mode(const char *mode)
     // Phase 5.10F: cache for snap-step lookup in touch handler
     if (mode) {
         bool changed = strncmp(s_current_mode, mode, sizeof(s_current_mode) - 1) != 0;
+        static bool s_mode_seen = false;      // the first reading is the radio's state, not a choice
         strncpy(s_current_mode, mode, sizeof(s_current_mode) - 1);
         s_current_mode[sizeof(s_current_mode) - 1] = '\0';
+        // T188: a mode chosen while STAYING on a band belongs to that band.
+        // Not within 3 s of a band change: that is the old band's mode still
+        // on the radio, or the recall's own request arriving.
+        if (changed && s_mode_seen && s_last_band_idx >= 0 && band_mem_mode_ok(s_current_mode) &&
+            ui_mode_get() == UI_MODE_PANADAPTER &&
+            esp_timer_get_time() - s_band_change_us > 3000000) {
+            int bc = 0;
+            const cat_band_entry_t *bl = cat_get_band_list(&bc);
+            if (s_last_band_idx < bc)
+                settings_band_mem_set(bl[s_last_band_idx].center_hz, s_band_last_hz[s_last_band_idx], s_current_mode);
+        }
+        s_mode_seen = true;
         // The passband (bw) shape is mode-dependent, so the passband-centered
         // pan offset (zoom > x1) needs to be recomputed once the real mode is
         // known from CAT - otherwise the freq/bw cursor lines stay where they
@@ -10578,6 +10717,18 @@ static uint32_t cw_bandplan_clamp_hz(uint32_t hz)
     if (cw_page_range_hz(hz, &cl, &ch) && hz >= cl && hz <= ch) return hz;
     uint32_t c = cw_segment_center_hz(hz);
     return c ? c : hz;
+}
+
+// Exported for callers outside this file that commit a FORCED tune of their
+// own instead of going through ui_tune_commit() - today that is spots_lane.c's
+// tap-to-tune and off-screen-arrow paths, which called cat_set_frequency_forced()
+// directly and so were "the one gesture that still could" walk the CW page out
+// of its own band segment (operator, 2026-11-09: "the spots can ALSO send the
+// RX far outside the band plan"). Same rule, same reason as every other tuning
+// path on this page - see ui_tune_commit()'s own comment just below.
+uint32_t ui_cw_tune_clamp_hz(uint32_t hz)
+{
+    return (ui_mode_get() == UI_MODE_CW) ? cw_bandplan_clamp_hz(hz) : hz;
 }
 
 // The one tuning entry point for UI paths that can run on the CW page: it
@@ -11573,6 +11724,41 @@ ui_cw_tune_t ui_cw_tune_to_peak(int32_t *moved_hz)
     return r;
 }
 
+/* ⭐ THE DEFERRED OUTCOME, FOR THE WEB (Ralph DL1HR, 2026-11-10).
+ *
+ * Both tune gestures can end LATER than the press: CW listens up to 8 s, SSB
+ * always votes for 4 s. The Tab5 says how it ended with a toast; the web only
+ * ever got the press's own answer ("listening") and then nothing. Ralph read
+ * that as the web tune being less precise than the Tab5's - it is the SAME
+ * estimator (ui_cw_tune_to_peak / ui_sb_tune_start, one code path for both
+ * callers), and the web simply never heard the result.
+ *
+ * Every deferred ending goes through here, next to its toast, so the two
+ * surfaces say the same words. The seq lets a page tell "a new outcome" from
+ * the last one it already showed. Written from the spectrum-push task, read
+ * from httpd: a spinlock around a short copy. */
+static portMUX_TYPE s_tune_out_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t     s_tune_out_seq;
+static char         s_tune_out_msg[72];
+
+static void tune_outcome(const char *msg)
+{
+    portENTER_CRITICAL(&s_tune_out_mux);
+    strlcpy(s_tune_out_msg, msg, sizeof(s_tune_out_msg));
+    s_tune_out_seq++;
+    portEXIT_CRITICAL(&s_tune_out_mux);
+    ui_toast_ms(msg, 2500);
+}
+
+uint32_t ui_tune_outcome(char *buf, size_t n)
+{
+    portENTER_CRITICAL(&s_tune_out_mux);
+    uint32_t seq = s_tune_out_seq;
+    if (buf && n) strlcpy(buf, s_tune_out_msg, n);
+    portEXIT_CRITICAL(&s_tune_out_mux);
+    return seq;
+}
+
 /* Called once per spectrum push, with the lock held. Does nothing unless a
  * press is waiting for a signal to appear. */
 static void cw_tune_tick(int64_t now_us)
@@ -11586,10 +11772,10 @@ static void cw_tune_tick(int64_t now_us)
         char msg[72];
         if (moved) snprintf(msg, sizeof(msg), "Zero-beat: %+d Hz", (int)moved);
         else       snprintf(msg, sizeof(msg), "Zero-beat: already on the peak");
-        ui_toast_ms(msg, 2500);
+        tune_outcome(msg);
     } else if (now_us >= s_cw_wait_until_us) {
         s_cw_wait_until_us = 0;
-        ui_toast_ms("Zero-beat: nothing heard within 400 Hz", 2500);
+        tune_outcome("Zero-beat: nothing heard within 400 Hz");
     }
 }
 
@@ -11762,7 +11948,7 @@ static void sb_tune_tick(int64_t now_us)
     if (best < 0 || s_sb_vote_n[best] < SB_MIN_VOTES) {
         ESP_LOGI(TAG, "SSB tune: refused - %d/%d frames accepted, %d distinct target(s)",
                  s_sb_acc, s_sb_frames, s_sb_slots);
-        ui_toast_ms("SSB tune: no station edge found", 2500);
+        tune_outcome("SSB tune: no station edge found");
         return;
     }
 
@@ -11780,7 +11966,7 @@ static void sb_tune_tick(int64_t now_us)
     } else {
         snprintf(msg, sizeof(msg), "SSB tune: already on the station");
     }
-    ui_toast_ms(msg, 2500);
+    tune_outcome(msg);
 }
 
 ui_sb_tune_t ui_sb_tune_start(void)
@@ -12880,6 +13066,20 @@ static void wf_track_viewport(void)
     int64_t view_lo = ui_view_lo_now(&span);   /* snapped - see view_lo_snapped */
     if (span <= 0) return;
 
+    /* ⭐ MEASURED 2026-11-09, the 2026-10-24 "prime suspect" below confirmed:
+     * 16 full clears logged in one ~5 s two-finger pinch on the CW page
+     * (operator: "it is super jumpy"). A live pinch recomputes zoom - and
+     * therefore span - on EVERY poll tick by design (that is what a live
+     * zoom gesture is), so nearly every tick took the expensive clear branch
+     * below. Not page-specific: it only shows up where still-view is on
+     * AND the operator is actively pinch-zooming, which happens to be the
+     * CW habit. Freeze the waterfall at its last good scale while a pinch
+     * is live instead - the spectrum above still tracks it live, so the
+     * zoom/pan feel is unaffected - and let the clear below fire exactly
+     * ONCE, naturally, on the first tick after the gesture ends (span then
+     * mismatches the frozen anchor). */
+    if (s_pinch_active) return;
+
     /* A scale change cannot be honoured by moving pixels - the old rows are at
      * a different Hz/px and rescaling them would be a lie. Start again. */
     if (!s_wf_anchor_ok || s_wf_anchor_span != span) {
@@ -13842,8 +14042,24 @@ static void touch_event_cb(lv_event_t *e)
             /* What moves is the WINDOW CENTRE - see bp_solve_view(). The dial
              * comes with it only when the radio cannot reach that far. */
             int64_t cwant = s_bp_drag_start_view_hz + (int64_t)lround((double)dx * hz_per_px);
-            if (cwant < (int64_t)s_bp_drag_band_lo) cwant = (int64_t)s_bp_drag_band_lo;
-            if (cwant > (int64_t)s_bp_drag_band_hi) cwant = (int64_t)s_bp_drag_band_hi;
+            /* ⛔ Clamp the CENTRE to [lo + span/2, hi - span/2], NOT to [lo, hi]
+             * directly. The visible-span BOX is span_hz wide and is drawn centred
+             * on cwant (see s_bp_span above) - clamping only its centre to the
+             * band edges let up to half the box hang off either end, pixel-clipped
+             * at the strip's border so it LOOKED like it stopped there while the
+             * window it represents (and the spectrum/waterfall showing it) did
+             * not. "It has to stop whenever the EDGES touch the end or start of
+             * the band plan" (operator, 2026-11-09) - a slider thumb, not a point. */
+            int32_t span_hz = (int32_t)(48000.0f / s_zoom_factor);
+            int64_t lo  = (int64_t)s_bp_drag_band_lo;
+            int64_t hi  = (int64_t)s_bp_drag_band_hi;
+            int64_t half = span_hz / 2;
+            if (hi - lo <= span_hz) {
+                cwant = (lo + hi) / 2;   /* box is wider than the track: no room to slide */
+            } else {
+                if (cwant < lo + half) cwant = lo + half;
+                if (cwant > hi - half) cwant = hi - half;
+            }
             s_bp_drag_view_hz = cwant;
 
             uint32_t dial_pred = s_last_qmx_freq_hz;
@@ -14234,12 +14450,17 @@ static void left_edge_swipe_cb(lv_event_t *e)
         if (s_left_edge_swipe_start_x >= 0 &&
             (int)p.x - s_left_edge_swipe_start_x >= EDGE_SWIPE_MIN_DX) {
             left_drawer_open();
-        } else if (grip_mouse_click(e, s_left_edge_grip)) {
-            left_drawer_open();         // a pointer cannot swipe: see grip_mouse_click()
+        } else if (grip_mouse_click(e, s_left_edge_grip) ||
+                   grip_touch_tap(e, s_left_edge_grip, s_left_edge_swipe_start_x)) {
+            left_drawer_open();         // a pointer cannot swipe; a finger may tap (T186)
         }
         s_left_edge_swipe_start_x = -1;
     }
 }
+
+/* T186: the CW page's macro buttons call this when a swipe that was meant for
+ * the strip above started 30+ px in, on a button. LVGL thread only. */
+void ui_left_drawer_open(void) { left_drawer_open(); }
 
 // top_edge_swipe_cb REMOVED 2026-09-13. Operator: "The top down swipe needs
 // to be dropped - there are too many top bar features that is colliding with
@@ -14416,8 +14637,8 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
 
 // Right-edge swipe (drag left) opens the settings drawer. Same always-on-top
 // overlay approach as left_edge_swipe_cb/bottom_edge_swipe_cb, so it works
-// in every UI mode (Panadapter, FT8/4, future CW/...) - deliberately
-// swipe-only, no tap fallback, to keep this gesture uniform across modes.
+// in every UI mode. Swipe, or a tap on the grip (T186, 2026-11-10 - it was
+// swipe-only until then).
 static void right_edge_swipe_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -14435,7 +14656,8 @@ static void right_edge_swipe_cb(lv_event_t *e)
         if (s_right_edge_swipe_start_x >= 0 &&
             s_right_edge_swipe_start_x - (int)p.x >= EDGE_SWIPE_MIN_DX) {
             drawer_open();
-        } else if (grip_mouse_click(e, s_burger_btn)) {
+        } else if (grip_mouse_click(e, s_burger_btn) ||
+                   grip_touch_tap(e, s_burger_btn, s_right_edge_swipe_start_x)) {
             // The right edge's visual grip is s_burger_btn - a screen child, not
             // a child of this strip (see build_edge_swipe_strips). It is
             // non-clickable, so the click lands here, on the strip beneath it.
@@ -16364,6 +16586,7 @@ static void drawer_build(void)
         lv_slider_set_value(s_slider_qmx_vol, vcfg.qmx_vol_db, LV_ANIM_OFF);
         lv_obj_align(s_slider_qmx_vol, LV_ALIGN_TOP_LEFT, 0, 40);
         lv_obj_add_event_cb(s_slider_qmx_vol, drawer_slider_qmx_vol_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        lv_obj_add_event_cb(s_slider_qmx_vol, drawer_slider_qmx_vol_cb, LV_EVENT_RELEASED, NULL);
 
         /* ⭐ T139's SECOND HALF, and it is a labelling fault not a code one.
          * Michael KZ4LY could not tell that this row is the radio's own main
@@ -17434,7 +17657,9 @@ static void drawer_build(void)
 
         // RBN: CW skimmers, the only source with its own colour (green) -
         // see spots_lane.c. Same weight and indent as the others: a SOURCE,
-        // not a sub-option of any of them (operator, 2026-08-09).
+        // not a sub-option of any of them (operator, 2026-08-09). Via
+        // spothole.app since 2026-11-06 (net/spots.c), not its own telnet
+        // connection any more - see net/spots.h for why.
         lv_obj_t *rbn_lbl = lv_label_create(sec);
         lv_label_set_text(rbn_lbl, "CW spots");
         lv_obj_set_style_text_color(rbn_lbl, lv_color_hex(SPOTS_COL_RBN), 0);
@@ -17445,7 +17670,8 @@ static void drawer_build(void)
 
         // DX cluster: the only source carrying PHONE spots - RBN is skimmers
         // and no SSB skimmer exists. Same weight and indent as the others: a
-        // SOURCE, not a sub-option of either.
+        // SOURCE, not a sub-option of either. Via spothole.app since
+        // 2026-11-06, same as RBN above - no second telnet connection any more.
         lv_obj_t *dxc_lbl = lv_label_create(sec);
         lv_label_set_text(dxc_lbl, "Phone spots");
         lv_obj_set_style_text_color(dxc_lbl, lv_color_hex(SPOTS_COL_POTA), 0);
@@ -19396,6 +19622,11 @@ static void drawer_slider_qmx_vol_cb(lv_event_t *e)
     int db = (int)lv_slider_get_value(lv_event_get_target(e));
     settings_set_qmx_vol_db((uint8_t)db);
     cat_request_af_gain((uint16_t)(db * 4));
+    // Sidetone mirror (CW page auto-management) commits on RELEASE only - it
+    // is the expensive MM/MU; write, and this callback itself fires on every
+    // drag tick for the cheap AG write above.
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED)
+        cat_sidetone_mirror_from_af_gain((uint16_t)(db * 4));
     if (s_lbl_qmx_vol) {
         char b[32];
         snprintf(b, sizeof(b), "QMX volume: %d dB", db);
@@ -21167,6 +21398,14 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         strncpy(s_cw_snapshot.mode, "CW", sizeof(s_cw_snapshot.mode) - 1);
         s_cw_snapshot.mode[sizeof(s_cw_snapshot.mode) - 1] = '\0';
         cw_screen_view_hide();
+        // Hand the radio back to Relative - but only if WE are the one who
+        // moved it away from Relative on entry. Never fires for an operator's
+        // own deliberate Absolute (that was never ours to touch).
+        if (s_cw_sidetone_managing) {
+            cat_sidetone_set_automirror(false);
+            cat_request_sidetone_absolute(false);
+            s_cw_sidetone_managing = false;
+        }
     } else if (cur == UI_MODE_WSPR) {
         wspr_rx_stop();               /* frees 8.6 MB and releases the capture */
         wspr_screen_view_hide();
@@ -21242,6 +21481,30 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         // optimistically for the no-QMX case.
         cat_request_cw_passband(CW_DEFAULT_BW_HZ);
         ui_update_passband_width(CW_DEFAULT_BW_HZ);
+        // Sidetone auto-management (operator ask, 2026-11-09): the radio
+        // ships "Sidetone abs/rel" = Relative, which drags the CW monitor
+        // down to near-silent with this very slider - confusing new/average
+        // users who do not know the two are linked. Force Absolute and start
+        // mirroring QMX volume into Sidetone volume ourselves, ONLY when we
+        // find the radio in CONFIRMED Relative - never when it is already
+        // Absolute (that is Michael KZ4LY's own deliberate T139 choice for
+        // his binaural setup, and must not be touched), and never while
+        // unknown (query it instead, so the NEXT entry can decide correctly
+        // rather than guessing now). Restored to Relative on leaving the
+        // page - see the stand-down block above - so a standalone QMX is
+        // never left needing to be "repaired".
+        {
+            int abs_rel = cat_get_sidetone_absolute();
+            if (abs_rel == 0) {
+                cat_request_sidetone_absolute(true);
+                cat_sidetone_set_automirror(true);
+                s_cw_sidetone_managing = true;
+                int ag = cat_get_af_gain();
+                if (ag >= 0) cat_sidetone_mirror_from_af_gain((uint16_t)ag);
+            } else if (abs_rel < 0) {
+                cat_query_sidetone();
+            }
+        }
         // ...and honour the band plan: an entry frequency outside the band's
         // CW segment (inherited from a phone/digi tune) moves into it.
         {

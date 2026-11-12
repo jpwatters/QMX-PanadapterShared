@@ -1,4 +1,4 @@
-From e43a01841d2cf009bbfaaedf1a7d5a59c44981ae Mon Sep 17 00:00:00 2001
+From 7857fa56eff7bae963dc1049c04a09844eeab659 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/42] Ethernet through the M5Stack W5500 PoE base, alongside
@@ -36,7 +36,6 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  main/CMakeLists.txt        |   2 +
  main/main.c                |   5 +
  main/net/band_conditions.c |   3 +-
- main/net/dxcluster.c       |   3 +-
  main/net/eth_w5500.c       | 226 +++++++++++++++++++++++++++++++++++++
  main/net/eth_w5500.h       |  50 ++++++++
  main/net/ota_update.c      |   3 +-
@@ -44,12 +43,11 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  main/net/pskr_self.c       |   3 +-
  main/net/pskreporter.c     |   3 +-
  main/net/radio_relay.c     |   5 +-
- main/net/rbn.c             |   5 +-
  main/net/spots.c           |   5 +-
  main/net/update_check.c    |   3 +-
  main/net/webserver.c       |  13 +++
  main/net/wspr_self.c       |   5 +-
- main/net/www/index.html    |  10 +-
+ main/net/www/index.html    |  20 +++-
  main/time_sync/time_sync.c |  17 +--
  main/ui/help_topics.c      |   3 +-
  main/ui/sched_modal.c      |   3 +-
@@ -59,12 +57,12 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  main/wifi/wifi.h           |   7 ++
  sdkconfig                  |   2 +-
  sdkconfig.defaults         |   4 +
- 27 files changed, 442 insertions(+), 54 deletions(-)
+ 25 files changed, 445 insertions(+), 53 deletions(-)
  create mode 100644 main/net/eth_w5500.c
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index 33d18791..1e42dd90 100644
+index f0159cba..f6b9ce1e 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -75,9 +73,9 @@ index 33d18791..1e42dd90 100644
 +7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +8. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-11-05, to upstream v1.24.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.24.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
+ The NAS patches were last ported on 2026-11-12, to upstream v1.26.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.26.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
  
-@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-11-05, to upstream v1.24.2 (compile-che
+@@ -49,6 +50,36 @@ The NAS patches were last ported on 2026-11-12, to upstream v1.26.1 (compile-che
  * WiFi receive: the Tab5 keeps every packet of a bundled WiFi read and keeps received data in its large memory, so the stream runs at about 48,000 samples a second and touch keeps working.
  * No more freeze after boot: a network freeze about 20–50 s after boot, caused by the time update, is fixed (the time update now runs on its own task and keeps upstream’s microsecond precision).
  
@@ -115,10 +113,10 @@ index 33d18791..1e42dd90 100644
  * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
  * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 953065dd..61e9a145 100644
+index c7e9a445..6c7fae85 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -120,6 +120,7 @@ idf_component_register(
+@@ -121,6 +121,7 @@ idf_component_register(
          "usb_hid_mouse.c"
          "net/rigctld_server.c"
          "net/radio_relay.c"
@@ -126,7 +124,7 @@ index 953065dd..61e9a145 100644
          "net/reader_net.c"
          "net/manual_embed.c"
          "net/update_check.c"
-@@ -218,6 +219,7 @@ idf_component_register(
+@@ -217,6 +218,7 @@ idf_component_register(
          nvs_flash
          esp_wifi
          esp_netif
@@ -135,10 +133,10 @@ index 953065dd..61e9a145 100644
          lwip
          esp_http_server
 diff --git a/main/main.c b/main/main.c
-index ea40f5da..c1c467fc 100644
+index 33010522..9cb6222f 100644
 --- a/main/main.c
 +++ b/main/main.c
-@@ -86,6 +86,7 @@ static const char *TAG = "main";
+@@ -84,6 +84,7 @@ static const char *TAG = "main";
  /* The ledger macro moved to util/mem_ledger.h on 2026-10-04 - the marks
   * that matter are now outside app_main. See that header for the why. */
  #include "util/mem_ledger.h"
@@ -146,7 +144,7 @@ index ea40f5da..c1c467fc 100644
  
  /* SETTLING MARKS (2026-10-04).
   *
-@@ -713,6 +714,10 @@ void app_main(void)
+@@ -711,6 +712,10 @@ void app_main(void)
      #if BENCH_WIFI_ENABLED != 0
      panadapter_wifi_start();
      MEM_LEDGER("wifi_start (hosted/SDIO)");
@@ -178,27 +176,6 @@ index 0a7b4a8f..119476eb 100644
          vTaskDelay(pdMS_TO_TICKS(500));
      }
      for (;;) {
-diff --git a/main/net/dxcluster.c b/main/net/dxcluster.c
-index 953a2e11..1d3ba73c 100644
---- a/main/net/dxcluster.c
-+++ b/main/net/dxcluster.c
-@@ -44,6 +44,7 @@
- #include <ctype.h>
- #include <errno.h>
- #include <time.h>
-+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
- 
- static const char *TAG = "dxc";
- 
-@@ -478,7 +479,7 @@ static void dxc_task(void *arg)
-         // audio is on (standing telnet session, one of the heavier feeds -
-         // 2026-09-20)
-         if (net_quiet_active() || bg_feed_gate_active() || rx_audio_any_listener()) continue;
--        if (!cluster_en || !my_call[0] || !wifi_is_connected()) {
-+        if (!cluster_en || !my_call[0] || !net_is_up()) {
-             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_CLUSTER, NULL, 0); s_pub_count = 0; }
-             continue;
-         }
 diff --git a/main/net/eth_w5500.c b/main/net/eth_w5500.c
 new file mode 100644
 index 00000000..878399c5
@@ -530,7 +507,7 @@ index 5430a7bc..900a8a82 100644
          // by far the largest periodic allocation on the device. Not during an
          // update, where internal free has been measured at 5 KB. See net_quiet.h.
 diff --git a/main/net/pskr_self.c b/main/net/pskr_self.c
-index 840fde94..04de568e 100644
+index 11aa9673..9ef3bc66 100644
 --- a/main/net/pskr_self.c
 +++ b/main/net/pskr_self.c
 @@ -29,6 +29,7 @@
@@ -601,41 +578,11 @@ index fed5966e..58c50c2c 100644
  
      int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
      if (s < 0) return -1;
-diff --git a/main/net/rbn.c b/main/net/rbn.c
-index 3f86e640..d8144bdf 100644
---- a/main/net/rbn.c
-+++ b/main/net/rbn.c
-@@ -29,6 +29,7 @@
- #include <ctype.h>
- #include <errno.h>
- #include <time.h>
-+#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
- 
- static const char *TAG = "rbn";
- 
-@@ -429,7 +430,7 @@ static void session(int fd, const char *mycall)
-          * SelfSpotter was open RBN delivered NOTHING, including the CW
-          * self-spots that screen exists to show. */
- 
--        if ((!rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
-+        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) { ESP_LOGI(TAG, "session ending (disabled or offline)"); return; }
- 
-         // The operator can change callsign in the web UI while this session
-         // is still happily connected - an RBN session can run for hours with
-@@ -512,7 +513,7 @@ static void rbn_task(void *arg)
-         // holding its reconnect while an overlay is up starves that very screen.
-         if (net_quiet_active() || rx_audio_any_listener()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
- 
--        if ((!rbn_en && !RBN_FORCE_ON) || !wifi_is_connected()) {
-+        if ((!rbn_en && !RBN_FORCE_ON) || !net_is_up()) {
-             // Drop anything we were showing: stale RBN spots are worse than none.
-             if (s->n) { s->n = 0; spots_publish(SPOT_SRC_RBN, NULL, 0); s_pub_count = 0; }
-             vTaskDelay(pdMS_TO_TICKS(5000));
 diff --git a/main/net/spots.c b/main/net/spots.c
-index f6b3f03a..bf432b17 100644
+index 371cce29..7f473022 100644
 --- a/main/net/spots.c
 +++ b/main/net/spots.c
-@@ -37,6 +37,7 @@
+@@ -41,6 +41,7 @@
  #include <string.h>
  #include <stdlib.h>
  #include <time.h>
@@ -643,16 +590,16 @@ index f6b3f03a..bf432b17 100644
  
  static const char *TAG = "spots";
  
-@@ -705,7 +706,7 @@ static void spots_task(void *arg)
-         was_pota_en = s.spots_en;
-         was_sota_en = s.sota_en;
+@@ -937,7 +938,7 @@ static void spots_task(void *arg)
+         was_rbn_en     = s.rbn_en;
+         was_cluster_en = s.cluster_en;
  
 -        if (!wifi_is_connected()) continue;
 +        if (!net_is_up()) continue;
  
          // net_quiet: an OTA verify needs internal heap, and a POTA fetch is a
          // whole TLS session built and torn down. Skipping it costs one polling
-@@ -851,7 +852,7 @@ int sched_events_age_s(void)
+@@ -1179,7 +1180,7 @@ int sched_events_age_s(void)
  
  bool sched_events_request(bool force)
  {
@@ -683,10 +630,10 @@ index 0a6b51dd..0bee174e 100644
  
          /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index a7545496..04f3ffe2 100644
+index c50624a8..af82ea71 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -96,6 +96,7 @@
+@@ -98,6 +98,7 @@
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
  #include "radio_relay.h"       // network radio source (QMX on a NAS)
@@ -694,7 +641,7 @@ index a7545496..04f3ffe2 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -729,6 +730,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -731,6 +732,18 @@ static esp_err_t status_handler(httpd_req_t *req)
      // checking from another room as it is looking at the Tab5 itself.
      cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
  
@@ -714,7 +661,7 @@ index a7545496..04f3ffe2 100644
      cJSON_AddStringToObject(wifi_obj, "ssid", wifi_get_ssid());
      cJSON_AddNumberToObject(wifi_obj, "rssi", wifi_get_rssi_dbm());
 diff --git a/main/net/wspr_self.c b/main/net/wspr_self.c
-index a25a653f..7ce5a480 100644
+index 8d4be507..1bfee73a 100644
 --- a/main/net/wspr_self.c
 +++ b/main/net/wspr_self.c
 @@ -52,6 +52,7 @@
@@ -744,24 +691,34 @@ index a25a653f..7ce5a480 100644
      }
  }
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index feb7cc4e..4744eb58 100644
+index 0039adf3..37836080 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -9011,11 +9011,13 @@ async function tick() {
+@@ -9247,13 +9247,21 @@ async function tick() {
        }
      }
  
--    /* Bottom-right: WiFi + IP */
+-    /* Bottom-right: WiFi network name. The signal strength left the bar
+-       (operator, 2026-11-11: bottom-bar cleanup) and lives in the tooltip. */
 -    const wifi = s.wifi;
 +    /* Bottom-right: the link in use - Ethernet (W5500 PoE base) while it has
-+       an address, otherwise WiFi - and its IP */
++       an address, otherwise the WiFi network name. The WiFi signal strength
++       left the bar (operator, 2026-11-11: bottom-bar cleanup) and lives in the
++       tooltip. */
 +    const wifi = s.wifi, eth = s.eth;
-     document.getElementById("wifi").textContent =
--      (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
--                          : "--";
-+      (eth && eth.in_use) ? ("Ethernet " + eth.mbps + " Mbit/s " + eth.ip)
-+      : (wifi && wifi.ssid) ? (wifi.ssid + " " + wifi.rssi + " dBm")
-+                            : "--";
+     const wifiEl = document.getElementById("wifi");
+-    wifiEl.textContent = (wifi && wifi.ssid) ? wifi.ssid : "--";
+-    document.getElementById("wifi-wrap").title =
+-      (wifi && wifi.ssid) ? ("WiFi " + wifi.ssid + ", " + wifi.rssi + " dBm") : "WiFi";
++    if (eth && eth.in_use) {
++      wifiEl.textContent = "Ethernet " + eth.ip;
++      document.getElementById("wifi-wrap").title =
++        "Ethernet (W5500 PoE base), " + eth.mbps + " Mbit/s, " + eth.ip;
++    } else {
++      wifiEl.textContent = (wifi && wifi.ssid) ? wifi.ssid : "--";
++      document.getElementById("wifi-wrap").title =
++        (wifi && wifi.ssid) ? ("WiFi " + wifi.ssid + ", " + wifi.rssi + " dBm") : "WiFi";
++    }
  
      /* QSO count + ADIF/QRZ/eQSL buttons - all hidden until there's at least
         one QSO logged (nothing to download/upload otherwise). */
@@ -943,7 +900,7 @@ index 3ab6bd7a..519ede69 100644
  #if BENCH_WIFI_BAR
          // Bench hook (see BENCH_WIFI_BAR at the top of this file): fakes a
 diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
-index 8fb7f910..c324d345 100644
+index 554ed2a6..5407f1ac 100644
 --- a/main/wifi/wifi.c
 +++ b/main/wifi/wifi.c
 @@ -899,6 +899,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,

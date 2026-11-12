@@ -25,7 +25,9 @@
 #include "ui/qmx_term_view.h" // the dev "term_view" action
 #include "ui/gps_status_view.h" // the dev "gps_view" action
 #include "ft8_screen_view.h"  // ft8_screen_view_is_active
+#include "cw_screen_view.h"   // cw_screen_view_request_send, cw_screen_view_last_sent
 #include "ui_mode.h"          // ui_mode_get (CW page reports screen:"cw")
+#include "cw_qso.h"           // the CW page's station, for cw_tx and cw_adopt
 #include "js8_chat.h"      // the JS8 conversation store, reported in /api/status
 #include "js8_submode.h"   // the submode table and the one refusal rule
 #include "js8_alt.h"       // T132 alternate-submode decode (RX only)
@@ -815,6 +817,50 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     }
 
+    /* T159 (Ralph DL1HR): the CW page itself, for remote operation - distinct
+     * from the "cw" decode object above, which is gated on the RADIO's mode
+     * and sent regardless of which Tab5 screen is up. This one is gated on
+     * the Tab5 screen, because macros and a send box only mean anything there.
+     * Macro TEXT is sent raw, placeholders and all ({MYCALL} etc.) - the
+     * browser shows exactly what the Tab5's own un-expanded button face would,
+     * and cw_screen_view.c expands it at send time either way. Editing the six
+     * macros remains Tab5-only for now; see T159's TODO row. */
+    if (ui_mode_get() == UI_MODE_CW) {
+        qmx_settings_t cws;
+        settings_load_all(&cws);
+        cJSON *ctx = cJSON_AddObjectToObject(root, "cw_tx");
+        if (ctx) {
+            cJSON *macros = cJSON_AddArrayToObject(ctx, "macros");
+            for (int i = 0; i < 6; i++)
+                cJSON_AddItemToArray(macros, cJSON_CreateString(
+                    cws.cw_msg_set ? cws.cw_msg_b[i] : cws.cw_msg[i]));
+            cJSON_AddBoolToObject(ctx, "set_b", cws.cw_msg_set != 0);
+            cJSON_AddStringToObject(ctx, "last_sent", cw_screen_view_last_sent());
+            cJSON_AddStringToObject(ctx, "contest_name", cws.cw_contest_name);
+            // Type-ahead: typed but not yet handed to the radio, and the TB
+            // t-field (0-9, 9 = "9 or more", -1 unknown) for what it holds.
+            cJSON_AddNumberToObject(ctx, "queued", cw_screen_view_queued());
+            cJSON_AddNumberToObject(ctx, "keying", cat_get_cw_tx_remaining());
+            /* The station card, for the browser (Gyula HA3HZ, 2026-11-10: on a
+             * weak signal nothing decodes, and the page had nowhere to type
+             * the other station's callsign - {CALL} could only be set on the
+             * Tab5). "target" is the adopted station, "heard" the last call
+             * the decoder caught, "rst_rcvd" what was copied from the target.
+             * peek, not get: the get consumes the LVGL tick's auto-adopt. */
+            {
+                char tgt[20] = "", hrd[20] = "", rst[8] = "";
+                int age = 0;
+                cw_qso_get_target(tgt, sizeof(tgt));
+                bool have = cw_qso_peek_heard(hrd, sizeof(hrd), &age);
+                cw_qso_get_rst_rcvd(rst, sizeof(rst));
+                cJSON_AddStringToObject(ctx, "target", tgt);
+                cJSON_AddStringToObject(ctx, "heard", have ? hrd : "");
+                cJSON_AddNumberToObject(ctx, "heard_age_s", have ? age : -1);
+                cJSON_AddStringToObject(ctx, "rst_rcvd", rst);
+            }
+        }
+    }
+
     /* @ST THE TWO FIELDS THE NEW TOP-BAR CONTROLS RUN ON (Ralph DL1HR).
      *
      * keyer_wpm is the CACHED read-back, and the cache is the whole point:
@@ -1542,6 +1588,19 @@ static esp_err_t status_handler(httpd_req_t *req)
           }
         }
     }
+    // How the last deferred CW/SSB Tune ended - the Tab5 toast's own words. The
+    // cw_tune action answers "listening" when the band is quiet, and the move
+    // (or the give-up) happens seconds later; without this the web never heard
+    // it (Ralph DL1HR, 2026-11-10). See ui_tune_outcome().
+    {
+        char tmsg[72];
+        uint32_t tseq = ui_tune_outcome(tmsg, sizeof(tmsg));
+        if (tseq) {
+            cJSON *to = cJSON_AddObjectToObject(root, "tune_out");
+            cJSON_AddNumberToObject(to, "seq", tseq);
+            cJSON_AddStringToObject(to, "msg", tmsg);
+        }
+    }
     // Web tune session: live power/SWR while active. There is deliberately NO
     // stand-down-if-the-radio-left-TUNE check here - see below.
     if (s_web_tune_active) {
@@ -1741,6 +1800,14 @@ static bool wspr_owns_the_dial(httpd_req_t *req, cJSON *root, const char *what)
  * Answers 400 itself; the caller must free root and return ESP_FAIL. Actions
  * whose argument is genuinely OPTIONAL keep their ternary default and are
  * deliberately NOT routed through here. */
+/* Free text for an ADIF field, from the browser: trimmed, capped at dst_sz - 1
+ * BYTES without cutting a UTF-8 character in half, control characters dropped.
+ * '<' and '>' become spaces: ADIF itself would carry them (fields are
+ * length-prefixed), but adif_log_extract_field() finds a field by searching
+ * for "<NAME:", and a remark containing "<CALL:" would be read as the call.
+ * Checked on the host by test/log_free_text_harness.c. */
+#include "util/log_free_text.h"
+
 static bool cmd_num_arg(httpd_req_t *req, cJSON *root, const char *key, double *out)
 {
     cJSON *item = cJSON_GetObjectItem(root, key);
@@ -1756,15 +1823,50 @@ static bool cmd_num_arg(httpd_req_t *req, cJSON *root, const char *key, double *
 
 static esp_err_t cmd_handler(httpd_req_t *req)
 {
-    char buf[256];
-    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (len <= 0) {
+    /* ⛔ THE WHOLE BODY, NOT THE FIRST 255 BYTES OF IT.
+     *
+     * This was `char buf[256]` and ONE httpd_req_recv(). Every command was
+     * short enough until log_qso gained name, QTH and a remark (T179): the
+     * first real test body was 290 bytes, the JSON was cut mid-string, and
+     * the answer was a bare "bad json" - found 2026-11-10 on bench1 before it
+     * shipped. A browser sends UTF-8, so 24 + 24 + 60 CHARACTERS of accented
+     * text alone can be 400 bytes.
+     *
+     * Sized from Content-Length, on the heap (this task's stack is budgeted),
+     * read in a loop because one recv may return less than was sent, and
+     * refused with a reason above CMD_BODY_MAX rather than truncated. */
+    enum { CMD_BODY_MAX = 1024 };
+    if (req->content_len == 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body");
         return ESP_FAIL;
     }
-    buf[len] = '\0';
+    if (req->content_len > CMD_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Payload Too Large");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"command too long (1024 bytes at most)\"}");
+        return ESP_FAIL;
+    }
+    char *buf = malloc(req->content_len + 1);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_FAIL;
+    }
+    size_t got = 0;
+    while (got < req->content_len) {
+        int r = httpd_req_recv(req, buf + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;   /* httpd's own retry rule */
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    if (got < req->content_len) {
+        free(buf);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no body");
+        return ESP_FAIL;
+    }
+    buf[got] = '\0';
 
     cJSON *root = cJSON_Parse(buf);
+    free(buf);          /* cJSON copies what it keeps */
     if (!root) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
         return ESP_FAIL;
@@ -1776,7 +1878,15 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         double argv;
         if (!cmd_num_arg(req, root, "hz", &argv)) { cJSON_Delete(root); return ESP_FAIL; }
         {
-            uint32_t hz = (uint32_t)argv;
+            /* ⛔ ui_cw_tune_clamp_hz() FIRST - a no-op outside CW mode, but on
+             * the CW page this is the ONLY thing standing between a browser
+             * tune (spot tap, tap-to-tune, keypad Save - every one of them
+             * lands here) and a dial outside the page's CW+Digi range. The
+             * Tab5's own equivalent gestures all route through ui_tune_commit()
+             * in ui.c; this endpoint never did, which is exactly how a tapped
+             * spot could send the RX "far outside the band plan" from the
+             * browser (operator, 2026-11-09). */
+            uint32_t hz = ui_cw_tune_clamp_hz((uint32_t)argv);
             /* FORCED, because every caller of this action is a COMMIT.
              *
              * It used to be the rate-limited cat_set_frequency(), whose return
@@ -1868,7 +1978,10 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             // auto-answer down, because the antenna is probably not tuned for
             // the new band. Doing it from the browser must not be the loophole.
             ft8_band_change_stand_down("band changed");
-            uint32_t want = target ? target : center_hz;
+            // Same clamp as set_freq above - a no-op outside CW mode, but a
+            // band preset recalled while on the CW page must land inside its
+            // CW+Digi range exactly like every other tune on this page.
+            uint32_t want = ui_cw_tune_clamp_hz(target ? target : center_hz);
             /* Forced, exactly as the Tab5's own band button does (ui.c
              * band_preset_cb). A band change is a deliberate one-shot, and the
              * plain call is droppable: tune, then change band within 200 ms,
@@ -1882,6 +1995,9 @@ static esp_err_t cmd_handler(httpd_req_t *req)
              * whole new band's spectrum with the old dial until the FA poll
              * caught up. */
             ui_update_frequency(want);
+            /* T188: and the mode last used on that band, exactly as the Tab5's
+             * own band button does. */
+            ui_band_recall_mode(center_hz, want);
         }
     } else if (action && strcmp(action, "set_mode") == 0) {
         if (wspr_owns_the_dial(req, root, "Mode")) return ESP_OK;
@@ -2168,6 +2284,14 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         const char *call = cJSON_GetStringValue(cJSON_GetObjectItem(root, "call"));
         const char *rs   = cJSON_GetStringValue(cJSON_GetObjectItem(root, "rst_sent"));
         const char *rr   = cJSON_GetStringValue(cJSON_GetObjectItem(root, "rst_rcvd"));
+        /* Name, QTH and a remark - what the operator was told on the air and
+         * the device cannot know (Gyula HA3HZ, 2026-11-10). Optional. This is
+         * NOT an exception to the rule above: frequency, mode and time still
+         * come from the device only. */
+        char nm[ADIF_NAME_MAX], qt[ADIF_QTH_MAX], cm[ADIF_COMMENT_MAX];
+        log_free_text(nm, sizeof nm, cJSON_GetStringValue(cJSON_GetObjectItem(root, "name")));
+        log_free_text(qt, sizeof qt, cJSON_GetStringValue(cJSON_GetObjectItem(root, "qth")));
+        log_free_text(cm, sizeof cm, cJSON_GetStringValue(cJSON_GetObjectItem(root, "comment")));
         char ucall[32] = "";
         if (call) {
             size_t n = 0;
@@ -2196,6 +2320,9 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                 .rst_sent   = (rs && rs[0]) ? rs : NULL,
                 .rst_rcvd   = (rr && rr[0]) ? rr : NULL,
                 .qso_time   = time(NULL),
+                .name       = nm,
+                .qth        = qt,
+                .comment    = cm,
             };
             adif_log_record(&qso);
             ESP_LOGI(TAG, "web: logged %s %s at %lu Hz", ucall, mode,
@@ -2338,6 +2465,89 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             return ESP_OK;
         }
         ft8_screen_view_request_freetext(txt);
+    } else if (action && strcmp(action, "cw_send") == 0) {
+        /* T159 (Ralph DL1HR): send CW text from the browser - a macro (with its
+         * placeholders still in it) or free text. Deferred to the LVGL task for
+         * the same reason as js8_text above: expansion, the sim interlock and
+         * the CAT hand-off all belong to cw_screen_view.c's single send path,
+         * none of it safe to run on this task. Only takes effect while the
+         * Tab5 is actually on the CW page (its own 500 ms timer drains the
+         * request) - switch it there first with set_screen. */
+        const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+        if (!txt || !txt[0]) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"no text\"}");
+            return ESP_OK;
+        }
+        /* APPENDS since 2026-11-10 (type-ahead): the page sends each word as
+         * it is completed. A full buffer is said, not swallowed. */
+        if (!cw_screen_view_request_send(txt)) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"CW queue full\"}");
+            return ESP_OK;
+        }
+    } else if (action && strcmp(action, "cw_adopt") == 0) {
+        /* Set or clear the CW page's station from the browser - the web half
+         * of T162's "tap to enter a callsign" (Gyula HA3HZ, 2026-11-10). An
+         * empty call clears it, which is what a tap on the adopted card does.
+         * Safe from this task: adopt and reset only swap strings under the
+         * spinlock, and the Tab5's card repaints from its own 500 ms tick.
+         * Letters, digits and '/' only - it is keyed as {CALL} and written to
+         * the log as CALL. */
+        const char *call = cJSON_GetStringValue(cJSON_GetObjectItem(root, "call"));
+        char c2[16] = ""; size_t n = 0; bool bad = false;
+        for (const char *p = call ? call : ""; *p; p++) {
+            char c = *p;
+            if (c == ' ') continue;
+            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+            if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '/') ||
+                n + 1 >= sizeof(c2)) { bad = true; break; }
+            c2[n++] = c;
+        }
+        c2[n] = '\0';
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        if (bad) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req,
+                "{\"ok\":false,\"error\":\"A callsign is letters, digits and / only, 15 at most\"}");
+        }
+        if (c2[0]) cw_qso_adopt(c2); else cw_qso_reset();
+        char body[64];
+        snprintf(body, sizeof body, "{\"ok\":true,\"target\":\"%s\"}", c2);
+        return httpd_resp_sendstr(req, body);
+    } else if (action && strcmp(action, "cw_cancel") == 0) {
+        /* T145 / type-ahead: drop everything not yet keyed. Cannot stop what
+         * the radio already holds - KY has no abort (measured 2026-11-02).
+         * Safe from any task: it only clears two queues. */
+        int dropped = cw_screen_view_cancel_send();
+        cJSON_Delete(root);
+        char body[64];
+        snprintf(body, sizeof body, "{\"ok\":true,\"dropped\":%d}", dropped);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    } else if (action && strcmp(action, "cw_macro_edit") == 0) {
+        /* T159 follow-up (Ralph DL1HR): edit one of the six macros from the
+         * browser. A plain settings write - not deferred to the LVGL task like
+         * cw_send above, because settings_set_cw_msg_for_set() only touches
+         * the settings store (mutex-protected, any task), never LVGL objects.
+         * Writes the slot of whichever set is CURRENTLY ACTIVE
+         * (qmx_settings_t.cw_msg_set) - same set the six web buttons are
+         * already showing, so there is no separate "which set" to get wrong. */
+        cJSON *ji = cJSON_GetObjectItem(root, "idx");
+        const char *mtxt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+        if (!cJSON_IsNumber(ji) || ji->valueint < 0 || ji->valueint > 5 || !mtxt) {
+            cJSON_Delete(root);
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"ok\":false,\"err\":\"need idx 0-5 and text\"}");
+            return ESP_OK;
+        }
+        qmx_settings_t mcws;
+        settings_load_all(&mcws);
+        settings_set_cw_msg_for_set(mcws.cw_msg_set, (uint8_t)ji->valueint, mtxt);
     } else if (action && strcmp(action, "js8_text_cancel") == 0) {
         /* ⛔ Reachable while transmitting, on purpose. A run holds the
          * frequency for up to three minutes and the operator must be able to
@@ -2822,17 +3032,22 @@ static esp_err_t cmd_handler(httpd_req_t *req)
     } else if (action && strcmp(action, "tune_stop") == 0) {
         web_tune_stop(true);
     } else if (action && strcmp(action, "greylist_clear") == 0) {
-        // Un-skip everyone - band conditions change, and a station that timed
-        // out an hour ago may be perfectly workable now.
+        // Un-list the AUTO-timeout entries - band conditions change, and a
+        // station the software set aside an hour ago may be perfectly
+        // workable now.
         //
-        // ⭐ An optional "call" clears just that one. Added with the Skip
-        // button (T43): skipping is now a deliberate operator action, so
-        // undoing one of three hand-skipped stations should not cost the other
-        // two. The Tab5 has had a per-call clear since the grey-list existed
-        // (grey_modal_show); the browser only had clear-all.
+        // ⛔ 2026-11-06 (Randy N4OPI): the no-call branch used to be
+        // ft8_greylist_clear_all(), which wiped hand skips too - "if I click
+        // clear for the Grey listed line, it also clears the Skipped by you
+        // line". Now scoped to clear_auto(), the inverse of skip_clear's
+        // clear_skipped(), matching what ft8_greylist_get_all() now actually
+        // shows on this line (see that function's comment).
+        //
+        // An optional "call" still clears just that one station, from EITHER
+        // list - added with the Skip button (T43), unaffected by this fix.
         const char *gcall = cJSON_GetStringValue(cJSON_GetObjectItem(root, "call"));
         if (gcall && gcall[0]) ft8_greylist_clear(gcall);
-        else                   ft8_greylist_clear_all();
+        else                   ft8_greylist_clear_auto();
     } else if (action && strcmp(action, "mute") == 0) {
         /* Instant speaker mute (Samuel W7STF). {"action":"mute","on":true},
          * or omit "on" to toggle - a single button needs one call, not two.
@@ -5675,7 +5890,7 @@ static const httpd_uri_t uri_eqsl_creds = {
 // POST /api/qrz_lookup_creds — JSON body {"user":"...","pass":"..."}. QRZ's
 // Callsign Lookup (XML) service has no API-key scheme, unlike the Logbook
 // upload above (qrz_key_handler) — username+password only, exchanged for a
-// session key by net/qrz_coords.c. Used to place net/rbn.c's self-spot
+// session key by net/qrz_coords.c. Used to place net/spots.c's self-spot
 // skimmers (who is hearing us on CW) at a real station position on the spot
 // map instead of a country centroid.
 static esp_err_t qrz_lookup_creds_handler(httpd_req_t *req)
@@ -5952,6 +6167,23 @@ static esp_err_t forge_js_handler(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)forge_js_gz_start,
                            forge_js_gz_end - forge_js_gz_start);
 }
+
+// GET /rnnoise.wasm - T18 web noise reduction. RNNoise v0.1.1 built by
+// tools/build_rnnoise_wasm.sh, pre-gzipped. The browser runs it; the Tab5 only
+// stores it, and the page fetches it only when NR is first switched on.
+extern const uint8_t rnnoise_wasm_gz_start[] asm("_binary_rnnoise_wasm_gz_start");
+extern const uint8_t rnnoise_wasm_gz_end[]   asm("_binary_rnnoise_wasm_gz_end");
+static esp_err_t rnnoise_wasm_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/wasm");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, (const char *)rnnoise_wasm_gz_start,
+                           rnnoise_wasm_gz_end - rnnoise_wasm_gz_start);
+}
+static const httpd_uri_t uri_rnnoise_wasm = {
+    .uri = "/rnnoise.wasm", .method = HTTP_GET, .handler = rnnoise_wasm_handler,
+};
 
 static const httpd_uri_t uri_lotw_cert = {
     .uri = "/api/lotw_cert", .method = HTTP_POST, .handler = lotw_cert_handler,
@@ -7522,6 +7754,17 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
     BOOLTOP("bt_mouse_en",       settings_set_bt_mouse_en);
     BOOLTOP("pskreporter_en",    settings_set_pskreporter_en);
     BOOLTOP("greylist_en",       settings_set_greylist_en);
+    /* T159 follow-up (Ralph DL1HR): which CW macro set is active - 0 General,
+     * 1 Contest. Same field the Tab5's own toggle writes; the web CW page
+     * needs it to switch which six buttons it is showing/editing. */
+    if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "cw_msg_set")))
+        settings_set_cw_msg_set((uint8_t)(it->valueint != 0));
+    /* Contest name/ID, written onto every CW QSO the Tab5 logs while it is
+     * non-empty (see adif_qso_t.contest_name) - Gyula HA3HZ's contest log had
+     * no way to record what the contest WAS. Empty string clears it, same as
+     * every other optional text field here. */
+    if ((s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "cw_contest_name"))))
+        settings_set_cw_contest_name(s);
     BOOLTOP("tx_band_guard_off", settings_set_tx_band_guard_off);
     BOOLTOP("qmx_gps",           settings_set_qmx_gps);
     // Fox/Hound: 0 off, 1 guided, 2 automatic. A number rather than a bool
@@ -7586,6 +7829,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         // AG is in 0.25 dB steps - the slider's own conversion. Sending dB here
         // would set the radio to a quarter of what the browser asked for.
         cat_request_af_gain((uint16_t)(db * 4));
+        cat_sidetone_mirror_from_af_gain((uint16_t)(db * 4));
     }
     if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "cw_tx_offset_hz")))
         settings_set_cw_tx_offset_hz((int16_t)it->valuedouble);   // clamps internally
@@ -9727,6 +9971,7 @@ esp_err_t webserver_start(void)
     reg(&uri_lotw_upload);
     reg(&uri_lotw_tq8);
     reg(&uri_forge_js);
+    reg(&uri_rnnoise_wasm);
     reg(&uri_config_get);
     reg(&uri_config_post);
     reg(&uri_term_get);

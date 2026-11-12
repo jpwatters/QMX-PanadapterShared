@@ -62,13 +62,165 @@ typedef float wspr_tp_t;
 
 #define TONE_SPACING (WSPR_SAMPLE_RATE_HZ / WSPR_SYM_LEN_SAMPLES) /* 1.46484375 Hz */
 
-/* File-scope, not function-static, so wspr_find_candidates_release_scratch()
- * below can reach them - see its own comment for why it exists. */
-static kiss_fftr_cfg     s_cand_cfg;
-static kiss_fft_scalar  *s_cand_in;
-static kiss_fft_cpx     *s_cand_spec;
-static float            *s_cand_mag;
-static int               s_cand_cached_nfft;
+/* ---------------------------------------------------------------------------
+ * SCRATCH ARENA - see docs/wspr-memory.md. NOTHING IN THIS FILE ALLOCATES
+ * DURING A CYCLE.
+ *
+ * Every earlier fix (2026-09-19 cache, 2026-11-03 release, T150 lend-back)
+ * changed WHEN a multi-MB buffer was allocated and kept at least one such
+ * allocation inside the cycle, so each cycle depended on how fragmented PSRAM
+ * happened to be. 2026-11-11, v1.26.0, bench1: every cycle after the first
+ * failed - the largest free block was 2,359,296 B and the search needed about
+ * 2,359,600 B of it. Over the capture series: 0 failures in 1045 cycles before
+ * 2026-11-03, 230 in 488 after.
+ *
+ * The search scratch and the stage-1/stage-2 scratch are never used at the
+ * same moment (the search finishes before the per-candidate loop starts, and
+ * a second pass re-runs the search before it decodes again), so they share
+ * memory, attached once at page entry. The search invalidates stage 1 first,
+ * because it overwrites it.
+ *
+ * THE kiss_fftr CFG IS BUILT ONCE AND NEVER SHARED. The first 4-block version
+ * (28891b06) shared R0 between the cfg and stage-1 I, so every search rebuilt
+ * the 131072-point twiddles, two searches per cycle. Measured on bench1
+ * 2026-11-11: search 14.2 s median with the rebuild, 12.5 s without, so
+ * about 1.3 s each. (A first estimate of 11 s compared against NOMEM
+ * cycles, which return at once - see docs/wspr-memory.md.) Now R0 holds the cfg alone, and stage-1
+ * I/Q move to R1/R2. Cost: about 0.3 MB more arena; the largest block is
+ * unchanged. The October code held more than this and ran 1045 cycles clean.
+ *
+ * FOUR BLOCKS, NOT ONE. The first version of this arena was one 2.56 MB block.
+ * On bench1 (2026-11-11, 6d110df2) it NEVER fitted: with the capture and the
+ * window allocated, 4.5 MB was free but the largest block was 2304 KB - the
+ * same 2304 KB measured that morning, so a fixed property of this heap, not
+ * chance. Each block is shared between one search buffer and one stage
+ * buffer; the largest is the search's 1.31 MB kiss_fftr cfg:
+ *
+ *   R0  search cfg (1.31 MB), built once at page entry - shared with nothing
+ *   R1  search in + score (0.52 MB)   | stage-1 I   (0.72 MB)
+ *   R2  search spec (0.52 MB)         | stage-1 Q   (0.72 MB)
+ *   R3  search mag (0.26 MB)          | stage-2 I+Q (0.36 MB)
+ * ------------------------------------------------------------------------- */
+#define AR_NREG 4
+static uint8_t *s_rg[AR_NREG];      /* NULL when detached */
+static size_t   s_rg_len[AR_NREG];
+static int      s_rg_owned;         /* allocated by wspr_decode_scratch_init() */
+static kiss_fftr_cfg s_cfg;         /* built in R0; NULL = not built */
+static int      s_cfg_nfft;         /* the nfft s_cfg was built for */
+
+#define AR_ALIGN(x) (((size_t)(x) + 15u) & ~(size_t)15u)
+#define AR_MAX(a, b) ((a) > (b) ? (a) : (b))
+
+/* The search FFT length for a capture of n samples. Same rule the search has
+ * always used; 0 when the capture is shorter than one symbol. */
+static int search_nfft(long n)
+{
+    int nfft = 16 * WSPR_SYM_LEN_SAMPLES;      /* 131072 */
+    while ((long)nfft > n && nfft > WSPR_SYM_LEN_SAMPLES) nfft /= 2;
+    return ((long)nfft > n) ? 0 : nfft;
+}
+
+static size_t cfg_bytes(int nfft)
+{
+    size_t cfg_len = 0;
+    kiss_fftr_alloc(nfft, 0, NULL, &cfg_len);  /* size query only - no malloc */
+    return cfg_len;
+}
+
+/* Stage-1 I/Q are n/8 floats each, stage-2 I/Q n/32 each. The factors are
+ * S1_DECIM and S2_DECIM below; a _Static_assert there keeps these in step. */
+#define AR_S1_DECIM 8
+#define AR_S2_DECIM 4
+
+/* The four block sizes for captures of n samples (see the table above). */
+static void region_sizes(long n, size_t out[AR_NREG])
+{
+    const int nfft = search_nfft(n);
+    const size_t nbins = nfft ? (size_t)nfft / 2 + 1 : 0;
+    const long n1 = n / AR_S1_DECIM, n2 = n1 / AR_S2_DECIM;
+    out[0] = nfft ? AR_ALIGN(cfg_bytes(nfft)) : 0;
+    out[1] = AR_MAX(AR_ALIGN((size_t)nfft * sizeof(kiss_fft_scalar)),
+                    AR_ALIGN((size_t)n1 * sizeof(float)));
+    out[2] = AR_MAX(AR_ALIGN(nbins * sizeof(kiss_fft_cpx)),
+                    AR_ALIGN((size_t)n1 * sizeof(float)));
+    out[3] = AR_MAX(AR_ALIGN(nbins * sizeof(float)),
+                    2 * AR_ALIGN((size_t)n2 * sizeof(float)));
+}
+
+size_t wspr_decode_scratch_bytes(long n)
+{
+    size_t r[AR_NREG], t = 0;
+    region_sizes(n, r);
+    for (int i = 0; i < AR_NREG; i++) t += r[i];
+    return t;
+}
+
+size_t wspr_decode_scratch_largest(long n)
+{
+    size_t r[AR_NREG], m = 0;
+    region_sizes(n, r);
+    for (int i = 0; i < AR_NREG; i++) if (r[i] > m) m = r[i];
+    return m;
+}
+
+/* True when every block is attached and at least as large as captures of n
+ * samples need. The search and the stages check this before touching them. */
+static int regions_fit(long n)
+{
+    size_t r[AR_NREG];
+    region_sizes(n, r);
+    for (int i = 0; i < AR_NREG; i++)
+        if (!s_rg[i] || s_rg_len[i] < r[i]) return 0;
+    return 1;
+}
+
+/* The search cfg for nfft, built in R0 only when nfft changes (never, on the
+ * device: the capture length is a constant). NULL if R0 is too small. */
+static kiss_fftr_cfg search_cfg(int nfft)
+{
+    if (s_cfg && s_cfg_nfft == nfft) return s_cfg;
+    s_cfg = NULL; s_cfg_nfft = 0;
+    if (!s_rg[0]) return NULL;
+    size_t cfg_len = s_rg_len[0];
+    s_cfg = kiss_fftr_alloc(nfft, 0, s_rg[0], &cfg_len);
+    if (s_cfg) s_cfg_nfft = nfft;
+    return s_cfg;
+}
+
+int wspr_decode_scratch_init(long n)
+{
+    if (s_rg[0]) return 1;
+    size_t r[AR_NREG];
+    region_sizes(n, r);
+    /* Largest first (R0 is), so the 1.31 MB block takes the best hole. */
+    for (int i = 0; i < AR_NREG; i++) {
+        s_rg[i] = (uint8_t *)wspr_big_alloc(r[i]);
+        if (!s_rg[i]) {
+            for (int k = 0; k < i; k++) { free(s_rg[k]); s_rg[k] = NULL; s_rg_len[k] = 0; }
+            return 0;
+        }
+        s_rg_len[i] = r[i];
+    }
+    s_rg_owned = 1;
+    wspr_decode_capture_changed();
+    {   /* The twiddles: about 1.3 s on the P4, so here, once, not per search. */
+        const int nfft = search_nfft(n);
+        if (nfft && !search_cfg(nfft)) { wspr_decode_scratch_deinit(); return 0; }
+    }
+    return 1;
+}
+
+void wspr_decode_scratch_deinit(void)
+{
+    wspr_decode_capture_changed();
+    s_cfg = NULL; s_cfg_nfft = 0;
+    for (int i = 0; i < AR_NREG; i++) {
+        if (s_rg_owned) free(s_rg[i]);
+        s_rg[i] = NULL;
+        s_rg_len[i] = 0;
+    }
+    s_rg_owned = 0;
+}
 
 int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
                           double f_hi_hz, wspr_freq_candidate_t *out,
@@ -121,9 +273,8 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
      * far inside the 1.46 Hz sinc null. The radio disagreed. Keep that as the
      * lesson: this is a detection threshold, and a margin argued on paper is
      * not a margin measured on air. */
-    int nfft = 16 * WSPR_SYM_LEN_SAMPLES;      /* 131072 */
-    while ((long)nfft > n && nfft > WSPR_SYM_LEN_SAMPLES) nfft /= 2;
-    if ((long)nfft > n) return 0;              /* capture shorter than one symbol */
+    const int nfft = search_nfft(n);
+    if (!nfft) return 0;                       /* capture shorter than one symbol */
 
     /* ⛔⛔ THE SCRATCH IS KEPT ALIVE BETWEEN CALLS, AND A FAILED ALLOCATION IS
      * REPORTED, NOT SWALLOWED. Both halves of this were a real field fault,
@@ -156,22 +307,18 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
      * Returns WSPR_CANDS_NOMEM (-1), never 0, when it cannot get the memory,
      * so the caller can say so. This file deliberately has no ESP_LOG - it is
      * host-tested - so reporting is the caller's job. */
-    int nbins = nfft / 2 + 1;
-    if (s_cand_cached_nfft != nfft) {
-        free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
-        s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
-        s_cand_cached_nfft = 0;
-        s_cand_cfg  = kiss_fftr_alloc(nfft, 0, NULL, NULL);
-        s_cand_in   = (kiss_fft_scalar *)wspr_big_alloc((size_t)nfft * sizeof(kiss_fft_scalar));
-        s_cand_spec = (kiss_fft_cpx *)wspr_big_alloc((size_t)nbins * sizeof(kiss_fft_cpx));
-        s_cand_mag  = (float *)wspr_big_alloc((size_t)nbins * sizeof(float));
-        if (!s_cand_cfg || !s_cand_in || !s_cand_spec || !s_cand_mag) {
-            free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
-            s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
-            return WSPR_CANDS_NOMEM;
-        }
-        s_cand_cached_nfft = nfft;
-    }
+    /* 2026-11-11: the two notes above are HISTORY. The scratch now lives in
+     * the arena attached at page entry (top of this file, docs/wspr-memory.md).
+     * NOMEM here means nobody attached one or it is too small - a programming
+     * error, reported - never a fragmentation lottery. */
+    const int nbins = nfft / 2 + 1;
+    if (!regions_fit(n)) return WSPR_CANDS_NOMEM;
+    wspr_decode_capture_changed();             /* stage 1 shares these blocks */
+    kiss_fftr_cfg s_cand_cfg = search_cfg(nfft);   /* built at page entry */
+    if (!s_cand_cfg) return WSPR_CANDS_NOMEM;
+    kiss_fft_scalar *s_cand_in = (kiss_fft_scalar *)s_rg[1];
+    kiss_fft_cpx *s_cand_spec = (kiss_fft_cpx *)s_rg[2];
+    float *s_cand_mag = (float *)s_rg[3];
     memset(s_cand_mag, 0, (size_t)nbins * sizeof(float));
 
     /* 50 % overlap: every sample outside the first and last half-window is
@@ -198,7 +345,9 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
     int nscore = hi_bin - lo_bin;
     int count = 0;
     if (nscore > 0) {
-        float *score = (float *)calloc((size_t)nscore, sizeof(float));
+        /* `in` is finished with once the FFTs are done and holds nfft floats,
+         * more than nbins >= nscore - so the score lives there. */
+        float *score = (float *)s_cand_in;
         for (int b = lo_bin; b < hi_bin; b++) {
             double s = 0;
             for (int k = 0; k < 4; k++) {
@@ -248,35 +397,10 @@ int wspr_find_candidates(const int16_t *samples, long n, double f_lo_hz,
                     if (i >= 0 && i < nscore) score[i] = -1;
             }
         }
-        free(score);
     }
-
-    /* The scratch is CACHED, not owned by this call - see the note at the top.
-     * Freeing it here is what made every cycle re-claim 2.3 MB. */
     return count;
 }
 
-/* ⛔ WHY THIS EXISTS, ON TOP OF THE "DON'T FREE IT HERE" NOTE ABOVE. This
- * scratch (~2.3 MB) and build_stage1()'s stage-1 scratch (~1.44 MB,
- * wspr_decode.c, also now grow-only-cached) are NEVER needed at the same
- * moment within a cycle - this one only during wspr_find_candidates()
- * itself, the other only afterwards, once per candidate. Caching BOTH
- * permanently needs ~3.74 MB held at once; Gyula HA3HZ's bench measured only
- * ~2-4 MB free at WSPR entry on top of the page's own ~9.7 MB capture/decode
- * ping-pong (the 2026-09-19 note above has the fuller arithmetic). That
- * doesn't fit, so stage-1 never got its memory for the rest of the session.
- *
- * The caller (wspr_rx.c) frees this one right after reading the candidate
- * list for a cycle, before the per-candidate decode loop - so at most one of
- * the two big buffers is ever resident, and wspr_find_candidates() pays one
- * cached_nfft-keyed realloc on the NEXT cycle, same cost class as before
- * this existed (once per cycle, not once per candidate). */
-void wspr_find_candidates_release_scratch(void)
-{
-    free(s_cand_cfg); free(s_cand_in); free(s_cand_spec); free(s_cand_mag);
-    s_cand_cfg = NULL; s_cand_in = NULL; s_cand_spec = NULL; s_cand_mag = NULL;
-    s_cand_cached_nfft = 0;
-}
 
 /* ---------------------------------------------------------------------------
  * DECIMATING FRONT END
@@ -338,9 +462,9 @@ typedef struct {
     long   n;      /* samples in i/q */
 } baseband_t;
 
+/* The baseband lives in the arena, after stage 1 - this only forgets it. */
 static void free_baseband(baseband_t *bb)
 {
-    free(bb->i); free(bb->q);
     bb->i = bb->q = NULL; bb->n = 0;
 }
 
@@ -417,6 +541,8 @@ static void free_baseband(baseband_t *bb)
  * assumes; getting this wrong would change WSPR_DEC_SPS silently. */
 _Static_assert(S1_DECIM * S2_DECIM == WSPR_DECIM,
                "stage decimations must multiply to WSPR_DECIM");
+_Static_assert(S1_DECIM == AR_S1_DECIM && S2_DECIM == AR_S2_DECIM,
+               "the arena is sized with these - see region_sizes()");
 
 /* ⛔ THE RING IS A POWER OF TWO; THE TAP COUNT NEED NOT BE. The ring index is
  * masked because a `% 255` here measured ~40 s per candidate - an integer
@@ -467,9 +593,8 @@ static void build_lpf(void)
  * So invalidation is explicit and lives INSIDE wspr_subtract(), next to the
  * mutation, rather than being a rule call sites are expected to remember.
  * The pointer/length check is only a backstop for a different buffer. */
-static float               *s_s1i, *s_s1q;
-static long                 s_s1n;
-static long                 s_s1_cap;   /* allocated capacity, grow-only - see below */
+static float               *s_s1i, *s_s1q;   /* point into the arena */
+static long                 s_s1n;            /* 0 = stage 1 not built */
 static const int16_t       *s_s1_src;
 static long                 s_s1_srcn;
 static uint32_t             s_s1_sig;
@@ -506,40 +631,27 @@ static uint32_t capture_signature(const int16_t *x, long n)
  * malloc/free every single capture and subtraction pass. Gyula HA3HZ,
  * 2026-11-03: WSPR stopped decoding for the rest of a session once PSRAM
  * fragmented enough that the request could never again find one contiguous
- * 720000 B block, even with >4 MB free overall. build_stage1() below now
- * keeps the allocation and only grows it (s_s1_cap), so steady state is
- * zero alloc/free churn for this buffer instead of one pair per cycle. */
+ * 720000 B block, even with >4 MB free overall. The grow-only cache that
+ * fixed that was replaced on 2026-11-11 by the arena at the top of this file:
+ * stage 1 now lives in memory attached once at page entry. */
 void wspr_decode_capture_changed(void)
 {
     s_s1n = 0; s_s1_src = NULL; s_s1_srcn = 0; s_s1_sig = 0;
 }
 
-void wspr_decode_free_scratch(void)
-{
-    free(s_s1i); free(s_s1q);
-    s_s1i = s_s1q = NULL;
-    s_s1_cap = 0;
-    wspr_decode_capture_changed();
-}
-
 static int build_stage1(const int16_t *samples, long n)
 {
     const uint32_t sig = capture_signature(samples, n);
-    if (s_s1i && s_s1_src == samples && s_s1_srcn == n && s_s1_sig == sig) return 1;
+    if (s_s1n > 0 && s_s1_src == samples && s_s1_srcn == n && s_s1_sig == sig) return 1;
     wspr_decode_capture_changed();
 
     const long out_n = n / S1_DECIM;
     if (out_n <= 0) return 0;
-    if (out_n > s_s1_cap) {
-        free(s_s1i); free(s_s1q);
-        s_s1i = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
-        s_s1q = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
-        if (!s_s1i || !s_s1q) {
-            free(s_s1i); free(s_s1q); s_s1i = s_s1q = NULL; s_s1_cap = 0;
-            return 0;
-        }
-        s_s1_cap = out_n;
-    }
+    /* From the arena: stage-1 I in R1, Q in R2. The search uses the same
+     * bytes, which is why it invalidates this before it runs. */
+    if (!regions_fit(n)) return 0;
+    s_s1i = (float *)s_rg[1];
+    s_s1q = (float *)s_rg[2];
 
     build_lpf();
 
@@ -610,9 +722,9 @@ static int mix_decimate(const int16_t *samples, long n, double f0, baseband_t *b
 
     const long out_n = s_s1n / S2_DECIM;
     if (out_n <= 0) return 0;
-    bb->i = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
-    bb->q = (float *)wspr_big_alloc((size_t)out_n * sizeof(float));
-    if (!bb->i || !bb->q) { free_baseband(bb); return 0; }
+    /* Stage-2 I/Q share block R3 with the search's mag (table at the top). */
+    bb->i = (float *)s_rg[3];
+    bb->q = (float *)(s_rg[3] + AR_ALIGN((size_t)out_n * sizeof(float)));
     bb->n = out_n;
 
     const double w = 2.0 * M_PI * (f0 - S1_CENTRE_HZ) / S1_RATE_HZ;

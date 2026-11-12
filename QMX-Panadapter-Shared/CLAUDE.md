@@ -80,6 +80,19 @@ not us. Run the checker; do not re-read the prose. See
 ⭐ To repair a published release, **ADD the asset — never re-cut.** Then verify
 the served bytes with `cmp`, not the upload's exit code.
 
+## ⛔ The site deploys itself on `git push` in `site/` - NEVER FTP
+
+`site/` has its own nested `.git` (remote `qmx-panadapter-site`). After
+`mkdocs build --clean` and AFTER the GitHub release exists:
+`cd site; git add -A; git commit -m "site: mkdocs build for tab5.lav.dk vX.Y.Z"; git push origin main`.
+The push runs `site/.github/workflows/deploy.yml` (since 2026-11-11): rsync over
+SSH to `/var/www/lav.dk/tab5`, then it compares live bytes with the commit.
+⛔ **Check the run, not the push:** `gh run list --repo SteffenLav/qmx-panadapter-site --limit 1`
+must be `success`. Never trust `latest.json` alone - it hid a 2-release outage.
+⛔ Never run `publish_site.ps1` (FTP). Fallback if the Action is broken: the
+operator's "Importer fra Git" at Simply. `mkdocs build --clean` keeps `.github/`.
+See [site deploy](../../../memory/project_site_git_import_deploy.md).
+
 ## ⛔ Every transmit path must pass the band guard
 
 `python tools/check_tx_guard.py` — **it refuses the build if anything can put RF

@@ -1,11 +1,16 @@
 # CW *(beta)*
 
-The CW page is the third screen in the carousel: swipe left from the Panadapter to reach FT8, and left again for CW. The spectrum and waterfall keep running behind it, so you still see the band while you operate. The page ships **on** - it is this release's own beta. Turn it off with `cw_page_enabled = no` in a config file, or `{"action":"cw_enable","on":false}` over the API, if you would rather not have it yet.
+To open the CW page, open the **page picker** (swipe right from the left edge, or tap the left grip) and tap **MODE: CW**. The spectrum and waterfall keep running behind it, so you still see the band while you operate. The page ships **on** and is a beta. Turn it off with `cw_page_enabled = no` in a config file, or `{"action":"cw_enable","on":false}` over the API, if you would rather not have it yet.
 
 !!! warning "There is no abort for a message in progress"
-    `KY` has no abort in the QMX's CAT manual. Tested on the bench: neither sending `RX;` nor bouncing the mode away from CW and back stops an in-flight send - both were tried and both simply had no effect, the keyer ran to completion either way. Once you tap a memory, it sends to the end. Keying the radio itself **is** confirmed working, off air, by the operator.
+    `KY` has no abort in the QMX's CAT manual. Tested on the bench: neither sending `RX;` nor bouncing the mode away from CW and back stops an in-flight send - both were tried and both simply had no effect, the keyer ran to completion either way. Once the radio holds a message, it sends to the end. What you *can* stop is text that is still queued on the Tab5 - see [STOP](#stop-and-the-send-queue). Keying the radio itself **is** confirmed working, off air, by the operator.
 
 The page is built for one-handed, gloved, field operation — the kind of CW you do standing at a picnic table with a paddle you have not touched in a month.
+
+*(v1.25.0)* **The CW page is now also on the web** — see
+[Web UI → CW Control](web-ui.md#cw-control) for sending macros, editing them,
+switching macro sets, entering a callsign by hand, and setting a contest name,
+all from a browser.
 
 ---
 
@@ -21,7 +26,7 @@ The page is built for one-handed, gloved, field operation — the kind of CW you
 | **TX offset** *(v1.24.2)* | Opens the CW transmit offset popup — see [TX offset](#tx-offset) below. |
 | **NEXT** | The one-tap QSO ladder — see [Running a QSO](#running-a-qso). |
 | **Six memory buttons** | Your keyer messages. |
-| **Status line** | What the radio is doing: receiving, keying, or how many characters are left to send. |
+| **Status line** | What the radio is doing: receiving, keying, or how many characters are left to send. While text is queued it is replaced by a red **STOP** button *(v1.26.0)*. |
 | **General / Contest toggle** (bottom of the panel) | Switches between two named sets of six macros — see [Macro sets](#macro-sets). Placed at the very bottom, separated from the memory buttons by the status line, so it cannot be mis-hit while working the macros above it. |
 
 **Right of the pane:** the live spectrum and waterfall, the **decode ticker** along the bottom, the **copilot hint** line just above it, and the **station card** when a callsign has been heard.
@@ -30,12 +35,24 @@ The page is built for one-handed, gloved, field operation — the kind of CW you
 
 ## Band discipline
 
-The CW page only lets you operate the CW portion of the band. That is deliberate:
+The CW page lets you operate the CW **and Digi** portions of the band — not the
+phone portion. That is deliberate: CW is legal inside the digital sub-band, but
+digital modes are not legal inside the CW one, so clamping to CW alone would
+deny you spectrum you are actually allowed to use.
 
 - Entering the page moves you into the band's CW segment if you were somewhere else.
 - Changing band lands you in the **middle of that band's CW segment**.
-- Tuning — by tap, drag, band-plan strip or keypad — is **clamped** to the CW segment. You cannot accidentally tune into the phone portion while on this page.
-- The band-plan strip below the spectrum shows only the CW segment, and the filter is set to **300 Hz** on entry.
+- Tuning — by tap, drag, band-plan strip or keypad, **on the Tab5 or from the
+  web** *(v1.25.0 — the web's own tuning paths now honour this too)* — is
+  **clamped** to CW + Digi. You cannot tune into the phone portion while on
+  this page.
+- The band-plan strip below the spectrum draws the CW and Digi segments only,
+  each in its own colour, stretched to fill the whole strip — never Phone —
+  and the filter is set to **300 Hz** on entry.
+- *(v1.25.0)* **Spots on this page are CW only**, even though Digi is in
+  reach — see [Live Spots](spots.md#2-tapping-a-spot). Tapping an FT8/FT4
+  activity spot would switch the radio's mode away from CW, which this page
+  has no business offering.
 
 The segment boundaries come from the band plan for your region, which you can set in **Settings → Band-plan region**.
 
@@ -71,13 +88,24 @@ Six slots, each with macros expanded when you send:
 | `{MYCALL}` | Your callsign from Settings |
 | `{PARK}` | The park reference from the Park button |
 | `{CALL}` | The station you are working |
+| `{RST}` | A pro-forma signal report: `599`, or `5NN` if you long-press the `{RST}` button when inserting it (toggles a saved cut-numbers preference) |
+| `{SERIAL}` | Your contest serial, incrementing with each exchange sent, with cut numbers (0 sent as T) — see [Contest logging](#contest-logging) |
 
 **Sending and editing:**
 
 - **Tap** a memory to send it. The button lights **light grey** while your finger is down so you can see which one will fire.
 - **Drag up or down** without lifting to move to a different button — useful because the buttons are narrow and a fingertip covers more than one. Lift on the one you want.
 - **Hold for 800 ms** and the editor opens immediately, with your finger still down. The hold timer restarts whenever you slide to a different button, so taking your time to aim never opens the editor by accident.
+- **Slide sideways** about 40 px and the touch is abandoned: nothing is sent *(v1.26.0)*. The left-edge grip lies in front of the first three buttons, so a swipe that started there used to send a macro. A slide to the right from near the left edge now opens the page picker instead.
 - An **empty slot** opens the editor when tapped.
+
+### STOP and the send queue
+
+*(v1.26.0)* A message tapped while another is keying is **queued** behind it, up to 256 characters. The Tab5 hands the radio the next part, 80 characters at most, only when the radio's own buffer is empty.
+
+While text is queued, the status line becomes a red button: **STOP - drop N queued**. It drops the text the radio has not been given yet. The part the radio already holds still runs to the end, because the QMX has no command to stop it.
+
+Each send is also checked against the band plan at the moment it is keyed. Outside the band, or with no IARU region set, the send is refused with a `CW not sent:` message and the queue is dropped. See [Transmitting outside the band plan](settings.md#transmitting-outside-the-band-plan).
 
 The editor shows all six messages at once, so you can set up a whole activation in one visit.
 
@@ -125,6 +153,29 @@ Hints are **green when there is something to act on** and amber otherwise, and t
 This is what makes the page usable if you cannot yet copy CW by ear: the ticker gives you the letters, the hint tells you what just happened, and NEXT tells you what to send back.
 
 **The station card** appears when a callsign is heard, showing the country, whether you have worked them before (and on this band), the report they sent you, and their **park reference** if they gave one. Tap the card to start working them; tap again to drop them.
+
+**With nothing heard, the card shows "tap to enter a callsign"** *(v1.24.2)* — tap
+it to type one on a popup keyboard instead of waiting for it to be decoded.
+That is how you adopt a station you can copy by ear but the decoder has not
+caught, or one you already know from another source.
+
+**The pencil icon beside the card** *(v1.24.2)* always opens the same
+manual-entry keyboard, whether or not a callsign is already showing — so a
+wrongly auto-adopted call can be corrected without first dropping the contact.
+
+**The Log button above the card** *(v1.26.0)* opens the **Log a contact** window
+with the current station's callsign filled in - one tap, where it used to be a
+trip through the settings drawer. With no station it opens the same window
+empty. The pencil icon sits one row above it.
+
+**Listening in a browser?** From v1.26.0 the web page has noise reduction for
+CW. It uses the spectral kind, which keeps a CW note. See [Web DSP](web-dsp.md).
+
+**While you transmit, the waterfall adds no rows** *(v1.26.0)* - including when
+you key by hand - so your own signal is not painted over the band. It resumes
+about 0.7 seconds after the last element. The spectrum trace keeps drawing. The
+browser's waterfall does not do this yet. This is implemented and not yet
+measured against a hand key *(Bryan N0LUF)*.
 
 ---
 
@@ -199,17 +250,22 @@ Without a switch you have to choose one:
 - **QMX in one ear, Tab5 in the other, Binaural CW off** — a monitor in one
   ear and mono receive in the other.
 
-On the radio's side, whichever you pick, set the monitor so it stops moving
-when you change receive volume:
+*(v1.25.0)* **The Tab5 now does this for you.** Left at the factory setting of
+*Relative*, the QMX's main volume control moves the received audio and your
+sidetone together by the same amount, so you cannot bring the receive level
+down without taking your own monitor with it. Entering the CW page now checks
+the radio's reported `Sidetone abs/rel` setting, and if it reads **Relative**,
+switches it to **Absolute** and starts mirroring the **QMX volume** slider into
+**Sidetone volume** itself (with a 15% floor, so it can never go fully silent).
+Leaving the page restores **Relative**, so a standalone QMX is never left
+needing to be repaired by hand. If the radio is already **Absolute** — Michael
+KZ4LY's own deliberate binaural setup, described above — this does nothing at
+all.
 
-1. In the QMX's **CW** menu set **Sidetone abs/rel** to **Absolute**.
-2. Set **Sidetone volume** to taste.
-
-Left at the factory setting of *Relative*, the main volume control moves the
-received audio and your sidetone together by the same amount, so you cannot
-bring the receive level down without taking your own monitor with it. The
-**CW monitor level** row in the settings drawer sets both of these from the
-Tab5, and reads them back from the radio rather than keeping its own copy.
+The **CW monitor level** row in the settings drawer still exists for setting
+the level and the abs/rel mode directly, and reads them back from the radio
+rather than keeping its own copy — useful outside the CW page, or if you want
+a level other than what the automatic mirror would pick.
 
 ---
 
@@ -224,6 +280,26 @@ The **NEXT** button always shows exactly what it will send. One tap sends it and
 A station is adopted automatically when the decoder hears your call followed by `DE <their call>` shortly after your CQ. You can also adopt anyone by tapping the station card, which is how you answer someone else's CQ. **Long-press NEXT** to drop the contact and go back to CQ.
 
 The logged contact records mode CW, the report you sent, and the report you received **only if it was actually decoded** — a report that was never exchanged is left out of the log rather than invented.
+
+---
+
+## Contest logging
+
+*(v1.25.0)* **Set contest…**, from the web CW panel (see
+[Web UI → CW Control](web-ui.md#cw-control)) or `[cw] contest =` in a config
+file, names the contest you are currently running. While it is set, every CW
+QSO logged here carries that name as ADIF `CONTEST_ID`, alongside a genuine
+contest exchange:
+
+- **The serial you actually sent** — read back from the expanded `{SERIAL}`
+  macro text, never a number assumed from a counter — as ADIF `STX_STRING`.
+- **The serial the other station sent back** — captured from the decoder right
+  after their report, the same way the report itself is captured — as ADIF
+  `SRX_STRING`.
+
+The station card shows the received serial next to the report once it has been
+decoded. This is mutually exclusive with ARRL Field Day logging, which keeps
+writing its own `CONTEST_ID` the way it always has.
 
 ---
 
@@ -257,6 +333,7 @@ or off, the same gesture FT8 uses for its own simulator.
 
 ## Known limitations
 
-- **No abort for a message in progress** (see the warning at the top) — both
-  tested candidates (`RX;`, a mode bounce) were tried and neither works.
+- **No abort for a message the radio already holds** (see the warning at the top) — both
+  tested candidates (`RX;`, a mode bounce) were tried and neither works. Text
+  still queued on the Tab5 can be dropped with **STOP**.
 - **Zero-beat tuning aid** and **speed matching** are designed but not yet built; both need real signals to develop against.

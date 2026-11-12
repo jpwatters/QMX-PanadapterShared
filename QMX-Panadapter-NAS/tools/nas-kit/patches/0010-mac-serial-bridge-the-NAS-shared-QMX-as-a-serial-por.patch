@@ -1,4 +1,4 @@
-From f0ca236aef07dc544052733bb70c549a2c02360b Mon Sep 17 00:00:00 2001
+From 7edf280775d007e85066e4e13dd8cc1f45e88a79 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 16:18:59 +0000
 Subject: [PATCH 10/42] mac-serial-bridge: the NAS-shared QMX as a serial port

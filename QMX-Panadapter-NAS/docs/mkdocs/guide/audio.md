@@ -447,6 +447,16 @@ Notes on what this costs and what it does not:
 - **Only one browser gets the page at a time.** Opening the panadapter page in a second
   browser takes the connection from the first, which takes the audio with it.
 
+### Noise reduction and auto-notch
+
+From **v1.26.0** the page can clean this audio before you hear it: two kinds of
+noise reduction (a speech model for voice, a spectral one that also works on
+CW) and an auto-notch for carriers. All of it runs in the browser and costs the
+Tab5 nothing. Open **Radio** in the bottom bar and tick **Noise reduction** or
+**Auto-notch**.
+
+It has a chapter of its own: [Web DSP](web-dsp.md).
+
 ## Feedback
 
 This feature is still under active development. Your feedback shapes the next iteration:

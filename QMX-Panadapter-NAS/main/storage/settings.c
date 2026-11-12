@@ -77,6 +77,7 @@ static const char *TAG = "settings";
 #define KEY_CW_PARK    "cw_park"
 #define KEY_CW_RST_CUT "cw_rst_cut"
 #define KEY_CW_SERIAL  "cw_serial"
+#define KEY_CW_CONTEST "cw_contest"
 #define KEY_CW_SIM     "cw_sim"
 #define KEY_CW_PAGE_EN "cw_page_en"
 #define KEY_HOUND_MODE "hound_md"
@@ -280,7 +281,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      5                        /* 160 bits; highest used 159, 0 spare - the NEXT bit must raise DIRTY_WORDS to 6 */
+#define DIRTY_WORDS      6                        /* 192 bits; highest used 160, 31 spare (network radio raised it from 5: upstream's v1.26.1 took bit 159, the last of 160) */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -518,7 +519,8 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_MSG_SET      156
 #define DIRTY_CW_RST_CUT      157  /* active macro set toggle: 0 = General, 1 = Contest */
 #define DIRTY_CW_SERIAL        158  /* {SERIAL} macro - next contest serial to send */
-#define DIRTY_RELAY           159  /* network radio: relay_host + relay_port (142-158 are upstream's) */
+#define DIRTY_CW_CONTEST       159  /* contest name/ID - last free bit, see DIRTY_WORDS */
+#define DIRTY_RELAY           160  /* network radio: relay_host + relay_port (142-159 are upstream's; first bit of word 6) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -745,6 +747,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_CW_PARK)) nvs_set_str(s_nvs, KEY_CW_PARK, snap->cw_park);
         if (dirty_test(&dirty_local, DIRTY_CW_RST_CUT)) nvs_set_u8(s_nvs, KEY_CW_RST_CUT, snap->cw_rst_cut_nines ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_SERIAL)) nvs_set_u16(s_nvs, KEY_CW_SERIAL, snap->cw_serial_next);
+        if (dirty_test(&dirty_local, DIRTY_CW_CONTEST)) nvs_set_str(s_nvs, KEY_CW_CONTEST, snap->cw_contest_name);
         if (dirty_test(&dirty_local, DIRTY_CW_SIM))  nvs_set_u8(s_nvs, KEY_CW_SIM, snap->cw_sim_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_PAGE_EN)) nvs_set_u8(s_nvs, KEY_CW_PAGE_EN, snap->cw_page_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_HOUND_MODE))   nvs_set_u8(s_nvs, KEY_HOUND_MODE, snap->hound_mode);
@@ -1104,6 +1107,7 @@ static void load_from_nvs(qmx_settings_t *out)
     out->cw_park[0] = '\0';
     out->cw_rst_cut_nines = false;
     out->cw_serial_next = 1;
+    out->cw_contest_name[0] = '\0';
     out->cw_sim_en = false;
     /* ON from v1.24.0 (operator): ships as the release's beta, not hidden
      * behind a config line nobody would find. It still has no abort for a
@@ -1331,6 +1335,9 @@ static void load_from_nvs(qmx_settings_t *out)
     sz = sizeof(out->cw_park); nvs_get_str(s_nvs, KEY_CW_PARK, out->cw_park, &sz);
     if (nvs_get_u8(s_nvs, KEY_CW_RST_CUT, &u8v) == ESP_OK) out->cw_rst_cut_nines = (u8v != 0);
     nvs_get_u16(s_nvs, KEY_CW_SERIAL, &out->cw_serial_next);
+    out->cw_contest_name[0] = '\0';
+    sz = sizeof(out->cw_contest_name);
+    nvs_get_str(s_nvs, KEY_CW_CONTEST, out->cw_contest_name, &sz);
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_SIM, &v8) == ESP_OK) out->cw_sim_en = v8 != 0; }
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_PAGE_EN, &v8) == ESP_OK) out->cw_page_en = v8 != 0; }
     nvs_get_u8(s_nvs, KEY_HOUND_MODE, &out->hound_mode);
@@ -2133,6 +2140,30 @@ uint16_t settings_cw_serial_advance(void)
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_CW_SERIAL);
     return sent;
+}
+
+void settings_set_cw_contest_name(const char *name)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (name) {
+        strncpy(s_pending.cw_contest_name, name, sizeof(s_pending.cw_contest_name) - 1);
+        s_pending.cw_contest_name[sizeof(s_pending.cw_contest_name) - 1] = '\0';
+    } else {
+        s_pending.cw_contest_name[0] = '\0';
+    }
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_CW_CONTEST);
+}
+
+void settings_get_cw_contest_name(char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return;
+    out[0] = '\0';
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    snprintf(out, out_sz, "%s", s_pending.cw_contest_name);
+    xSemaphoreGive(s_mutex);
 }
 
 void settings_set_cw_sim_en(bool v)
@@ -4491,6 +4522,71 @@ void settings_set_tune_snap_hz(uint16_t hz)
     s_pending.tune_snap_hz = hz;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_TUNE_SNAP);
+}
+
+/* ---- T188: per-band frequency and mode memory - see settings.h ---------- */
+#define KEY_BAND_MEM  "bandmem"
+#define BAND_MEM_N    16
+typedef struct { uint32_t center_hz; uint32_t freq_hz; char mode[8]; } band_mem_t;
+static band_mem_t s_band_mem[BAND_MEM_N];
+static bool       s_band_mem_loaded = false;
+
+/* Caller holds s_mutex. A blob of another size is another layout: start empty. */
+static void band_mem_load_locked(void)
+{
+    if (s_band_mem_loaded) return;
+    size_t sz = sizeof(s_band_mem);
+    if (nvs_get_blob(s_nvs, KEY_BAND_MEM, s_band_mem, &sz) != ESP_OK || sz != sizeof(s_band_mem))
+        memset(s_band_mem, 0, sizeof(s_band_mem));
+    for (int i = 0; i < BAND_MEM_N; i++) s_band_mem[i].mode[sizeof(s_band_mem[i].mode) - 1] = '\0';
+    s_band_mem_loaded = true;
+}
+
+bool settings_band_mem_get(uint32_t center_hz, uint32_t *freq_hz, char *mode, size_t mode_sz)
+{
+    if (mode && mode_sz) mode[0] = '\0';
+    if (freq_hz) *freq_hz = 0;
+    if (!s_ready || !center_hz) return false;
+    bool found = false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    band_mem_load_locked();
+    for (int i = 0; i < BAND_MEM_N; i++) {
+        if (s_band_mem[i].center_hz != center_hz) continue;
+        if (freq_hz) *freq_hz = s_band_mem[i].freq_hz;
+        if (mode && mode_sz) snprintf(mode, mode_sz, "%s", s_band_mem[i].mode);
+        found = true;
+        break;
+    }
+    xSemaphoreGive(s_mutex);
+    return found;
+}
+
+void settings_band_mem_set(uint32_t center_hz, uint32_t freq_hz, const char *mode)
+{
+    if (!s_ready || !center_hz) return;
+    band_mem_t copy[BAND_MEM_N];
+    bool write = false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    band_mem_load_locked();
+    int slot = -1;
+    for (int i = 0; i < BAND_MEM_N; i++) if (s_band_mem[i].center_hz == center_hz) { slot = i; break; }
+    if (slot < 0) for (int i = 0; i < BAND_MEM_N; i++) if (s_band_mem[i].center_hz == 0) { slot = i; break; }
+    if (slot >= 0) {
+        band_mem_t *b = &s_band_mem[slot];
+        if (b->center_hz != center_hz) { memset(b, 0, sizeof(*b)); b->center_hz = center_hz; write = true; }
+        if (freq_hz && b->freq_hz != freq_hz) { b->freq_hz = freq_hz; write = true; }
+        if (mode && mode[0] && strncmp(b->mode, mode, sizeof(b->mode) - 1) != 0) {
+            snprintf(b->mode, sizeof(b->mode), "%s", mode); write = true;
+        }
+        if (write) memcpy(copy, s_band_mem, sizeof(copy));
+    }
+    xSemaphoreGive(s_mutex);
+    if (!write) return;                       /* unchanged, or all 16 slots taken */
+    nvs_set_blob(s_nvs, KEY_BAND_MEM, copy, sizeof(copy));
+    esp_err_t err = nvs_commit(s_nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "nvs_commit (band memory) failed: 0x%x", err);
+    else ESP_LOGI(TAG, "band memory: %lu Hz band -> %lu Hz %s", (unsigned long)center_hz,
+                  (unsigned long)copy[slot].freq_hz, copy[slot].mode[0] ? copy[slot].mode : "(mode not set)");
 }
 
 bool settings_get_cw_profile(int idx, char *name, size_t name_sz,

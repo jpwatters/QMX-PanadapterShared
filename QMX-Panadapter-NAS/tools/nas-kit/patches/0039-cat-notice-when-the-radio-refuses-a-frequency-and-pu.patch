@@ -1,4 +1,4 @@
-From 4920aee7c6fd764ef00f5947b92e3e32e1770858 Mon Sep 17 00:00:00 2001
+From 8f6dc57be55ab744497dff3ad9cb3f7cfd270917 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
 Subject: [PATCH 39/42] cat: notice when the radio refuses a frequency, and put
@@ -32,10 +32,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 41 insertions(+)
 
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index f5212350..1acd9c15 100644
+index bf13d989..96b9ed70 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
-@@ -179,6 +179,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
+@@ -180,6 +180,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
  static uint64_t s_wspr_pa_check_us = 0; // last non-blocking WSPR PA-guard check
  
  static uint32_t s_last_freq_hz = 0;
@@ -45,9 +45,9 @@ index f5212350..1acd9c15 100644
 +static volatile uint32_t s_fa_expect_from_hz = 0;
 +static volatile int64_t  s_fa_expect_us = 0;
  static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
- static int  s_cw_offset_hz = 700;   // CW LO offset read from QMX at connect, default 700
- // Which VFO the radio RECEIVES on, from "FR;": 0 = VFO A, 1 = VFO B, 2 = Split.
-@@ -1228,6 +1233,36 @@ static void process_cat_message(const char *msg, size_t len)
+ 
+ /* ⭐ T129 (Bryan N0LUF): IS THE RADIO TRANSMITTING, WHOEVER KEYED IT.
+@@ -1327,6 +1332,36 @@ static void process_cat_message(const char *msg, size_t len)
              }
              freq_hz = freq_hz * 10 + (d - '0');
          }
@@ -84,7 +84,7 @@ index f5212350..1acd9c15 100644
          if (freq_hz != s_last_freq_hz) {
              s_last_freq_hz = freq_hz;
              ESP_LOGI(TAG, "Freq = %lu Hz (%lu.%03lu MHz)",
-@@ -3938,6 +3973,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
+@@ -4104,6 +4139,12 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
          return err;
      }
      ESP_LOGI(TAG, "Sent: %s (target %lu Hz)", cmd, (unsigned long)freq_hz);

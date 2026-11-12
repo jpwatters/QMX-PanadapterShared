@@ -85,6 +85,10 @@ void ui_set_cw_cal_hz(int16_t hz);     // CW LO trim (Hz), +/-100, persisted to 
 float    ui_get_zoom_factor(void);      // current zoom (1.0=full, max 24.0)
 uint16_t ui_get_cw_pitch_hz(void);
 void ui_set_rit_pill_show(bool show);  // panadapter RIT pill visibility (NVS-backed)
+/* Open the left page picker (same as the left-edge swipe). LVGL thread only. */
+void ui_left_drawer_open(void);
+
+void ui_band_recall_mode(uint32_t center_hz, uint32_t target_hz);   // T188 - after a band button's retune; see ui.c
 uint32_t ui_band_last_hz(uint32_t center_hz); // 0 if never visited      // CW sidetone offset in Hz
 // True if hz falls inside a recognized HF amateur band's edges (lo/hi
 // receive that band's edges if non-NULL). False for anything out of band
@@ -94,6 +98,12 @@ bool ui_validate_band_freq_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out);
 // The range the current PAGE lets the operator tune across: the band's edges,
 // or on the CW page its CW + DiGi segments. False when hz is in no band.
 bool ui_page_range_hz(uint32_t hz, uint32_t *lo_out, uint32_t *hi_out);
+// Clamp hz into the CW page's range (a no-op outside CW mode) - the same rule
+// ui_tune_commit() applies to every in-file tuning path. Callers outside this
+// file that commit a FORCED tune of their own (spots_lane.c) must run their
+// target through this first, or the CW page can be walked out of its own band
+// segment via a spot tap.
+uint32_t ui_cw_tune_clamp_hz(uint32_t hz);
 int16_t  ui_get_if_cal_hz(void);         // per-unit IF calibration trim in Hz
 int   ui_get_pan_offset_bins(void);     // current pan offset in FFT bins
 void  ui_set_zoom(float zoom, int pan_bins); // set zoom+pan, persists zoom to NVS
@@ -520,6 +530,11 @@ typedef enum {
 /* Returns what happened; *moved_hz (may be NULL) is how far the dial went. */
 ui_cw_tune_t ui_cw_tune_to_peak(int32_t *moved_hz);
 const char  *ui_cw_tune_reason(ui_cw_tune_t r);
+
+/* How the last DEFERRED CW or SSB tune ended (the Tab5's toast text), for the
+ * web. Returns a sequence number that changes with every new outcome; 0 means
+ * none yet this boot. buf may be NULL. */
+uint32_t ui_tune_outcome(char *buf, size_t n);
 
 /* T90 SSB auto-tune - the sibling of CW-Tune, on the same gesture.
  *

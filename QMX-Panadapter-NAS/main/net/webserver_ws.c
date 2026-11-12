@@ -491,10 +491,71 @@ static ws_tx_result_t ws_send_binary(httpd_handle_t hd, int fd,
     return ws_send_all(hd, fd, frame, hdr + payload_len, budget_ms);
 }
 
+// ⛔ THE fd IS OURS ONLY WHILE httpd HAS IT OPEN - so httpd tells us when it closes.
+//
+// s_ws_fd used to be cleared in two places only: a takeover, and the push
+// task's own send-failure streak. Nothing cleared it when the CLIENT left. A
+// page reload (or any client that just drops the socket) has httpd close the
+// session and LWIP hand the same fd number to the next accepted connection -
+// and httpd_socket_send() only checks that the fd is A session, not that it is
+// OUR session. The push task then wrote the next spectrum frame into somebody
+// else's HTTP response, in front of its status line.
+//
+// MEASURED 2026-11-10 on bench1 (v1.25.0): open /ws, read 3 frames, drop the
+// socket, GET /api/status at once - 4 of the first 11 rounds had the reply
+// begin 82 7e 04 27 01 08 (a WS binary frame, 1063 bytes, type SPECTRUM)
+// instead of "HTTP/1.". Found because a Python client reported BadStatusLine.
+// In a browser it is a page or a JSON fetch that fails right after a reload.
+//
+// The session context's free function runs inside httpd's own session
+// teardown, before the fd is closed and long before it can be reused. The
+// context is fd + 1 only because a NULL context is never freed.
+static void ws_sess_gone(void *ctx)
+{
+    int fd = (int)(intptr_t)ctx - 1;
+    if (s_ws_fd == fd) {
+        s_session_active = false;
+        s_ws_fd = -1;
+        s_closes++;
+    }
+}
+
+static void ws_push_task(void *arg);
+
+// ⛔ THE PUSH TASK IS CREATED WHEN IT IS NEEDED, NOT ONLY AT BOOT.
+//
+// It used to be created once, in webserver_ws_start(), on the got-IP path -
+// which is the moment internal RAM is at its lowest (WiFi coming up). When
+// that one xTaskCreate() failed, start() set s_server = NULL and returned, but
+// /ws was already registered: every browser then connected, was told "push
+// task takes over", and received nothing for the rest of the boot. No error
+// on the page, just an empty spectrum until somebody rebooted the Tab5.
+//
+// MEASURED 2026-11-10 on bench1: "xTaskCreate ws_push failed" at 16.3 s with
+// internal free at 5 KB (a 9 s dip to 1.8 KB), 41 KB free twelve seconds
+// later, and 0 spectrum frames in 4 s on a connected socket. 12 times in 573
+// boots of this bench's capture - about one boot in fifty.
+//
+// So: try at start, and try again each time a browser connects. A connect
+// that still cannot get the task is refused, and the page's own 2 s reconnect
+// becomes the retry.
+static bool ws_ensure_push_task(void)
+{
+    if (s_push_task) return true;
+    BaseType_t ok = xTaskCreate(ws_push_task, "ws_push", WEB_WS_PUSH_STACK_SIZE, NULL, 3, &s_push_task);
+    if (ok != pdPASS) {
+        s_push_task = NULL;
+        ESP_LOGE(TAG, "xTaskCreate ws_push failed - will retry on the next /ws connect");
+        return false;
+    }
+    return true;
+}
+
 // httpd worker has 1 task, so this URI handler runs in the only worker.
 // We must return ESP_OK quickly so subsequent /api/status requests can be served.
 static esp_err_t ws_uri_handler(httpd_req_t *req)
 {
+    if (req->method == HTTP_GET && !ws_ensure_push_task()) return ESP_FAIL;
     if (req->method != HTTP_GET) {
         // Incoming WS frame (CLOSE/PING/etc). We do not subscribe to control
         // frames (handle_ws_control_frames=false) so this is mostly unreachable.
@@ -552,6 +613,7 @@ static esp_err_t ws_uri_handler(httpd_req_t *req)
     s_ws_fd = fd;
     s_sessions++;
     s_session_active = true;
+    httpd_sess_set_ctx(req->handle, fd, (void *)(intptr_t)(fd + 1), ws_sess_gone);
 
     // Bound how long a single WS send may block. On a weak/congested link
     // (this board's esp_hosted WiFi, worse at low RSSI) a send into a full TCP
@@ -989,15 +1051,13 @@ esp_err_t webserver_ws_start(httpd_handle_t server)
          * contention with THIS task is not the mechanism - do not re-try this
          * exact change without new evidence. The actual cause of the browser-
          * attached breakup is still open. */
-        BaseType_t ok = xTaskCreate(ws_push_task, "ws_push", WEB_WS_PUSH_STACK_SIZE, NULL, 3, &s_push_task);
-        if (ok != pdPASS) {
-            ESP_LOGE(TAG, "xTaskCreate ws_push failed");
-            s_server = NULL;
-            return ESP_FAIL;
-        }
+        /* ⛔ A FAILURE HERE IS NOT FINAL - see ws_ensure_push_task(). */
+        ws_ensure_push_task();
     }
 
-    ESP_LOGI(TAG, "WS /ws ready (push task, target %d ms period)", WS_PUSH_PERIOD_MS);
+    ESP_LOGI(TAG, "WS /ws ready (push task %s, target %d ms period)",
+             s_push_task ? "running" : "NOT created yet - retried when a browser connects",
+             WS_PUSH_PERIOD_MS);
     return ESP_OK;
 }
 

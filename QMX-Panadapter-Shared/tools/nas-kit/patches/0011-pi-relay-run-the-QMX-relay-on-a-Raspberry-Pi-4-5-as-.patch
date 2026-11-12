@@ -1,4 +1,4 @@
-From 1664dd3ba3f6a593f9e5e7163b42c570b614c11e Mon Sep 17 00:00:00 2001
+From 17861f11c226826d88214eb5bedb8b7dac10f0ed Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 16:43:58 +0000
 Subject: [PATCH 11/42] pi-relay: run the QMX relay on a Raspberry Pi 4/5 as a
