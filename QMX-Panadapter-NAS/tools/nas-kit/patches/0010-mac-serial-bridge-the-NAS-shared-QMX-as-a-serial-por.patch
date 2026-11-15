@@ -1,7 +1,7 @@
-From 7edf280775d007e85066e4e13dd8cc1f45e88a79 Mon Sep 17 00:00:00 2001
+From 4da0e355a42069c0f194c0726d8d22c20c18a7ad Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 16:18:59 +0000
-Subject: [PATCH 10/43] mac-serial-bridge: the NAS-shared QMX as a serial port
+Subject: [PATCH 10/45] mac-serial-bridge: the NAS-shared QMX as a serial port
  on a Mac
 
 tools/mac-serial-bridge/qmx_serial_bridge.py creates a pseudo-terminal at

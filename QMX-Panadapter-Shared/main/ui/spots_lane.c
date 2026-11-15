@@ -10,6 +10,7 @@
 #include "cat.h"
 #include "util/bandplan.h"
 #include "display/display.h"
+#include "rtty_screen_view.h"
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -394,6 +395,16 @@ static void repaint(void)
                 s_w->buf[keep++] = s_w->buf[i];
         n = keep;
     }
+    /* Same rule on the RTTY page (operator, 2026-11-12: "spots the same way
+     * if they exist"): only spots whose feed said RTTY. FT8/FT4 are DIGI too
+     * and would otherwise fill the lane with signals this page cannot read. */
+    if (ui_mode_get() == UI_MODE_RTTY) {
+        int keep = 0;
+        for (int i = 0; i < n; i++)
+            if (s_w->buf[i].rtty)
+                s_w->buf[keep++] = s_w->buf[i];
+        n = keep;
+    }
 
     hide_all();
     s_sel = -1;             // labels are about to be reassigned
@@ -504,6 +515,7 @@ static void repaint(void)
         // filter on, every label is your mode and a tag would be noise on every
         // single one - the sleekest indicator is the one that is not drawn.
         const char *tag = st.spots_mode_filter ? NULL : spot_mode_tag(sp->mode);
+        if (tag && sp->rtty) tag = "RY";   /* not "FT": the DIGI bucket also holds RTTY */
         lv_label_set_text(lb, sp->call);
         lv_obj_update_layout(lb);
         int call_w = lv_obj_get_width(lb);
@@ -713,6 +725,14 @@ static void tune_to_spot(const tap_target_t *t, const char *what)
      * picked this signal, so it belongs on screen and not at an edge (Roy
      * KI0ER). Before the tune - the flag is consumed by the update it causes. */
     ui_note_frequency_jump();
+    if (ui_mode_get() == UI_MODE_RTTY) {
+        /* RTTY page: a spot's frequency is the station's MARK, which is what
+         * Freq shows here - so the orange lines land on its two tones. The
+         * mode is left alone: the page keeps the radio in its own mode. */
+        rtty_screen_view_tune_mark_hz(hz);
+        spots_note_pick(t->call, t->mode, hz);
+        return;
+    }
     cat_set_frequency_forced(hz);   // deliberate user action, bypass the rate limiter
     ui_update_frequency(hz);        // optimistic, same as tap-to-tune on the spectrum
     // Via the poll task: the LVGL thread must never write the CDC pipe directly

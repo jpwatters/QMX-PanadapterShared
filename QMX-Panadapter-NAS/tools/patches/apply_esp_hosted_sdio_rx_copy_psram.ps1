@@ -115,10 +115,7 @@ if ($n -eq 1) {
     # first (alphabetical order) and replaces the assert with a drop-the-frame
     # branch. Replace that whole block - from the TODO comment to the memcpy -
     # with ours, which does the same and also moves the copy to PSRAM.
-    $rx = [regex]'(?s)	+/\* TODO : Need to abstract heap_caps_malloc \*/
-	+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);
-.*?	+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);
-'
+    $rx = [regex]'(?s)\t+/\* TODO : Need to abstract heap_caps_malloc \*/\r?\n\t+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);\r?\n.*?\t+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);\r?\n'
     $m = $rx.Matches($content)
     if ($m.Count -ne 1 -or -not $m[0].Value.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
         Write-Host "Anchor found $n times (expected 1), and no copypayload-patched block either - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red

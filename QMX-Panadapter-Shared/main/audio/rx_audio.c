@@ -1,6 +1,8 @@
 #include "rx_audio.h"
+#include "rtty_rx.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 
 #include "freertos/FreeRTOS.h"
@@ -493,6 +495,15 @@ static uint32_t s_out_sq_n = 0;
 /* Per-10-s-window counters - see the diag line. Reset every window on purpose:
    a running maximum cannot distinguish one stall from a thousand. */
 static volatile uint32_t s_write_late_win = 0;   /* writes over 25 ms */
+/* Per-window maxima (the s_*_max above are since boot), and the time the task
+ * spent AWAY from the forward ring between two reads - the number to hold
+ * against the ring slack (dsp.c RXAUDIO_RING_BYTES: ring minus one 12.8 KB
+ * producer chunk). 2026-11-15. */
+static uint32_t s_frame_max_win = 0, s_write_max_win = 0, s_away_max_win = 0;
+static uint32_t s_away_over100_win = 0;
+static int64_t  s_read_end_us = 0;
+static uint32_t s_backlog_max_win = 0;   /* forward-ring fill, pairs */
+static uint32_t s_backlog_flush_win = 0; /* backlog flushes this window */
 static volatile uint32_t s_frames_win     = 0;   /* frames in this window */
 static volatile uint32_t s_pairs_win      = 0;   /* sample-pairs written this window */
 /* Clock-drift corrector state - see the rate-match block in the task loop. */
@@ -698,6 +709,7 @@ static volatile uint32_t s_rate_win_refused = 0; /* T80: rate windows thrown out
 static volatile uint32_t s_rate_relocked    = 0; /* T80: forced re-seeds of the rate target */
 static uint32_t          s_rate_rail_run    = 0; /* consecutive frames pinned at the clamp */
 static uint32_t          s_rate_win_refuse_run = 0; /* consecutive rate windows refused */
+static bool              s_rate_seed_skipped   = false; /* first window after a reset discarded */
 /* Two refusals in a row still throw away a starved window; the THIRD is
  * accepted, because a gap does not last 30 s of continuous windows and a loop
  * that can never be corrected is worse than one corrected by a bad reading. */
@@ -768,6 +780,10 @@ static int64_t  s_in_win_us    = 0;      /* when that window started */
  * no more correct. */
 #define RATE_WIN_US     10000000   /* 10 s - see above */
 #define RATE_SMOOTH_A   0.10f      /* one pole on the window estimate, ~100 s */
+#define RXA_BACKLOG_DEADBAND_PAIRS 6400u    /* 133 ms = 2 USB chunks */
+#define RXA_BACKLOG_GAIN           2.5e-7f  /* 0.3 % at 12000 pairs over */
+#define RXA_BACKLOG_TRIM_MAX       0.003f
+#define RXA_BACKLOG_FLUSH_PAIRS    12800u   /* 267 ms = 4 USB chunks */
 static float s_noise   = 1.0f;     // slow noise-floor estimate (for squelch)
 // Linear-interpolation upsample state, one per ear - the value each
 // channel's ramp ended on, carried forward so the next frame's ramp starts
@@ -1114,7 +1130,7 @@ static bool set_decim_factor(int d)
      * wrong ratio for up to a second, which is a second of wrong pitch. */
     s_up_inc       = 1.0f / (float)s_decim_d;
     s_up_phase     = 0.0f;
-    s_up_target    = 0.0f;
+    s_up_target    = 0.0f; s_rate_seed_skipped = false;
     s_in_pairs_win = 0;
     s_in_win_us    = 0;
 
@@ -1223,6 +1239,11 @@ static inline float cw_peak_step(int ear, float x)
     return x;
 }
 
+/* R024: the IQ frequency NCO1 must put at baseband 0, or 0 for the mode's own
+ * (12000 + centre + CW trim). Set only on the RTTY page - see the retune
+ * decision in rx_audio_task. */
+static int s_nco1_iq_hz = 0;
+
 static void retune(int center_hz, int half_bw_hz, rxaud_mode_t mode)
 {
     /* D FIRST: everything below is computed against fs/D, so the factor has to
@@ -1273,7 +1294,8 @@ static void retune(int center_hz, int half_bw_hz, rxaud_mode_t mode)
      * fix, just pointing elsewhere. One rule, in both places: the trim is a
      * CW thing. */
     const int if_cal = (mode == RXAUD_MODE_CW) ? (int)ui_get_if_cal_hz() : 0;
-    float w1 = 2.0f * (float)M_PI * (float)(12000 + center_hz + if_cal) / fs;
+    const int nco1_iq = s_nco1_iq_hz ? s_nco1_iq_hz : 12000 + center_hz + if_cal;
+    float w1 = 2.0f * (float)M_PI * (float)nco1_iq / fs;
 
     bool panoramic = (mode == RXAUD_MODE_CW && s_binaural_en);
     float half_split = panoramic ? (float)half_bw_hz / 2.0f : 0.0f;
@@ -1315,6 +1337,108 @@ static inline void nco_step(nco_t *n, uint32_t sample_idx, float *c, float *s)
         float k = 1.5f - 0.5f * mag2;
         n->re *= k; n->im *= k;
     }
+}
+
+/* ---- RTTY's own front end (R023) ---------------------------------------
+ *
+ * ⛔ THE DECODER MUST NOT SHARE THE AUDIO PATH'S STAGE 1. It did (R005), and
+ * the decoder listened 6 kHz away from the orange lines on most of the
+ * screen. Stage 1 is centred on what the operator HEARS (DiGi: dial +1800 Hz)
+ * and decimated to 6000 Hz, so it holds only +/-3000 Hz around that. A tap
+ * further out gave the demod a centre outside its own Nyquist, and a complex
+ * stream at 6000 Hz cannot tell -4759 Hz from +1241 Hz. Measured on bench2
+ * 2026-11-14: lines at dial -2959, log `baseband centre -4610 Hz (offset
+ * -2810, nco 1800)`, decoder copying dial +3041 - 6000 Hz above the lines,
+ * which the operator heard as "it listens 5.5 kHz above". R005 passed only
+ * because ON8FAB happened to be inside the window.
+ *
+ * So the decoder mixes the FULL 48 kHz I/Q with its own NCO, put on the
+ * tapped frequency, and decimates by a fixed 8 with its own filter. Baseband 0
+ * is then always the lines' centre, wherever on the screen they are, in every
+ * mode, whatever the audio path's per-mode D is. The audio is untouched.
+ *
+ * IQ frequency of RF offset r from the dial = r + ui_get_if_offset_hz() (the
+ * spectrum's own mapping; it holds the CW pitch, trim and RIT). Re-read every
+ * frame, because RIT moves it without a retune(). The NCO keeps its phase
+ * across a step change, so a retune costs no click in the demod. */
+#define RTTY_FE_D 8
+#define RTTY_AUDIO_PITCH_HZ   2210   /* tone centre heard: mark 2125, space 2295 */
+/* R027: +/-250, NOT +/-500. At +/-500 a station 480 Hz below the lines came
+ * through louder than the weak one being decoded (bench2 2026-11-14: speaker
+ * pair 1775/1950 Hz, decoder on RL4R at +1631): "I hear a strong signal but do
+ * NOT see it on the lines". 500 Hz holds one 170 Hz pair with AFC room. */
+#define RTTY_AUDIO_HALF_BW_HZ  250
+/* R027: the speaker follows the decoder's AFC, retuned only when it has moved
+ * this far - every retune resets the filters, which clicks. */
+#define RTTY_AUDIO_AFC_STEP_HZ  10
+static float    *s_rt_mix_re, *s_rt_mix_im;    /* [DSP_FFT_SIZE]        */
+static float    *s_rt_out_re, *s_rt_out_im;    /* [DSP_FFT_SIZE / D]    */
+static float    *s_rt_coeff, *s_rt_dl_re, *s_rt_dl_im;   /* [FIR_DECIM_LEN] */
+static fir_f32_t s_rt_fir_re, s_rt_fir_im;
+static nco_t     s_rt_nco = { 1.0f, 0.0f, 1.0f, 0.0f };
+static int       s_rt_iq_hz = 0x7fffffff;
+static int       s_rt_state = 0;                /* 0 not tried, 1 ready, -1 no memory */
+
+static bool rtty_fe_init(void)
+{
+    if (s_rt_state) return s_rt_state > 0;
+    const uint32_t caps = MALLOC_CAP_SPIRAM;
+    s_rt_mix_re = heap_caps_malloc(DSP_FFT_SIZE * sizeof(float), caps);
+    s_rt_mix_im = heap_caps_malloc(DSP_FFT_SIZE * sizeof(float), caps);
+    s_rt_out_re = heap_caps_malloc(DSP_FFT_SIZE / RTTY_FE_D * sizeof(float), caps);
+    s_rt_out_im = heap_caps_malloc(DSP_FFT_SIZE / RTTY_FE_D * sizeof(float), caps);
+    s_rt_coeff  = heap_caps_malloc(FIR_DECIM_LEN * sizeof(float), caps);
+    s_rt_dl_re  = heap_caps_calloc(FIR_DECIM_LEN, sizeof(float), caps);
+    s_rt_dl_im  = heap_caps_calloc(FIR_DECIM_LEN, sizeof(float), caps);
+    if (!s_rt_mix_re || !s_rt_mix_im || !s_rt_out_re || !s_rt_out_im ||
+        !s_rt_coeff || !s_rt_dl_re || !s_rt_dl_im) {
+        ESP_LOGE(TAG, "RTTY front end: no PSRAM - decoder off");
+        s_rt_state = -1;
+        return false;
+    }
+    /* Same windowed-sinc design as build_decimator(), at a FIXED D. */
+    const float cutoff_norm = 0.45f / (float)RTTY_FE_D;
+    const int   M = FIR_DECIM_LEN - 1;
+    float sum = 0.0f;
+    for (int n = 0; n < FIR_DECIM_LEN; n++) {
+        float m = (float)n - M / 2.0f;
+        s_rt_coeff[n] = 2.0f * cutoff_norm * sinc_norm(2.0f * cutoff_norm * m)
+                      * (0.54f - 0.46f * cosf(2.0f * (float)M_PI * (float)n / (float)M));
+        sum += s_rt_coeff[n];
+    }
+    for (int n = 0; n < FIR_DECIM_LEN; n++) s_rt_coeff[n] /= sum;
+    dsps_fird_init_f32(&s_rt_fir_re, s_rt_coeff, s_rt_dl_re, FIR_DECIM_LEN, RTTY_FE_D);
+    dsps_fird_init_f32(&s_rt_fir_im, s_rt_coeff, s_rt_dl_im, FIR_DECIM_LEN, RTTY_FE_D);
+    s_rt_state = 1;
+    return true;
+}
+
+static void rtty_fe_run(const int16_t *iq, int pairs)
+{
+    if (!rtty_fe_init()) return;
+    rtty_rx_cfg_t c;
+    rtty_rx_get_cfg(&c);
+    int iq_hz = c.offset_hz + ui_get_if_offset_hz();
+    if (iq_hz != s_rt_iq_hz) {
+        float w = 2.0f * (float)M_PI * (float)iq_hz / (float)DSP_SAMPLE_RATE_HZ;
+        s_rt_nco.step_re = cosf(w);
+        s_rt_nco.step_im = sinf(w);
+        s_rt_iq_hz = iq_hz;
+    }
+    for (int i = 0; i < pairs; i++) {
+        float co, si;
+        nco_step(&s_rt_nco, (uint32_t)i, &co, &si);
+        float I = (float)iq[2 * i], Q = (float)iq[2 * i + 1];
+        s_rt_mix_re[i] = I * co + Q * si;      /* (I + jQ) * e^-jwt, as NCO1 */
+        s_rt_mix_im[i] = Q * co - I * si;
+    }
+    int n = pairs / RTTY_FE_D;
+    if (n <= 0) return;
+    dsps_fird_f32(&s_rt_fir_re, s_rt_mix_re, s_rt_out_re, n);
+    dsps_fird_f32(&s_rt_fir_im, s_rt_mix_im, s_rt_out_im, n);
+    /* Baseband 0 IS the tone centre, so the demod's centre is 0 Hz. */
+    rtty_rx_feed(s_rt_out_re, s_rt_out_im, n,
+                 (float)DSP_SAMPLE_RATE_HZ / (float)RTTY_FE_D, c.offset_hz);
 }
 
 // What center/half-bandwidth the given mode wants right now, tracking the
@@ -1566,7 +1690,11 @@ static void rx_audio_task(void *arg)
          * of its own: "nobody is listening" and "the operator told us nobody
          * is listening" want identical behaviour, and two sleep paths would
          * be two things to keep in step. The web listener still wins. */
-        if ((!s_enabled || s_suspended) && !s_web_en) {
+        /* RTTY (R005) is a THIRD consumer of the chain: it reads stage 1 and
+         * plays nothing. It is NOT a listener for rx_audio_any_listener() -
+         * the background feeds gate on someone hearing audio. */
+        bool rtty = rtty_rx_is_on();
+        if ((!s_enabled || s_suspended) && !s_web_en && !rtty) {
             if (active_prev) { dsp_rxaudio_forward_enable(false); active_prev = false; }
             // Fully asleep - zero wakeups, zero cost - until
             // rx_audio_set_enabled(true) gives this notification. This is the
@@ -1584,8 +1712,12 @@ static void rx_audio_task(void *arg)
          * it back on disconnect. Nothing is persisted, so a reboot restores
          * whatever he set. */
         bool codec_out = (s_enabled && s_codec_ready && !s_web_en);
-        rxaud_mode_t mode = (codec_out || s_web_en) ? mode_from_cat_str(cat_get_mode_str())
-                                                    : RXAUD_MODE_NONE;
+        rxaud_mode_t mode = (codec_out || s_web_en || rtty) ? mode_from_cat_str(cat_get_mode_str())
+                                                            : RXAUD_MODE_NONE;
+        /* The QMX streams the same I/Q in every mode, so RTTY needs no
+         * particular one; in a mode the audio path does not demodulate
+         * (DIGI) it runs on the USB setup, D=8 = 6 kHz. */
+        if (mode == RXAUD_MODE_NONE && rtty) mode = RXAUD_MODE_SSB;
         bool active = (mode != RXAUD_MODE_NONE);
 
         if (!active) {
@@ -1605,7 +1737,7 @@ static void rx_audio_task(void *arg)
             s_lim_gain = 1.0f;
             s_up_phase = 0.0f;
             s_up_inc   = 1.0f / (float)s_decim_d;
-            s_up_target = 0.0f; s_in_pairs_win = 0; s_in_win_us = 0;
+            s_up_target = 0.0f; s_rate_seed_skipped = false; s_in_pairs_win = 0; s_in_win_us = 0;
             s_noise   = 1.0f;
             s_last_up_v_l = 0.0f;
             s_last_up_v_r = 0.0f;
@@ -1640,6 +1772,35 @@ static void rx_audio_task(void *arg)
          * this, moving the trim in the drawer would change the display and
          * leave the audio where it was until the mode or the width happened
          * to change. */
+        /* ⛔ R024: ON THE RTTY PAGE THE SPEAKER PLAYS THE SIGNAL UNDER THE
+         * LINES. It played the radio mode's passband (DiGi: dial +150..+3200),
+         * so after R023 the decoder copied the tapped station while the
+         * operator heard another part of the band: "it now decodes where the
+         * lines are but still the audio is from a higher freq" (2026-11-14).
+         * NCO1 goes on the decoder's frequency with the same mapping as
+         * rtty_fe_run() (RF offset + ui_get_if_offset_hz(), so CW pitch, trim
+         * and RIT are in it), and NCO2 lifts the tone centre to the standard
+         * 2210 Hz, so the pair sounds at 2125/2295 Hz (filter: see
+         * RTTY_AUDIO_HALF_BW_HZ). The
+         * mode is forced to USB: in CW the peak filter and the binaural split
+         * would act on the RTTY pair. The dial and the radio are untouched. */
+        int want_iq = 0;
+        if (rtty) {
+            rtty_rx_status_t rs;
+            rtty_rx_status(&rs);
+            /* R027: the decoder's centre is offset + AFC (what the lines show),
+             * not the tap alone - bench2 had AFC +131 Hz and the speaker stayed
+             * on the tap. Hysteresis so a creeping AFC does not retune every
+             * frame. */
+            static int afc_applied = 0;
+            int afc = (int)lroundf(rs.afc_hz);
+            if (abs(afc - afc_applied) >= RTTY_AUDIO_AFC_STEP_HZ) afc_applied = afc;
+            mode = RXAUD_MODE_SSB;
+            want_binaural = false;
+            want_center  = RTTY_AUDIO_PITCH_HZ;
+            want_half_bw = RTTY_AUDIO_HALF_BW_HZ;
+            want_iq = rs.cfg.offset_hz + afc_applied + ui_get_if_offset_hz();
+        }
         int want_cal = (int)ui_get_if_cal_hz();
         float want_overlap = s_pan_overlap;
         bool half_bw_changed = (want_half_bw != s_half_bw_hz);
@@ -1656,8 +1817,9 @@ static void rx_audio_task(void *arg)
         bool cal_changed = (want_cal != cal_prev);
         if (mode != mode_prev || want_center != s_center_hz ||
             want_binaural != binaural_prev || half_bw_changed || decim_changed ||
-            cal_changed) {
+            cal_changed || want_iq != s_nco1_iq_hz) {
             cal_prev = want_cal;
+            s_nco1_iq_hz = want_iq;
             retune(want_center, want_half_bw, mode);
             mode_prev = mode;
             binaural_prev = want_binaural;
@@ -1680,8 +1842,44 @@ static void rx_audio_task(void *arg)
         }
 
         s_loop_count++;
+        /* BACKLOG FLUSH (2026-11-15). 02afa55b on bench1: the boot left
+         * 22,900 pairs (480 ms) in the forward ring, and the 0.3 % trim took
+         * > 5 min to drain it - half a second of latency on every sound for
+         * that long. Above RXA_BACKLOG_FLUSH_PAIRS the oldest audio is thrown
+         * away down to the dead band in one step: one discontinuity, where the
+         * stall that caused it already was one. The trim handles the rest. */
+        {
+            uint32_t bl = dsp_rxaudio_backlog_pairs();
+            /* After a codec underrun the gap is already heard and the stall's
+             * length sits in the ring as pure latency (01cda9cc: each 60 s
+             * stall added ~5000 pairs the 0.3 % trim could not drain, so the
+             * backlog crept into a flush every few minutes). Drop it now. */
+            static uint32_t s_ovf_seen = 0;
+            /* Codec only: with web audio as the sole listener nothing writes the codec, its
+             * DMA underruns by design (~150/s), and flushing on that cut the web
+             * audio up (operator, CW, f3c7e7fd..d68a6420). */
+            bool underrun = codec_out && (s_i2s_ovf != s_ovf_seen);
+            s_ovf_seen = s_i2s_ovf;
+            if (bl > RXA_BACKLOG_FLUSH_PAIRS ||
+                (underrun && bl > RXA_BACKLOG_DEADBAND_PAIRS)) {
+                uint32_t left = bl - RXA_BACKLOG_DEADBAND_PAIRS;
+                while (left > 0) {
+                    size_t want = left > DSP_FFT_SIZE ? DSP_FFT_SIZE : left;
+                    size_t got = dsp_rxaudio_read(s_rxbuf, want, 0);
+                    if (got == 0) break;
+                    left -= (uint32_t)got;
+                }
+                s_backlog_flush_win++;
+            }
+        }
         int64_t read_start_us = esp_timer_get_time();
+        if (s_read_end_us) {
+            uint32_t away = (uint32_t)(read_start_us - s_read_end_us);
+            if (away > s_away_max_win) s_away_max_win = away;
+            if (away > 100000) s_away_over100_win++;
+        }
         int pairs = (int)dsp_rxaudio_read(s_rxbuf, DSP_FFT_SIZE, 60);
+        s_read_end_us = esp_timer_get_time();
         const int in_pairs = pairs;   /* INPUT count - `pairs` becomes the OUTPUT count below */
         uint32_t read_us = (uint32_t)(esp_timer_get_time() - read_start_us);
         if (read_us > s_read_us_max) s_read_us_max = read_us;
@@ -1830,6 +2028,11 @@ static void rx_audio_task(void *arg)
         if (n_out > 0) {
             dsps_fird_f32(&s_dec_fir_re, s_mix_re, s_filt_re, n_out);
             dsps_fird_f32(&s_dec_fir_im, s_mix_im, s_filt_im, n_out);
+            /* RTTY reads the raw I/Q through its own front end - NOT this
+             * stage 1, which only holds +/-fs/2D around what is heard. See
+             * rtty_fe_run(). (The one-pitch CW error of R005 is covered there
+             * too: the mapping is ui_get_if_offset_hz(), the spectrum's own.) */
+            if (rtty) rtty_fe_run(s_rxbuf, pairs);
             // Stage 2: the actual mode-width selectivity, at the now-
             // decimated rate - see the FIR_LEN comment above for why this
             // has to be a second, non-decimating pass rather than folded
@@ -2265,6 +2468,7 @@ static void rx_audio_task(void *arg)
         // math itself keeping up with the 21.3 ms/frame budget" cleanly.
         uint32_t frame_us = (uint32_t)(esp_timer_get_time() - frame_start_us);
         if (frame_us > s_frame_us_max) s_frame_us_max = frame_us;
+        if (frame_us > s_frame_max_win) s_frame_max_win = frame_us;
         s_frame_us_sum += frame_us;
         s_frame_count++;
 
@@ -2377,7 +2581,23 @@ static void rx_audio_task(void *arg)
             if (err >  2000) err =  2000;
             if (err < -2000) err = -2000;
 
-            s_in_pairs_win += (uint32_t)in_pairs;
+            /* ⛔⛔ THE SOURCE RATE IS WHAT THE RADIO OFFERED, NOT WHAT WE READ.
+             * MEASURED 2026-11-15, bench1, RTTY page, WAE contest: this counted
+             * in_pairs (pairs READ). When the forward ring is full the producer
+             * drops whole chunks, reads fall short, the "source rate" falls,
+             * s_up_inc falls, we consume less and the ring stays full: POSITIVE
+             * FEEDBACK. Pitch stepped down after every drop burst and never came
+             * back (-1724 -> -3589 -> -6456 -> -8966 ppm over 5 min) while USB
+             * delivered 48.00k pairs/s; drops 200-570 pairs/s = the 0.7 % the
+             * pitch said. A 96 KB ring (e20bd084) only held a bigger backlog.
+             * Offered = sent + dropped, so no consumer behaviour can move it. */
+            {
+                static uint32_t s_off_prev = 0;
+                uint32_t off = dsp_rxaudio_offered_pairs();
+                s_in_pairs_win += off - s_off_prev;   /* unsigned: wrap-safe */
+                s_off_prev = off;
+                (void)in_pairs;
+            }
             int64_t win_us = now_rm - s_in_win_us;
             if (s_in_win_us == 0) { s_in_win_us = now_rm; s_in_pairs_win = 0; }
             else if (win_us >= RATE_WIN_US) {            /* see RATE_WIN_US - T36 */
@@ -2437,14 +2657,46 @@ static void rx_audio_task(void *arg)
                                       "as the source rate", src_rate);
                         s_up_target = target;
                     } else {
-                        s_up_target = (s_up_target <= 0.0f) ? target
-                                                            : s_up_target + (target - s_up_target) * RATE_SMOOTH_A;
+                        /* ⛔ NEVER SEED FROM THE FIRST WINDOW (2026-11-15).
+                         * 16dad59b on bench1: the QMX stream ramps up at
+                         * 47.1-47.8k pairs/s for its first seconds; the first
+                         * window after audio start seeded the target WHOLE at
+                         * -2032 ppm, the 100 s EMA held it, consumption ran
+                         * ~0.2 % low and the backlog grew 6500 -> 12100 pairs
+                         * into a flush. The first window after any reset is
+                         * thrown away; the second seeds. Pitch stays nominal
+                         * meanwhile (s_up_inc is only set from a target). */
+                        if (s_up_target <= 0.0f && !s_rate_seed_skipped)
+                            s_rate_seed_skipped = true;
+                        else
+                            s_up_target = (s_up_target <= 0.0f) ? target
+                                                                : s_up_target + (target - s_up_target) * RATE_SMOOTH_A;
                     }
                     s_rate_win_refuse_run = 0;
                 }
                 s_in_win_us = now_rm; s_in_pairs_win = 0;
             }
             if (s_up_target > 0.0f) s_up_inc = s_up_target - (float)err * 2.0e-10f;
+
+            /* BACKLOG DRAIN (2026-11-15). With the rate measured at the source
+             * (above), a backlog a stall leaves in the ring is never drained:
+             * consumption equals production, so the fill just stays, adds up
+             * to 0.5 s latency, and the next stall overflows. A proportional
+             * trim on the fill ABOVE a dead band drains it. This is P on a
+             * level (the plant integrates), first order, tau ~80 s against a
+             * 21 ms measurement delay - not the integrator-on-rate that rang
+             * (see above). Larger s_up_inc = more input per output = drains.
+             * Below the dead band (2 x a 67 ms USB chunk) it does nothing, so
+             * normal jitter never moves the pitch. Cap 0.3 % = 5 cents. */
+            if (s_up_target > 0.0f) {
+                uint32_t bl = dsp_rxaudio_backlog_pairs();
+                if (bl > s_backlog_max_win) s_backlog_max_win = bl;
+                if (bl > RXA_BACKLOG_DEADBAND_PAIRS) {
+                    float trim = (float)(bl - RXA_BACKLOG_DEADBAND_PAIRS) * RXA_BACKLOG_GAIN;
+                    if (trim > RXA_BACKLOG_TRIM_MAX) trim = RXA_BACKLOG_TRIM_MAX;
+                    s_up_inc *= 1.0f + trim;
+                }
+            }
 
             /* T21: record the pitch, in ppm from nominal. Taken HERE, right
              * where the value is decided, rather than sampled by the reader -
@@ -2482,7 +2734,7 @@ static void rx_audio_task(void *arg)
                  * lands, so a genuinely out-of-spec unit cannot thrash. */
                 if (++s_rate_rail_run >= RATE_RAIL_RELOCK_FRAMES) {
                     s_rate_rail_run = 0;
-                    s_up_target     = 0.0f;
+                    s_up_target     = 0.0f; s_rate_seed_skipped = false;
                     s_in_win_us     = 0;
                     s_in_pairs_win  = 0;
                     s_rate_relocked++;
@@ -2528,6 +2780,7 @@ static void rx_audio_task(void *arg)
                 esp_codec_dev_write(s_codec, s_out, pairs * 2 * (int)sizeof(int16_t));
         uint32_t write_us = (uint32_t)(esp_timer_get_time() - write_start_us);
         if (write_us > s_write_us_max) s_write_us_max = write_us;
+        if (write_us > s_write_max_win) s_write_max_win = write_us;
         s_write_us_sum += write_us;
         /* ⭐ EVENT RATE, NOT A RUNNING MAXIMUM (2026-09-22).
          *
@@ -2599,6 +2852,22 @@ static void rx_audio_task(void *arg)
                              (unsigned long)s_out_sq_n,
                              (rl > 4 * (rr + 1) || rr > 4 * (rl + 1))
                                  ? "  <-- CHANNELS LOPSIDED" : "");
+                }
+                {
+                    uint32_t drop = 0, fmin = 0;
+                    dsp_rxaudio_fwd_stats(&drop, &fmin);
+                    ESP_LOGI(TAG, "diag: win fwd drop %lu pairs  ring free min %ld B  "
+                             "away max %lu us (>100ms %lu)  frame max %lu us  write max %lu us  "
+                             "backlog max %lu now %lu pairs  flush %lu",
+                             (unsigned long)drop, fmin == UINT32_MAX ? -1L : (long)fmin,
+                             (unsigned long)s_away_max_win, (unsigned long)s_away_over100_win,
+                             (unsigned long)s_frame_max_win, (unsigned long)s_write_max_win,
+                             (unsigned long)s_backlog_max_win,
+                             (unsigned long)dsp_rxaudio_backlog_pairs(),
+                             (unsigned long)s_backlog_flush_win);
+                    s_backlog_max_win = 0; s_backlog_flush_win = 0;
+                    s_away_max_win = s_away_over100_win = 0;
+                    s_frame_max_win = s_write_max_win = 0;
                 }
                 s_out_sq_l = s_out_sq_r = 0; s_out_sq_n = 0;
                 s_write_late_win = 0;
@@ -2910,7 +3179,7 @@ static void preopen_body(void)
     }
     s_volume = cfg.rx_audio_vol;
 
-    // Same reasoning as the I2S channel below: claim the forward ring's 24 KB
+    // Same reasoning as the I2S channel below: claim the forward ring (96 KB PSRAM)
     // now, before WiFi/BLE/spots fragment internal RAM. See dsp.c.
     dsp_rxaudio_ring_preinit();
 
@@ -3016,6 +3285,8 @@ void rx_audio_suspend(bool on)
 }
 
 bool rx_audio_is_suspended(void) { return s_suspended; }
+
+void rx_audio_wake(void) { if (s_task) xTaskNotifyGive(s_task); }
 
 void rx_audio_set_enabled(bool en)
 {

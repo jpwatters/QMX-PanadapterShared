@@ -706,6 +706,41 @@
               cursor: pointer; opacity: .55; transition: opacity .15s; }
   #cw-clear:hover { opacity: 1; color: #30e0e0; border-color: #30e0e0; }
   #cw-head { color: #30e060; }         /* green header, as on the Tab5 */
+  /* R007: the RTTY page's decoded text, over the waterfall like #cw-line and
+     for the same reason pointer-events:none - a click on the waterfall moves
+     the decoder (handleTuneCommit). Earlier lines green, the current one cyan,
+     as on the Tab5's RTTY page. Only the Clear button takes clicks. */
+  #rtty-line { position: absolute; left: 0; right: 0; bottom: 6px;
+               font-family: ui-monospace, "JetBrains Mono", Consolas, monospace;
+               font-size: clamp(0.7rem, 1.15vw, 1.05rem); line-height: 1.45;
+               white-space: pre; overflow: hidden;
+               background: rgba(0,0,0,.7); padding: 2px 6px;
+               pointer-events: none; color: #30e060; }
+  #rtty-line .rtty-cur { color: #30e0e0; }
+  #rtty-clear { position: absolute; right: 6px; bottom: 4px; pointer-events: auto;
+                background: rgba(0,0,0,.65); color: var(--dim);
+                border: 1px solid #3a4149; border-radius: 4px;
+                padding: 1px 8px; font-size: 12px; line-height: 1.6;
+                cursor: pointer; opacity: .55; }
+  #rtty-clear:hover { opacity: 1; color: #30e0e0; border-color: #30e0e0; }
+  #rtty-wrap button.on { background: #2d5a3f; color: #fff; }
+  /* What we sent, red, and callsigns in the text, clickable to make one the
+     station being worked - as the Tab5 (COL_TX, COL_CALL). Only the words
+     take the click; the rest of the box lets it through to the waterfall. */
+  #rtty-line .rtty-tx { color: #ff5050; }
+  #rtty-line .rtty-callw { pointer-events: auto; cursor: pointer; }
+  #rtty-line .rtty-callw:hover { text-decoration: underline dotted; }
+  #rtty-line .rtty-sel { outline: 1px solid #5fd4ff; outline-offset: 1px; color: #5fd4ff; }
+  #rtty-tx-btns { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 8px; }
+  #rtty-tx-btns button { padding: 8px 0; font-weight: 600; }
+  #rtty-tx-btns button.dim { opacity: .4; }
+  #rtty-tx-btns button.sending { background: #c0601a; color: #fff; }
+  #rtty-stop { background: #4a1c1c; color: #b08080; }
+  #rtty-stop.keyed { background: #e02020; color: #fff; }
+  #rtty-sig { display: inline-block; width: 120px; height: 10px; background: #252b34;
+              vertical-align: middle; position: relative; }
+  #rtty-sig > i { position: absolute; left: 0; top: 0; bottom: 0; background: #5f6670; }
+  #rtty-sig > b { position: absolute; top: -3px; bottom: -3px; width: 2px; background: #fff; }
   /* .cw-row-text is every row built below the first; #cw-text is row 1, which
      is in the markup because the header sits beside it. #cw-text2 was the old
      fixed second row and no longer exists. */
@@ -1341,7 +1376,7 @@
 
   <div id="split-handle" title="Drag to resize"></div>
 
-  <div id="wf-wrap"><canvas id="waterfall" width="1024" height="600"></canvas><canvas id="wf-cursor" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas><div class="tune-overlay" id="wf-overlay"></div><div id="cw-line" hidden><div><span id="cw-head"></span><span id="cw-text"></span></div><div id="cw-rows"></div><button id="cw-clear" type="button" title="Wipe the decoded CW window, here and on the Tab5. What was received is still in the microSD transcript.">Clear</button></div></div>
+  <div id="wf-wrap"><canvas id="waterfall" width="1024" height="600"></canvas><canvas id="wf-cursor" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas><div class="tune-overlay" id="wf-overlay"></div><div id="cw-line" hidden><div><span id="cw-head"></span><span id="cw-text"></span></div><div id="cw-rows"></div><button id="cw-clear" type="button" title="Wipe the decoded CW window, here and on the Tab5. What was received is still in the microSD transcript.">Clear</button></div><div id="rtty-line" hidden><div id="rtty-rows"></div><button id="rtty-clear" type="button" title="Wipe the decoded RTTY text, here and on the Tab5">Clear</button></div></div>
 
   <div id="bandplan-wrap"><canvas id="bandplan" title="Whole-band plan - drag or tap to retune"></canvas></div>
 
@@ -1453,6 +1488,54 @@
        send a macro or free text, and (added on request) edit the six macros
        and switch which of the two sets (General/Contest) is active - the same
        things the Tab5's own long-press editor and set toggle do. -->
+  <!-- R007: RTTY page controls, the same set as the Tab5's pane, and R010 send. -->
+  <div id="rtty-wrap" style="display:none; width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <strong style="color:#E08AE0">RTTY</strong>
+      <span id="rtty-status" style="color:var(--dim); font-size:14px;">-</span>
+      <span title="Signal: the squelch opens at the white tick"><span id="rtty-sig"><i></i><b></b></span></span>
+      <select id="rtty-baud" title="Speed, baud">
+        <option value="45.45">45.45 Bd</option><option value="50">50 Bd</option><option value="75">75 Bd</option><option value="100">100 Bd</option>
+      </select>
+      <select id="rtty-shift" title="Shift, Hz">
+        <option value="170">170 Hz</option><option value="200">200 Hz</option><option value="425">425 Hz</option>
+        <option value="450">450 Hz</option><option value="850">850 Hz</option>
+      </select>
+      <button id="rtty-auto" type="button" title="Speed, shift and Reverse follow the station (after 3 s of the same reading)">Auto</button>
+      <button id="rtty-rev" type="button" title="Swap mark and space">Reverse</button>
+      <button id="rtty-afc" type="button" title="Follow a drifting or mistuned signal, +/-150 Hz">AFC</button>
+      <button id="rtty-sq" type="button" title="Print nothing while there is no RTTY signal">Squelch</button>
+      <span style="color:var(--dim); font-size:13px; margin-left:auto;">Click the waterfall to tune: the signal goes to 1500 Hz audio</span>
+    </div>
+    <!-- RTTY send: the Tab5 pane's TX block. The four messages are built on
+         the device (rtty_tx_macro), so both surfaces send the same text; the
+         station being worked ("To:") is one value shared with the Tab5. -->
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px;">
+      <strong style="color:#ffa040">RTTY send</strong>
+      <label for="rtty-call" style="color:var(--dim); font-size:13px;">To:</label>
+      <input id="rtty-call" type="text" maxlength="15" autocomplete="off" spellcheck="false"
+             placeholder="their callsign"
+             title="The station you are working - CALL in Answer, Exch and 73. Click a callsign in the text, or type it and press Enter. Shared with the Tab5."
+             style="width:10em; text-transform:uppercase; font-weight:700; color:#5fd4ff;">
+      <button id="rtty-call-clear" type="button" title="Forget this station">Clear</button>
+      <span id="rtty-tx-status" style="font-size:14px; margin-left:auto; max-width:55%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; direction:rtl; text-align:left;"></span>
+    </div>
+    <div id="rtty-tx-btns">
+      <button type="button" data-macro="cq" title="CQ CQ CQ DE MYCALL MYCALL MYCALL, twice, PSE K">CQ</button>
+      <button type="button" data-macro="answer" title="CALL CALL DE MYCALL MYCALL MYCALL K">Answer</button>
+      <button type="button" data-macro="exch" title="CALL DE MYCALL TNX FER CALL UR RST 599 599 QTH grid grid / CALL DE MYCALL K">Exch</button>
+      <button type="button" data-macro="73" title="CALL DE MYCALL TNX FER QSO 73 GL / CALL DE MYCALL SK">73</button>
+      <button type="button" id="rtty-stop" title="Stop now: tone off, back to receive, the rest dropped">STOP</button>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <input id="rtty-type" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Type: each key is sent as you type. Enter ends the over."
+             title="Starts an over on the first key. Backspace edits the field but cannot unsend. The over ends 3 s after the last key, on Enter, or on STOP."
+             style="flex:1; min-width:0;">
+    </div>
+    <div style="color:var(--dim); font-size:12px; margin-top:4px;">Sends on the decoder's tones - you transmit where you decode. The radio is put in DiGi mode if it is not; the band guard applies. One over is at most 180 s.</div>
+  </div>
+
   <div id="cw-tx-wrap" style="display:none; width:100%; max-width:1000px; margin:14px auto 0; text-align:left;">
     <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:8px;">
       <strong style="color:#ffa040">CW send</strong>
@@ -1715,6 +1798,7 @@
              FT8 button comment already records this class of drift. -->
         <a href="#" class="screen-to" data-screen="panadapter" style="color:#FFFFFF" title="Show the spectrum and waterfall on the Tab5">Switch to Panadapter</a>
         <a href="#" class="screen-to" data-screen="cw" style="color:#5CB4F0" title="Open the CW page on the Tab5">Switch to CW</a>
+        <a href="#" class="screen-to" data-screen="rtty" style="color:#E08AE0" title="Open the RTTY page on the Tab5">Switch to RTTY</a>
         <a href="#" class="screen-to" data-screen="ft8" style="color:#FFD700" title="Open the FT8 page on the Tab5 and select FT8">Switch to FT8</a>
         <a href="#" class="screen-to" data-screen="ft4" style="color:#FF6A00" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
         <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
@@ -2347,7 +2431,7 @@ const FREQ_HOLD_MS = 1520;
 function holdLocalFreq(hz) {
   lastFreqHz    = hz;
   freqHoldUntil = Date.now() + FREQ_HOLD_MS;
-  document.getElementById("vfo").textContent = fmtHz(hz);
+  document.getElementById("vfo").textContent = fmtHz(shownHz(hz));
   updateFreqAxis();
 }
 /* The still-display SETTING, mirrored from /api/status. Decides whether a tune
@@ -2672,6 +2756,14 @@ let freqSepStyle = 0;
 /* #333: mirrors the device setting, so the lane tags modes the same way. */
 let spotsModeFilter = false;
 
+/* RTTY page: the readout is the MARK frequency, dial + rtty_mark_off from
+   /api/status, rounded to 10 Hz - the same number the Tab5 shows (ui.c,
+   freq_shown_hz). Operator 2026-11-14: Freq is what two stations agree on. */
+let rttyMarkOff = null;
+function shownHz(d) {
+  return (lastScreen === "rtty" && rttyMarkOff !== null && d > 0)
+    ? Math.round((d + rttyMarkOff) / 10) * 10 : d;
+}
 function fmtHz(hz) {
     const sep = freqSepStyle === 1 ? "," : ".";
     if (!hz) return "---" + sep + "---" + sep + "--- Hz";
@@ -4422,7 +4514,7 @@ async function sendCmd(payload) {
     /* Optimistically, like the wheel: the readout and the marker move now and
        the poll confirms, rather than the control looking dead for a second. */
     lastFreqHz = hz;
-    document.getElementById("vfo").textContent = fmtHz(hz);
+    document.getElementById("vfo").textContent = fmtHz(shownHz(hz));
     /* set_ft8_mode already exists and already does all of this - retune,
        sub-mode switch, stale-decode clear. Adding an ft8_preset action would
        have been a second door onto the same room. */
@@ -8149,6 +8241,251 @@ document.getElementById("pause-btn").addEventListener("click", async () => {
   paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
 });
 
+/* =====================================================================
+   R007: the RTTY page. The device owns everything (rtty_rx.c); the page
+   polls {"action":"rtty"} once a second while that screen is up and draws
+   what it returns - settings, signal level, AFC and the last 512 characters.
+   No local copy of any setting, so the Tab5 and the browser cannot disagree. */
+const RTTY_ROWS = 8;
+let rttyTimer = null;
+let lastRtty  = null;   /* the last reply - overlayTuneCursor() draws the tone markers from it */
+/* Columns that fit the box, measured in its own font: the browser is far
+   wider than the Tab5's 63 columns, and a fixed count either wastes it or
+   clips. Re-measured every render - the window can be resized. */
+function rttyCols() {
+  const box = document.getElementById("rtty-line");
+  if (!box || !box.clientWidth) return 72;
+  const probe = document.createElement("span");
+  probe.textContent = "0000000000";
+  probe.style.visibility = "hidden";
+  box.appendChild(probe);
+  const cw = probe.getBoundingClientRect().width / 10;
+  box.removeChild(probe);
+  return cw > 0 ? Math.max(20, Math.floor((box.clientWidth - 12) / cw) - 1) : 72;
+}
+/* The decoded text as a stream (since the web send, R010): the device
+   returns what came after the page's own cursors, received and sent apart,
+   so sent text is drawn red where it went, as on the Tab5. rttyBuf holds the
+   text, rttyMask one char per text char: "t" sent, "r" received. */
+let rttyBuf = "", rttyMask = "";
+let rttyCur = null;          /* {rx, tx, gen} once seeded */
+const RTTY_KEEP = 6000;
+function rttyAppend(t, m) {
+  if (!t) return;
+  t = t.replace(/\r/g, "");
+  rttyBuf += t; rttyMask += m.repeat(t.length);
+  if (rttyBuf.length > RTTY_KEEP) { rttyBuf = rttyBuf.slice(-RTTY_KEEP); rttyMask = rttyMask.slice(-RTTY_KEEP); }
+}
+function rttyStream(r) {
+  if (!rttyCur) {                     /* first reply: the received tail */
+    rttyBuf = ""; rttyMask = "";
+    rttyAppend(r.text || "", "r");
+  } else if (r.clear_gen !== rttyCur.gen) {
+    rttyBuf = ""; rttyMask = "";      /* a Clear from either surface */
+  } else {
+    rttyAppend(r.rx_new || "", "r");
+    rttyAppend(r.tx_new || "", "t");
+  }
+  rttyCur = { rx: r.rx_cur, tx: r.tx_cur, gen: r.clear_gen };
+}
+/* Shaped like a callsign: letters and digits, at least one of each, 3-12
+   long, '/' allowed. Loose on purpose - the device checks it properly
+   (cw_call_structure_ok) and refuses anything else. */
+const RTTY_CALL_RE = /^(?=.*[A-Z])(?=.*[0-9])[A-Z0-9\/]{3,12}$/;
+function rttyRowEl(text, mask, cur, sel) {
+  const d = document.createElement("div");
+  if (cur) d.className = "rtty-cur";
+  if (!text) { d.textContent = " "; return d; }
+  /* Runs of the same kind; within received runs, callsign-shaped words
+     become clickable spans. */
+  let i = 0;
+  while (i < text.length) {
+    let j = i; while (j < text.length && mask[j] === mask[i]) j++;
+    const seg = text.slice(i, j);
+    if (mask[i] === "t") {
+      const sp = document.createElement("span"); sp.className = "rtty-tx"; sp.textContent = seg; d.appendChild(sp);
+    } else {
+      for (const w of seg.split(/([^A-Za-z0-9\/]+)/)) {
+        if (!w) continue;
+        const up = w.toUpperCase();
+        if (RTTY_CALL_RE.test(up)) {
+          const sp = document.createElement("span");
+          sp.className = "rtty-callw" + (up === sel ? " rtty-sel" : "");
+          sp.textContent = w;
+          sp.title = "Send to " + up;
+          sp.addEventListener("click", (ev) => { ev.stopPropagation(); rttySetCall(up); });
+          d.appendChild(sp);
+        } else d.appendChild(document.createTextNode(w));
+      }
+    }
+    i = j;
+  }
+  return d;
+}
+let rttyErr = "", rttyErrUntil = 0, rttyMacro = null;
+function rttyShowErr(e) { rttyErr = e || "refused"; rttyErrUntil = Date.now() + 8000; }
+function rttyRender(r) {
+  if (!r || typeof r.text !== "string") return;
+  lastRtty = r;
+  if (r._stream) rttyStream(r);
+  else if (!rttyCur) { rttyBuf = r.text.replace(/\r/g, ""); rttyMask = "r".repeat(rttyBuf.length); }
+  const RTTY_COLS = rttyCols();
+  /* Lines as they came, each wrapped at RTTY_COLS; the last RTTY_ROWS rows
+     are shown, the current (last) one cyan. */
+  const rows = [];
+  let p = 0;
+  for (const ln of rttyBuf.split("\n")) {
+    const mk = rttyMask.slice(p, p + ln.length); p += ln.length + 1;
+    if (ln.length === 0) { rows.push(["", ""]); continue; }
+    for (let i = 0; i < ln.length; i += RTTY_COLS) rows.push([ln.slice(i, i + RTTY_COLS), mk.slice(i, i + RTTY_COLS)]);
+  }
+  const show = rows.slice(-RTTY_ROWS);
+  /* Always RTTY_ROWS high, as on the Tab5: an empty box that collapses to
+     nothing reads as "no decoder" rather than "no signal yet". */
+  while (show.length < RTTY_ROWS) show.unshift(["", ""]);
+  const box = document.getElementById("rtty-rows");
+  if (box) {
+    box.innerHTML = "";
+    show.forEach((t, i) => box.appendChild(rttyRowEl(t[0], t[1], i === show.length - 1, r.call || "")));
+  }
+  const st = document.getElementById("rtty-status");
+  if (st) {
+    const at = (r.offset_hz || 0) + (r.afc ? Math.round(r.afc_hz || 0) : 0);
+    st.textContent = (r.fs_hz > 0 ? (r.present ? "Decoding" : "Listening") : "Waiting for audio")
+      + " at " + at + " Hz" + (r.afc ? " (AFC " + (r.afc_hz >= 0 ? "+" : "") + Math.round(r.afc_hz || 0) + ")" : "")
+      + " - " + (r.chars || 0) + " chars";
+  }
+  const sig = document.getElementById("rtty-sig");
+  if (sig) {
+    const v = Math.max(0, Math.min(1, r.sig_lvl || 0));
+    sig.firstElementChild.style.width = (v * 100) + "%";
+    sig.firstElementChild.style.background = r.present ? "#30e060" : "#5f6670";
+    sig.lastElementChild.style.left = "48%";
+  }
+  const sel = (id, v) => { const e = document.getElementById(id); if (e && document.activeElement !== e) e.value = String(v); };
+  sel("rtty-baud", r.baud === 45.45 ? "45.45" : Math.round(r.baud || 45.45));
+  sel("rtty-shift", Math.round(r.shift || 170));
+  if (typeof r.call === "string") sel("rtty-call", r.call);
+  const tog = (id, on) => { const e = document.getElementById(id); if (e) e.classList.toggle("on", !!on); };
+  tog("rtty-rev", r.reverse); tog("rtty-afc", r.afc); tog("rtty-sq", r.squelch); tog("rtty-auto", r.auto);
+  /* Send panel: the same states as the Tab5 pane (tx_refresh). */
+  const tx = r.tx || {};
+  if (!tx.keyed) rttyMacro = null;
+  document.querySelectorAll("#rtty-tx-btns button[data-macro]").forEach((bt) => {
+    const m = bt.dataset.macro;
+    bt.classList.toggle("dim", m !== "cq" && !r.call);
+    bt.classList.toggle("sending", !!tx.keyed && m === rttyMacro);
+  });
+  const stop = document.getElementById("rtty-stop");
+  if (stop) stop.classList.toggle("keyed", !!tx.keyed);
+  const ts = document.getElementById("rtty-tx-status");
+  if (ts) {
+    if (tx.keyed) { ts.style.color = "#ff5050"; ts.textContent = "TX " + (tx.seconds || 0) + " s  " + (tx.echo || ""); }
+    else if (Date.now() < rttyErrUntil) { ts.style.color = "#ff9f40"; ts.textContent = rttyErr; }
+    else ts.textContent = "";
+  }
+}
+/* Every rtty request from this panel goes through here, so the stream
+   cursors travel with it and no reply skips text. Other callers (the
+   waterfall click, the keypad) send without them; rttyRender() then leaves
+   the stream alone. */
+async function rttyReq(p) {
+  const q = Object.assign({ action: "rtty" }, p || {});
+  if (rttyCur) { q.rx_cur = rttyCur.rx; q.tx_cur = rttyCur.tx; }
+  const r = await sendCmd(q);
+  if (r && typeof r.text === "string") r._stream = true;
+  /* A user action (any p) with no valid reply did nothing on the device, and
+     sendCmd returns null for that. Say so: on bench1 2026-11-15 a To: set was
+     lost this way and the page showed nothing. A failed poll stays quiet. */
+  else if (p && Object.keys(p).length) rttyShowErr("no answer from the Tab5 - try again");
+  if (r && r.call_error) rttyShowErr("not a callsign: " + (p && p.call));
+  rttyRender(r);
+  return r;
+}
+function rttySetCall(c) { return rttyReq({ call: c }); }
+async function rttyPoll() {
+  if (rttyTimer) { clearTimeout(rttyTimer); rttyTimer = null; }
+  if (lastScreen !== "rtty") { rttyCur = null; return; }
+  const r = await rttyReq();
+  if (rttyTimer) return;   /* another call started a poll meanwhile */
+  /* Faster while sending, so the echo and STOP keep up. */
+  rttyTimer = setTimeout(rttyPoll, (r && r.tx && r.tx.keyed) ? 400 : 1000);
+}
+/* poll=false for typed batches: the 400 ms poll during an over already
+   shows them, and an extra request per batch is load on core 1 while the
+   radio keys (bench1 2026-11-15, see rtty_tx.c start_over). */
+async function rttySend(body, poll = true) {
+  const r = await sendCmd(Object.assign({ action: "rtty_send" }, body));
+  const ok = !!(r && r.ok);
+  if (!ok) rttyShowErr((r && r.error) || "no answer from the Tab5");
+  if (poll || !ok) rttyPoll();
+  return ok;
+}
+(function wireRtty() {
+  const set = (p) => rttyReq(p);
+  const b = (id, fn) => { const e = document.getElementById(id); if (e) e.addEventListener("click", fn); };
+  b("rtty-rev", () => set({ reverse: !document.getElementById("rtty-rev").classList.contains("on") }));
+  b("rtty-afc", () => set({ afc: !document.getElementById("rtty-afc").classList.contains("on") }));
+  b("rtty-sq",  () => set({ squelch: !document.getElementById("rtty-sq").classList.contains("on") }));
+  b("rtty-auto", () => set({ auto: !document.getElementById("rtty-auto").classList.contains("on") }));
+  b("rtty-clear", () => set({ clear: true }));
+  const c = (id, key) => { const e = document.getElementById(id);
+    if (e) e.addEventListener("change", () => set({ [key]: parseFloat(e.value) })); };
+  c("rtty-baud", "baud"); c("rtty-shift", "shift");
+
+  /* ⛔ KEYS THE RADIO: every one of these is a click or a key press. */
+  document.querySelectorAll("#rtty-tx-btns button[data-macro]").forEach((bt) =>
+    bt.addEventListener("click", async () => {
+      if (await rttySend({ macro: bt.dataset.macro })) rttyMacro = bt.dataset.macro;
+    }));
+  b("rtty-stop", async () => { await sendCmd({ action: "rtty_stop" }); rttyPoll(); });
+
+  const call = document.getElementById("rtty-call");
+  if (call) call.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); rttySetCall(call.value.trim().toUpperCase()); call.blur(); }
+  });
+  b("rtty-call-clear", () => rttySetCall(""));
+
+  /* Type: each new character is sent as typed (the Tab5's rule), batched
+     over 150 ms so a fast typist is not one request per key. Backspace only
+     edits the field. Enter ends the over once the text has gone. */
+  const ty = document.getElementById("rtty-type");
+  if (!ty) return;
+  /* ⛔ ONE REQUEST AT A TIME, IN ORDER. Each batch was its own fetch, and a
+     batch started while the previous one was still in flight: two POSTs on
+     two connections reached the Tab5 in either order. bench1 2026-11-15 sent
+     "TES TDE O1ZL" for "TEST DE OZ1L". Every send now waits for the reply to
+     the one before it (sendQ); text typed meanwhile collects in pend. */
+  let sentLen = 0, pend = "", timer = null, sendQ = Promise.resolve();
+  const flush = (end) => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    sendQ = sendQ.then(async () => {
+      const t = pend; pend = "";
+      if (t && await rttySend({ text: t, end: false }, false)) rttyMacro = null;
+      if (end) {
+        /* lastRtty may predate the over the text above just started, so
+           ask the device rather than trust it. */
+        const r = await sendCmd({ action: "rtty" });
+        if (r && r.tx && r.tx.keyed) await rttySend({ text: "", end: true });
+      }
+    });
+    return sendQ;
+  };
+  ty.addEventListener("input", () => {
+    const v = ty.value;
+    if (v.length > sentLen) { pend += v.slice(sentLen).toUpperCase(); if (!timer) timer = setTimeout(() => flush(false), 150); }
+    sentLen = v.length;
+    if (v.length > 160) { ty.value = ""; sentLen = 0; }
+  });
+  ty.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    pend += "\n";
+    ty.value = ""; sentLen = 0;
+    flush(true);
+  });
+})();
+
 (function wireScreenLinks() {
   /* ⛔ ONE LINK PER PAGE, NOT A CYCLE. The old single link rotated
      Panadapter -> FT8 -> WSPR and therefore could not reach FT4 or JS8 at
@@ -8658,9 +8995,16 @@ async function tick() {
       const isFt8  = (screen === "ft8");
       const isWspr = (screen === "wspr");
       const isCw   = (screen === "cw");
+      const isRtty = (screen === "rtty");
       {
         const cwTx = document.getElementById("cw-tx-wrap");
         if (cwTx) cwTx.style.display = isCw ? "" : "none";
+        const rw = document.getElementById("rtty-wrap");
+        if (rw) rw.style.display = isRtty ? "" : "none";
+        const rl = document.getElementById("rtty-line");
+        if (rl) rl.hidden = !isRtty;
+        if (isRtty) rttyPoll();
+        updateKeyerPill();   /* CW-only AND not on RTTY - follows the screen too */
       }
       /* The spectrum and waterfall belong to the panadapter and to nothing
          else: neither decode page produces them, so both hide for FT8 and for
@@ -8710,11 +9054,11 @@ async function tick() {
       {
         const TOP_PILL_HIDDEN = {
           band:     isFt8,
-          mode:     isFt8 || isWspr || isCw,
-          bw:       isFt8 || isWspr,
+          mode:     isFt8 || isWspr || isCw || isRtty,
+          bw:       isFt8 || isWspr || isRtty,
           zoom:     isFt8 || isWspr,
-          zerobeat: isFt8 || isWspr,
-          rit:      isFt8 || isWspr,
+          zerobeat: isFt8 || isWspr || isRtty,
+          rit:      isFt8 || isWspr || isRtty,
         };
         for (const id in TOP_PILL_HIDDEN) {
           const pill = document.getElementById("pill-" + id);
@@ -8829,6 +9173,7 @@ async function tick() {
          wording it differently is how an operator decides neither is right. */
       const want = screen === "wspr" ? "MODE: WSPR"
                  : screen === "cw"   ? "MODE: CW"
+                 : screen === "rtty" ? "MODE: RTTY"
                  : screen === "ft8"  ? (ft8Proto() === "JS8"
                                           ? js8SubmodeShort(lastJs8Submode)
                                           : "MODE: " + ft8Proto())
@@ -8886,7 +9231,10 @@ async function tick() {
     {
       const el = document.getElementById("cw-line");
       if (el) {
-        const cw = s.cw;
+        /* Not on the RTTY page: the radio may sit in CW there (the decoder
+           reads I/Q and does not care), and the QMX's CW decode would then
+           be drawn over the RTTY text. Seen in the R007 preview. */
+        const cw = (lastScreen === "rtty") ? null : s.cw;
         if (cw && typeof cw.line === "string") {
           const w = (cw.wpm > 0) ? String(Math.min(99, cw.wpm)).padStart(2, "0") : "??";
           document.getElementById("cw-head").textContent = "CW ~" + w + "wpm:  ";
@@ -9186,7 +9534,8 @@ async function tick() {
        without finding this second path made it worse rather than better: the
        number a person is watching disagreed with the marker beside it.
        lastFreqHz already equals s.freq_hz whenever no gesture is running. */
-    document.getElementById("vfo").textContent  = fmtHz(lastFreqHz);
+    rttyMarkOff = (typeof s.rtty_mark_off === "number") ? s.rtty_mark_off : null;
+    document.getElementById("vfo").textContent  = fmtHz(shownHz(lastFreqHz));
     document.getElementById("mode").textContent = s.mode || "--";
     document.getElementById("band").textContent = s.band || "--";
     /* The band the OUTPUT POWER ladder belongs to. Its levels are that band's
@@ -9884,6 +10233,10 @@ function tuneSnapHz() {
      the commit read this, so the preview cannot promise a frequency the click will
      not use. */
   if (ritArmed) return 10;
+  /* R025: the RTTY page too - a click there moves the DECODER, never the dial,
+     and the 500 Hz grid left it up to 250 Hz off the pair, outside
+     acquisition's +/-150 Hz. Same rule as ui.c's touch path. */
+  if (lastScreen === "rtty") return 10;
   const m = (lastMode || "").toUpperCase();
   /* ⛔ THE SETTING, NOT A CONSTANT. "Tune snap (SSB & digital)" moved the
      Tab5 and did nothing here: this returned a hardcoded 250 for SSB and
@@ -10000,6 +10353,9 @@ function drawSpots(ctx, W, H) {
        operation there; only FT8/FT4/SSB ACTIVITY spots are hidden (operator,
        2026-11-09: "no DiGi mode to be selected by choosing a FT spot"). */
     if (lastScreen === "cw" && sp.m !== "cw") continue;
+    /* R007, the same rule for the RTTY page (spots_lane.c): spots whose feed
+       said RTTY - FT8/FT4 are "digi" too and this page cannot read them. */
+    if (lastScreen === "rtty" && !sp.ry) continue;
     const opa = spotOpacity(sp.a || 0);
     if (opa <= 0) continue;
     cand.push({ sp, opa, x: freqToPixelX(sp.f, W) });
@@ -10284,6 +10640,28 @@ function overlayTuneCursor() {
   // Always clear the wf cursor canvas so old lines don't persist
   wfcurctx.clearRect(0, 0, wfPxW, wfPxH);
 
+  /* R007: the RTTY decoder's two tones, orange, as on the Tab5's RTTY page.
+     Drawn first so a spot preview or the tune cursor stays on top. */
+  if (lastScreen === "rtty" && lastRtty && lastFreqHz) {
+    const half = (lastRtty.shift || 170) / 2;
+    const c = lastFreqHz + (lastRtty.offset_hz || 0) + (lastRtty.afc ? (lastRtty.afc_hz || 0) : 0);
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    for (const f of [c - half, c + half]) {
+      const x = freqToPixelX(f, specPxW);
+      if (x < 0 || x > specPxW) continue;
+      for (const [ctx, k, h] of [[sctx, 1, specPxH], [wfcurctx, wfPxW / specPxW, wfPxH]]) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255,159,64,0.75)";
+        ctx.lineWidth = Math.max(1, Math.round(2 * dpr));
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x * k) + 0.5, 0);
+        ctx.lineTo(Math.round(x * k) + 0.5, h);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
   /* Over a label the click does NOT go to the pointer, so show where it does go
      instead of a tune cursor that would be lying about it. */
   if (spotHover) {
@@ -10328,6 +10706,15 @@ function handleTuneMove(clientX, rect) {
 
 function handleTuneCommit(clientX, rect) {
   const hz = pxToFreqHz(clientX, rect);
+  /* RTTY page: a click tunes the dial so the clicked signal sits at 1500 Hz
+     audio and puts the decoder on it - the Tab5's own tap function
+     (rtty_screen_view_tap_hz), so the two cannot drift apart. */
+  if (lastScreen === "rtty" && hz > 0) {
+    sendCmd({ action: "rtty", tune_hz: Math.round(hz) }).then(rttyRender);
+    tuneCursorX = -1;
+    tuneActive  = false;
+    return;
+  }
   /* Click-to-RIT. While armed a click moves the RECEIVE offset onto what was
      clicked and leaves the dial - and therefore transmit - alone. Stays armed, so
      the next caller is just another click; the pill is the way out. Mirrors the
@@ -10507,8 +10894,9 @@ function updateKeyerPill() {
   const pill = document.getElementById("pill-keyer");
   if (!pill) return;
   const m = (lastMode || "").toUpperCase();
-  pill.style.display = (m.indexOf("CW") >= 0) ? "" : "none";
-  if (m.indexOf("CW") < 0) return;
+  const cwHere = m.indexOf("CW") >= 0 && lastScreen !== "rtty";
+  pill.style.display = cwHere ? "" : "none";
+  if (!cwHere) return;
   /* -1 means the radio has never answered a KS query - usually no CAT link.
      "--" says that; rendering -1 as a speed would be a number that is not one. */
   document.getElementById("keyer").textContent =
@@ -10552,7 +10940,9 @@ function openKeyer() {
    follows the screen-change block above and this only fills it in. */
 function sendCwText(text) {
   if (!text) return;
-  sendCmd({ action: "cw_send", text: text });
+  /* Same queue as the type-ahead (cwLiveQ, below): two quick clicks, or a
+     macro then a typed word, reach the Tab5 in the order they were made. */
+  cwLiveQ = cwLiveQ.then(() => sendCmd({ action: "cw_send", text: text }));
 }
 
 /* Set (or with "" clear) the station the CW page is working. */
@@ -10765,8 +11155,16 @@ function cwLiveEcho(t) {
   const el = document.getElementById("cw-tx-sentline");
   if (el) el.textContent = cwLiveSent;
 }
-async function cwLiveSend(t) {
-  if (!t.trim()) return;
+/* ⛔ In order, one at a time: each word was its own unawaited fetch, so two
+   words typed quickly could reach the Tab5 swapped - the fault RTTY's Type
+   line showed on air 2026-11-15 ("TES TDE O1ZL"). cwLiveQ chains them. */
+let cwLiveQ = Promise.resolve();
+function cwLiveSend(t) {
+  if (!t.trim()) return cwLiveQ;
+  cwLiveQ = cwLiveQ.then(() => cwLiveSend1(t));
+  return cwLiveQ;
+}
+async function cwLiveSend1(t) {
   const r = await sendCmd({ action: "cw_send", text: t });
   if (r && r.ok === false) {
     const el = document.getElementById("cw-tx-sentline");
@@ -12258,6 +12656,14 @@ function bpSolveView(wantCenterHz) {
    pointer, and clamping to the full band let it drag past the strip's own
    edges (operator, 2026-11-09). One pair of functions, used everywhere. */
 function bpEffectiveSegs(bp) {
+  /* RTTY page (R007): DiGi only, as the Tab5's strip on that page - RTTY's
+     segment in every IARU plan. The drag below maps onto the same range,
+     which is the rule written above. Falls back to the whole band if a band
+     has no DiGi row. */
+  if (lastScreen === "rtty") {
+    const d = bp.segs.filter(s => s.l === "Digi");
+    return d.length ? d : bp.segs;
+  }
   return (lastScreen === "cw")
     ? bp.segs.filter(s => s.l === "CW" || s.l === "Digi")
     : bp.segs;
@@ -12488,7 +12894,7 @@ function drawBandplanOob(ctx, W, H, dpr) {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       bpOobOffPx = offCss * dpr;
       drawBandplan();
-      document.getElementById("vfo").textContent = fmtHz(targetHz);
+      document.getElementById("vfo").textContent = fmtHz(shownHz(targetHz));
       return;
     }
 
@@ -12513,7 +12919,7 @@ function drawBandplanOob(ctx, W, H, dpr) {
     /* Usually unchanged - a drag inside the radio's reach moves the window and
        leaves the dial alone, which is the point of the gesture. */
     targetHz = bpSolveView(targetCenter).dial;
-    document.getElementById("vfo").textContent = fmtHz(targetHz);
+    document.getElementById("vfo").textContent = fmtHz(shownHz(targetHz));
   });
 
   /* Put the window at centerHz. Goes out as "view_center", NOT "set_freq":
@@ -12731,6 +13137,10 @@ function specPassbandOpa() {
    be added twice and the second copy would have been the one that got missed.
    Behind the trace, which is why it is a separate call from the edges below. */
 function drawPassbandTint(sctx, W, H) {
+  /* RTTY page: no passband box and no dial line, ever - as on the Tab5
+     (ui.c, pb_hidden). Operator 2026-11-12, and again 2026-11-14 after I
+     put them back for TX: "It should never be shown here". */
+  if (lastScreen === "rtty") return;
   const pb = passbandBins();
   if (!pb) return;
   const x1 = Math.round(pb.loBin * W / SPEC_W);
@@ -12782,8 +13192,12 @@ function drawVfoMarker(sctx, W, H) {
     pbOff = (hi < 0 || lo >= W);
   }
   if (onScreen) {
-    sctx.fillStyle = "#ffb95a";
-    sctx.fillRect(vfoX - 1, 0, 2, H);
+    /* Not on the RTTY page - see drawPassbandTint. The off-view arrow below
+       stays, as on the Tab5. */
+    if (lastScreen !== "rtty") {
+      sctx.fillStyle = "#ffb95a";
+      sctx.fillRect(vfoX - 1, 0, 2, H);
+    }
     vfoArrowBox = null;
     return;
   }
@@ -12810,6 +13224,7 @@ function drawVfoMarker(sctx, W, H) {
                   left: left };
 }
 function drawPassbandEdges(sctx, W, H) {
+  if (lastScreen === "rtty") return;   /* see drawPassbandTint */
   const pb = passbandBins();
   if (!pb) return;
   const x1 = Math.round(pb.loBin * W / SPEC_W);
@@ -15320,7 +15735,11 @@ document.getElementById("wf-overlay").addEventListener("wheel",  handleWheel, { 
   }
   function commit() {
     const hz = parseInt(buf, 10);
-    if (hz > 0) {
+    if (hz > 0 && lastScreen === "rtty") {
+      /* RTTY page: the typed number is the MARK, as on the Tab5 keypad. */
+      sendCmd({ action: "rtty", mark_hz: hz });
+      document.getElementById("vfo").textContent = fmtHz(hz);
+    } else if (hz > 0) {
       sendCmd({ action: "set_freq", hz: hz });
       lastFreqHz = hz;
       document.getElementById("vfo").textContent = fmtHz(hz);

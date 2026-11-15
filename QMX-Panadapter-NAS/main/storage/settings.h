@@ -171,6 +171,21 @@ static inline uint8_t line_in_gain_db_normalize(uint8_t raw)
     return (uint8_t)((raw / LINE_IN_GAIN_DB_STEP) * LINE_IN_GAIN_DB_STEP);
 }
 
+/* RTTY receive settings (R019). One blob; valid = 0 means "never set" and
+ * rtty_rx.c keeps its own defaults (45.45 Bd, 170 Hz, AFC + squelch on), so
+ * those live in one place. The decoder's on/off is not here - the page
+ * decides that. */
+typedef struct {
+    int16_t  offset_hz;     /* tone centre, RF offset from the dial */
+    uint16_t shift_hz;
+    uint16_t baud_x100;     /* 4545 = 45.45 Bd */
+    uint8_t  reverse, afc, squelch;
+    uint8_t  valid;
+    uint8_t  auto_mode;     /* R028. ⚠ 10 -> 12 bytes: a blob saved before
+                             * R028 fails the size check once and the RTTY
+                             * settings come back as defaults (never released) */
+} settings_rtty_t;
+
 typedef struct {
     bool incl_en[2];
     char incl_text[2][FT8_FILTER_TEXT_LEN];
@@ -428,10 +443,9 @@ typedef struct {
      * has NO WAY TO ABORT a message once sent (tested on the bench: neither
      * RX; nor a mode bounce stops one) - that has not changed.
      *
-     * DEFAULT ON from v1.24.0 (operator, same release): the CW page ships as
-     * the release's own beta rather than hidden behind a config line nobody
-     * would find. "Beta" is carried everywhere the page is documented
-     * BECAUSE the abort gap is still open, not instead of saying so.
+     * DEFAULT ON from v1.24.0 (operator, same release). It shipped labelled
+     * beta for the abort gap until the operator dropped the label
+     * (2026-11-15); the docs still state the gap plainly.
      *
      * ⚠ Off still does not mean "costs nothing" - the page's .bss is linked
      * in either way, exactly as wspr_en's note says.
@@ -440,6 +454,7 @@ typedef struct {
      * /api/cmd {"action":"cw_enable","on":false}, or cw_page_enabled = no in
      * an imported config file. */
     bool     cw_page_en;
+    settings_rtty_t rtty;   /* R019 - see the type */
     // FT8 Fox/Hound (DXpedition) mode - the HOUND side only. Fox is impossible on
     // this radio: it needs up to five simultaneous signals and we emit one CAT
     // "TA" tone per symbol. 0 = off, 1 = guided, 2 = automatic. See ft8_hound.h.
@@ -1106,6 +1121,10 @@ void settings_get_cw_park(char *out, size_t out_sz);
 // those stacks is the overflow this project has already paid for twice.
 void settings_set_cw_page_en(bool v);
 bool settings_get_cw_page_en(void);
+/* R019. Narrow, for the same stack reason as cw_page_en: rtty_rx calls these
+ * from the LVGL task and the httpd worker. */
+void settings_set_rtty(const settings_rtty_t *r);
+void settings_get_rtty(settings_rtty_t *out);
 
 // CW phantom-practice toggle. Deliberately its OWN flag, not sim_mode_en:
 // enabling CW practice must not arm the FT8 phantoms when swiping to that
@@ -1626,6 +1645,11 @@ void settings_shift_upload_cursors(uint32_t to_base);
 // sets its cursors itself.
 void settings_set_rot_base(uint32_t base);
 
+// The size of a card archive the operator declined to adopt, so the offer is
+// not raised again for that same file. 0 = none declined.
+uint32_t settings_get_archive_declined(void);
+void settings_set_archive_declined(uint32_t bytes);
+
 // Set once a QSO log has existed on this unit. A missing log on a unit that
 // had one was lost (SPIFFS power-cut damage), not never created - the
 // trigger for restoring it from the card.
@@ -1759,6 +1783,13 @@ void settings_band_mem_set(uint32_t center_hz, uint32_t freq_hz, const char *mod
  *   _set: ignored for a range under 10 dB, as ui_set_db_range() does. */
 bool settings_band_db_get(uint32_t center_hz, int *db_min, int *db_max);
 void settings_band_db_set(uint32_t center_hz, int db_min, int db_max);
+/* RTTY page dial per band (operator, 2026-11-12: "whenever a specific rtty
+ * Freq has been chosen ... make that Freq persistent per band"). Keyed like
+ * band memory, own blob for the same reason as T195's. Separate from band
+ * memory so the panadapter's recall is untouched.
+ *   _get: false if the band was never stored.  _set: freq_hz 0 is ignored. */
+bool settings_band_rtty_get(uint32_t center_hz, uint32_t *freq_hz);
+void settings_band_rtty_set(uint32_t center_hz, uint32_t freq_hz);
 
 bool settings_get_cw_profile(int idx, char *name, size_t name_sz,
                              uint16_t *centre_hz, uint8_t *mask);

@@ -120,8 +120,24 @@ static uint32_t s_frames_this_period = 0;
 // every sample; in PSRAM that cross-core traffic contends with process_rx's
 // own PSRAM writes and halves the UAC drain rate. Internal RAM has no such
 // penalty.
-#define RXAUDIO_RING_BYTES (24 * 1024)
+/* 24 KB -> 96 KB, 2026-11-15. MEASURED on bench1 (RTTY page, WAE contest,
+ * 30 x 10 s windows, afe08a60): the ring refused 120-811 pairs/s in 29 of 30
+ * windows; intake (OUT) was short by about the same; the resampler walked to
+ * -8442 ppm making up for it. These were the audible gaps.
+ * The producer (audio.c process_rx) sends one USB drain per call: up to
+ * RX_BUF_BYTES/6 = 3200 pairs = 12.8 KB = 67 ms, all or nothing. In a 24 KB
+ * ring that leaves ~11.8 KB = 61 ms of slack, and rx_audio's time away from
+ * the ring was 66-90 ms in most windows (I2S write ~50-70 ms, RTTY decoder up
+ * to 70 ms on the same task). It was NOT "away > 128 ms" (my first guess):
+ * the chunk size, not the ring size, set the limit.
+ * 96 KB = 512 ms; slack after one chunk = 437 ms. PSRAM (see below), so the
+ * cost is 72 KB of ~14 MB free. A backlog after a stall adds latency until the
+ * resampler absorbs it; before, the same stall was a gap. */
+#define RXAUDIO_RING_BYTES (96 * 1024)
 static RingbufHandle_t s_rxaudio_ring    = NULL;
+static volatile uint32_t s_rxaudio_drop_pairs = 0;          /* per diag window */
+static volatile uint32_t s_rxaudio_offered    = 0;          /* monotonic, wraps */
+static volatile uint32_t s_rxaudio_free_min   = UINT32_MAX;  /* per diag window */
 static volatile bool   s_rxaudio_forward = false;
 static int64_t  s_period_start_us = 0;
 
@@ -1098,7 +1114,34 @@ void dsp_rxaudio_forward_enable(bool en)
 void dsp_rxaudio_forward(const int16_t *pairs, size_t n_pairs)
 {
     if (!s_rxaudio_forward || s_rxaudio_ring == NULL || pairs == NULL || n_pairs == 0) return;
-    xRingbufferSend(s_rxaudio_ring, pairs, n_pairs * 2 * sizeof(int16_t), 0);
+    /* 2026-11-15: a full ring dropped the chunk with no trace. bench1 showed
+     * rx_audio intake 1-2 % short on a busy RTTY scene while the QMX delivered
+     * 48k pairs/s, and rx_audio frames reached 153-191 ms against this ring's
+     * 128 ms. Counted so that question has a number. */
+    s_rxaudio_offered += (uint32_t)n_pairs;
+    size_t bytes = n_pairs * 2 * sizeof(int16_t);
+    size_t free_b = xRingbufferGetCurFreeSize(s_rxaudio_ring);
+    if (free_b < s_rxaudio_free_min) s_rxaudio_free_min = (uint32_t)free_b;
+    if (xRingbufferSend(s_rxaudio_ring, pairs, bytes, 0) != pdTRUE)
+        s_rxaudio_drop_pairs += (uint32_t)n_pairs;
+}
+
+uint32_t dsp_rxaudio_offered_pairs(void) { return s_rxaudio_offered; }
+
+uint32_t dsp_rxaudio_backlog_pairs(void)
+{
+    if (s_rxaudio_ring == NULL) return 0;
+    size_t free_b = xRingbufferGetCurFreeSize(s_rxaudio_ring);
+    return (free_b >= RXAUDIO_RING_BYTES) ? 0
+         : (uint32_t)((RXAUDIO_RING_BYTES - free_b) / (2 * sizeof(int16_t)));
+}
+
+void dsp_rxaudio_fwd_stats(uint32_t *drop_pairs, uint32_t *free_min_bytes)
+{
+    if (drop_pairs)     *drop_pairs = s_rxaudio_drop_pairs;
+    if (free_min_bytes) *free_min_bytes = s_rxaudio_free_min;
+    s_rxaudio_drop_pairs = 0;
+    s_rxaudio_free_min = UINT32_MAX;
 }
 
 // Consumer: fill up to n_pairs (loops over BYTEBUF wrap). Returns pairs read.

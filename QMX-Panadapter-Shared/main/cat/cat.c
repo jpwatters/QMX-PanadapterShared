@@ -4032,7 +4032,21 @@ uint32_t cat_quantise_dial_hz(uint32_t freq_hz)
     return ((freq_hz + 5) / 10) * 10;
 }
 
-esp_err_t cat_set_frequency(uint32_t freq_hz)
+/* R022: every FA write names its caller. A boot sent FA 14085000 with no
+ * other line saying why, and seven callers write the dial without logging
+ * (Tab5 band popup, strip, web set_freq/set_band/view_center ...). The log
+ * could not tell them apart, so each `Sent:` line now carries the return
+ * address of the public entry point. Decode with
+ *   riscv32-esp-elf-addr2line -pfiaC -e build/qmx_panadapter.elf <pc>
+ * noinline on both entry points, or the address is inside cat.c. */
+static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller);
+
+__attribute__((noinline)) esp_err_t cat_set_frequency(uint32_t freq_hz)
+{
+    return set_frequency_from(freq_hz, __builtin_return_address(0));
+}
+
+static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller)
 {
     if (!CAT_LINK_UP()) {
         return ESP_ERR_INVALID_STATE;  // QMX not connected
@@ -4138,7 +4152,7 @@ esp_err_t cat_set_frequency(uint32_t freq_hz)
         ESP_LOGW(TAG, "FA TX failed: 0x%x", err);
         return err;
     }
-    ESP_LOGI(TAG, "Sent: %s (target %lu Hz)", cmd, (unsigned long)freq_hz);
+    ESP_LOGI(TAG, "Sent: %s (target %lu Hz) from %p", cmd, (unsigned long)freq_hz, caller);
     // Expect the radio's next FA replies to show it moved (see the FA handler).
     if (freq_hz != s_last_freq_hz && s_last_freq_hz != 0) {
         s_fa_expect_from_hz = s_last_freq_hz;
@@ -4189,10 +4203,10 @@ bool cat_cancel_pending_freq_if(uint32_t freq_hz)
     return true;
 }
 
-esp_err_t cat_set_frequency_forced(uint32_t freq_hz)
+__attribute__((noinline)) esp_err_t cat_set_frequency_forced(uint32_t freq_hz)
 {
     s_last_tx_us = 0;  // bypass the 200 ms rate-limiter for deliberate user writes
-    return cat_set_frequency(freq_hz);
+    return set_frequency_from(freq_hz, __builtin_return_address(0));
 }
 
 uint32_t cat_get_frequency(void)

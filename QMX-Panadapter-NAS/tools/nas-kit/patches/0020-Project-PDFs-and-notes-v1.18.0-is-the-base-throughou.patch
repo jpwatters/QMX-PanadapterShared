@@ -1,7 +1,7 @@
-From 9316655c20b67fd2b78cf39486694354c7023e11 Mon Sep 17 00:00:00 2001
+From 4f8248025bbe350889be2f6bba521d7f61a2a413 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 22:12:27 -0500
-Subject: [PATCH 20/43] Project PDFs and notes: v1.18.0 is the base throughout
+Subject: [PATCH 20/45] Project PDFs and notes: v1.18.0 is the base throughout
 
 The three project PDFs (M5StackTab5QMX+SharedOverNetwork.pdf,
 QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf) are rebuilt
@@ -31648,7 +31648,7 @@ z^!1gfTsGJ5Pmg?ezY^W+_4Um^Pv`4?C3^e+TmLyr%w)cvujS+Q=fn{bj-mSH^Oaiq
 G*Z%{U8fydq
 
 diff --git a/README.md b/README.md
-index ac14bda4..bba7d254 100644
+index 04ff4d14..7689bb72 100644
 --- a/README.md
 +++ b/README.md
 @@ -38,7 +38,7 @@ Keeping up with upstream
@@ -31661,7 +31661,7 @@ index ac14bda4..bba7d254 100644
  
  
 diff --git a/main/idf_component.yml b/main/idf_component.yml
-index bb0ff727..d8055869 100644
+index 8de7b185..051460a4 100644
 --- a/main/idf_component.yml
 +++ b/main/idf_component.yml
 @@ -1,6 +1,6 @@

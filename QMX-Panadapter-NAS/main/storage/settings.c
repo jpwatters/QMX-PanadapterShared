@@ -80,6 +80,7 @@ static const char *TAG = "settings";
 #define KEY_CW_CONTEST "cw_contest"
 #define KEY_CW_SIM     "cw_sim"
 #define KEY_CW_PAGE_EN "cw_page_en"
+#define KEY_RTTY       "rtty_cfg"
 #define KEY_HOUND_MODE "hound_md"
 #define KEY_ONBOARDED  "onboarded"
 #define KEY_FT8_FILT   "ft8_filt"
@@ -281,7 +282,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      6                        /* 192 bits; highest used 160, 31 spare (network radio raised it from 5: upstream's v1.26.1 took bit 159, the last of 160) */
+#define DIRTY_WORDS      6                        /* 192 bits; highest used 161, 30 spare */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -519,8 +520,9 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_MSG_SET      156
 #define DIRTY_CW_RST_CUT      157  /* active macro set toggle: 0 = General, 1 = Contest */
 #define DIRTY_CW_SERIAL        158  /* {SERIAL} macro - next contest serial to send */
-#define DIRTY_CW_CONTEST       159  /* contest name/ID - last free bit, see DIRTY_WORDS */
-#define DIRTY_RELAY           160  /* network radio: relay_host + relay_port (142-159 are upstream's; first bit of word 6) */
+#define DIRTY_CW_CONTEST       159  /* contest name/ID */
+#define DIRTY_RTTY             160  /* R019 RTTY receive settings blob - first bit of word 6 */
+#define DIRTY_RELAY           161  /* network radio: relay_host + relay_port (142-160 are upstream's) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -557,6 +559,7 @@ static const uint8_t s_config_export_bits[] = {
     DIRTY_CLUSTER_EN, DIRTY_SOTA_EN, DIRTY_HOUND_MODE,
     DIRTY_WSPR_EN,   /* joins because config_io_export() now prints wspr_enabled */
     DIRTY_CW_PAGE_EN,   /* same - config_io_export() prints cw_page_enabled */
+    DIRTY_RTTY,         /* config_io_export() prints the rtty_* lines */
     DIRTY_STILL_VIEW,   /* #298 - config_io_export() carries still_spectrum */
     /* RX audio: a level the operator set by ear belongs in a config backup for
      * the same reason the power calibration does - nobody can recreate it from
@@ -750,6 +753,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_CW_CONTEST)) nvs_set_str(s_nvs, KEY_CW_CONTEST, snap->cw_contest_name);
         if (dirty_test(&dirty_local, DIRTY_CW_SIM))  nvs_set_u8(s_nvs, KEY_CW_SIM, snap->cw_sim_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_PAGE_EN)) nvs_set_u8(s_nvs, KEY_CW_PAGE_EN, snap->cw_page_en ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_RTTY))       nvs_set_blob(s_nvs, KEY_RTTY, &snap->rtty, sizeof(snap->rtty));
         if (dirty_test(&dirty_local, DIRTY_HOUND_MODE))   nvs_set_u8(s_nvs, KEY_HOUND_MODE, snap->hound_mode);
         if (dirty_test(&dirty_local, DIRTY_CQ_LISTEN))    nvs_set_u8(s_nvs, KEY_CQ_LISTEN, snap->cq_listen_every);
         if (dirty_test(&dirty_local, DIRTY_ONBOARDED))  nvs_set_u8(s_nvs, KEY_ONBOARDED, snap->onboarded ? 1 : 0);
@@ -1109,10 +1113,10 @@ static void load_from_nvs(qmx_settings_t *out)
     out->cw_serial_next = 1;
     out->cw_contest_name[0] = '\0';
     out->cw_sim_en = false;
-    /* ON from v1.24.0 (operator): ships as the release's beta, not hidden
-     * behind a config line nobody would find. It still has no abort for a
-     * message in flight - see cw_screen_view.c's header - and "beta" is
-     * carried everywhere the page is documented for exactly that reason. */
+    /* ON from v1.24.0 (operator). It still has no abort for a message in
+     * flight - see cw_screen_view.c's header. Shipped as a beta until the
+     * operator dropped the label (2026-11-15); the docs state the gap
+     * plainly instead. */
     out->cw_page_en = true;
     out->hound_mode   = 0;   // off: Hound changes TX behaviour, so it is opt-in
     out->cq_listen_every = 0;
@@ -1340,6 +1344,11 @@ static void load_from_nvs(qmx_settings_t *out)
     nvs_get_str(s_nvs, KEY_CW_CONTEST, out->cw_contest_name, &sz);
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_SIM, &v8) == ESP_OK) out->cw_sim_en = v8 != 0; }
     { uint8_t v8 = 0; if (nvs_get_u8(s_nvs, KEY_CW_PAGE_EN, &v8) == ESP_OK) out->cw_page_en = v8 != 0; }
+    /* R019. Exact size or nothing - the pwr_cal rule below: a blob of another
+     * shape would land its bytes on the wrong fields. valid stays 0 then and
+     * rtty_rx keeps its defaults. */
+    { settings_rtty_t r; size_t rsz = sizeof(r);
+      if (nvs_get_blob(s_nvs, KEY_RTTY, &r, &rsz) == ESP_OK && rsz == sizeof(r)) out->rtty = r; }
     nvs_get_u8(s_nvs, KEY_HOUND_MODE, &out->hound_mode);
     nvs_get_u8(s_nvs, KEY_CQ_LISTEN, &out->cq_listen_every);
     nvs_get_u8(s_nvs, KEY_SWR_LIMIT, &out->swr_limit_x10);
@@ -2201,6 +2210,26 @@ void settings_set_cw_page_en(bool v)
  * run on stacks that a 3.9 kB qmx_settings_t local would overflow. WSPR's
  * equivalent gate does use settings_load_all(), which is a hazard inherited
  * rather than copied - do not follow it here. */
+void settings_set_rtty(const settings_rtty_t *r)
+{
+    if (!s_ready || !r) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool same = memcmp(&s_pending.rtty, r, sizeof(*r)) == 0;
+    if (!same) s_pending.rtty = *r;
+    xSemaphoreGive(s_mutex);
+    if (!same) mark_dirty(DIRTY_RTTY);
+}
+
+void settings_get_rtty(settings_rtty_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    *out = s_pending.rtty;
+    xSemaphoreGive(s_mutex);
+}
+
 bool settings_get_cw_page_en(void)
 {
     if (!s_ready) return false;
@@ -4552,6 +4581,30 @@ void settings_set_rot_base(uint32_t base)
     if (err != ESP_OK) ESP_LOGW(TAG, "nvs_commit (qso_rot_base) failed: 0x%x", err);
 }
 
+#define KEY_ARC_DECL  "qso_arc_decl"
+
+/* ⛔ A DECLINE MUST STICK, or the question is worse than no question.
+ *
+ * The "use the card's archive?" offer is raised at every card mount, so an
+ * operator who says "Leave it" would be asked again on the next boot, and the
+ * one after. Keyed on the archive's SIZE: the same file declined stays
+ * declined, while a file the operator then CHANGES on the PC is a new offer,
+ * which is the behaviour they would expect. 0 = nothing declined. */
+uint32_t settings_get_archive_declined(void)
+{
+    uint32_t v = 0;
+    if (s_ready) nvs_get_u32(s_nvs, KEY_ARC_DECL, &v);
+    return v;
+}
+
+void settings_set_archive_declined(uint32_t bytes)
+{
+    if (!s_ready) return;
+    nvs_set_u32(s_nvs, KEY_ARC_DECL, bytes);
+    esp_err_t err = nvs_commit(s_nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "nvs_commit (qso_arc_decl) failed: 0x%x", err);
+}
+
 bool settings_qso_log_seen(void)
 {
     uint8_t v = 0;
@@ -4736,6 +4789,63 @@ void settings_band_db_set(uint32_t center_hz, int db_min, int db_max)
     if (err != ESP_OK) ESP_LOGW(TAG, "nvs_commit (band dB range) failed: 0x%x", err);
     else ESP_LOGI(TAG, "band dB range: %lu Hz band -> %d..%d dBm",
                   (unsigned long)center_hz, db_min, db_max);
+}
+
+/* ---- RTTY page dial per band - see settings.h --------------------------- */
+#define KEY_BAND_RTTY "bandrtty"
+typedef struct { uint32_t center_hz, freq_hz; } band_rtty_t;
+static band_rtty_t s_band_rtty[BAND_MEM_N];
+static bool        s_band_rtty_loaded = false;
+
+static void band_rtty_load_locked(void)
+{
+    if (s_band_rtty_loaded) return;
+    size_t sz = sizeof(s_band_rtty);
+    if (nvs_get_blob(s_nvs, KEY_BAND_RTTY, s_band_rtty, &sz) != ESP_OK || sz != sizeof(s_band_rtty))
+        memset(s_band_rtty, 0, sizeof(s_band_rtty));
+    s_band_rtty_loaded = true;
+}
+
+bool settings_band_rtty_get(uint32_t center_hz, uint32_t *freq_hz)
+{
+    if (freq_hz) *freq_hz = 0;
+    if (!s_ready || !center_hz) return false;
+    bool found = false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    band_rtty_load_locked();
+    for (int i = 0; i < BAND_MEM_N; i++) {
+        if (s_band_rtty[i].center_hz != center_hz || !s_band_rtty[i].freq_hz) continue;
+        if (freq_hz) *freq_hz = s_band_rtty[i].freq_hz;
+        found = true;
+        break;
+    }
+    xSemaphoreGive(s_mutex);
+    return found;
+}
+
+void settings_band_rtty_set(uint32_t center_hz, uint32_t freq_hz)
+{
+    if (!s_ready || !center_hz || !freq_hz) return;
+    band_rtty_t copy[BAND_MEM_N];
+    bool write = false;
+    int slot = -1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    band_rtty_load_locked();
+    for (int i = 0; i < BAND_MEM_N; i++) if (s_band_rtty[i].center_hz == center_hz) { slot = i; break; }
+    if (slot < 0) for (int i = 0; i < BAND_MEM_N; i++) if (s_band_rtty[i].center_hz == 0) { slot = i; break; }
+    if (slot >= 0 && (s_band_rtty[slot].center_hz != center_hz || s_band_rtty[slot].freq_hz != freq_hz)) {
+        s_band_rtty[slot].center_hz = center_hz;
+        s_band_rtty[slot].freq_hz   = freq_hz;
+        memcpy(copy, s_band_rtty, sizeof(copy));
+        write = true;
+    }
+    xSemaphoreGive(s_mutex);
+    if (!write) return;                       /* unchanged, or all 16 slots taken */
+    nvs_set_blob(s_nvs, KEY_BAND_RTTY, copy, sizeof(copy));
+    esp_err_t err = nvs_commit(s_nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "nvs_commit (RTTY band dial) failed: 0x%x", err);
+    else ESP_LOGI(TAG, "RTTY band dial: %lu Hz band -> %lu Hz",
+                  (unsigned long)center_hz, (unsigned long)freq_hz);
 }
 
 bool settings_get_cw_profile(int idx, char *name, size_t name_sz,

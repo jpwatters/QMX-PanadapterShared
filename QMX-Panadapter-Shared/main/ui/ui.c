@@ -56,6 +56,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "ft8_cq_modal.h"       // Ctrl/Alt shortcut targets (#233)
 #include "ft8_filter_modal.h"
 #include "ft8_time_modal.h"
+#include "archive_adopt_modal.h"
 #include "date_confirm_modal.h"
 #include "ft8_tone_modal.h"
 #include "ft8_pileup_modal.h"
@@ -85,6 +86,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "js8_alt.h"       /* T132 alternate-submode decode (RX only) */
 #include "ft8_screen_view.h"
 #include "cw_screen_view.h"
+#include "rtty_screen_view.h"
 #include "wspr_screen_view.h"
 #include "wspr_rx.h"
 #include "net/reader_net.h"
@@ -232,6 +234,7 @@ static lv_obj_t *s_zoom_popup  = NULL;  // zoom preset dropdown panel
  * other four, and the CW page does the reverse to MODE; see
  * top_bar_apply_mode(). */
 #define TOPBAR_ZONE_MODE   1
+#define TOPBAR_ZONE_BW     2
 #define TOPBAR_ZONE_FREQ   3
 static lv_obj_t *s_topbar_hit_zones[N_TOPBAR_HIT_ZONES] = {0};
 /* ⛔ THE DEEP DEPTH IS COMPUTED ONCE AND MUST BE REMEMBERED, NOT RE-STATED.
@@ -404,6 +407,96 @@ static bool cw_page_range_hz(uint32_t hz, uint32_t *lo, uint32_t *hi)
     return true;
 }
 
+/* RTTY page: the band's DiGi segment - the FIRST BP_DIGI one, because that
+ * is the one update_bandplan_strip() draws and the strip drag maps onto on
+ * this page. A band change has to land on the strip it is shown with. */
+static bool rtty_digi_range_hz(uint32_t hz, uint32_t *lo, uint32_t *hi)
+{
+    uint8_t bp_region; char bp_grid[8];
+    settings_get_bandplan(&bp_region, bp_grid);   /* NOT settings_load_all - see settings.h */
+    const bp_seg_t *segs = NULL;
+    int n = bandplan_get_segments(hz,
+                bandplan_effective_region((bandplan_region_t)bp_region,
+                                          bp_grid), &segs);
+    for (int i = 0; segs && i < n; i++)
+        if (segs[i].type == BP_DIGI) { *lo = segs[i].lo_hz; *hi = segs[i].hi_hz; return true; }
+    return false;
+}
+
+/* The RTTY page's band-plan TRACK: the DiGi segment plus half its width on
+ * each side, grown to include the visible window, clipped to the band.
+ * ⛔ It was the DiGi segment alone (R017), and our table's DiGi is coarse -
+ * Region 1 20 m is 14.070-14.100 and everything above is "Phone", while the
+ * real plan has narrow-band/digimodes up to 14.112. WAE RTTY at 14.103-14.110
+ * put the visible-span box off the right end of the track ("the band plan
+ * slider that is gone or all the way out to the right", operator 2026-11-14),
+ * and the drag could not reach the stations at all. The margin is where the
+ * stations are ("expand and add some margin where the stations are"); the
+ * view term means the box can never fall off the track. Strip and drag both
+ * use this, so finger and box agree. */
+static bool rtty_strip_range(const bp_seg_t *segs, int n, int64_t vis_lo, int64_t vis_hi,
+                             uint32_t *lo, uint32_t *hi)
+{
+    for (int i = 0; segs && i < n; i++) {
+        if (segs[i].type != BP_DIGI) continue;
+        int64_t m = (int64_t)(segs[i].hi_hz - segs[i].lo_hz) / 2;
+        int64_t l = (int64_t)segs[i].lo_hz - m, h = (int64_t)segs[i].hi_hz + m;
+        if (vis_lo < l) l = vis_lo;
+        if (vis_hi > h) h = vis_hi;
+        if (l < (int64_t)segs[0].lo_hz)     l = segs[0].lo_hz;
+        if (h > (int64_t)segs[n - 1].hi_hz) h = segs[n - 1].hi_hz;
+        *lo = (uint32_t)l; *hi = (uint32_t)h;
+        return h > l;
+    }
+    return false;
+}
+
+/* The radio's band-list centre for any frequency in that band (nearest centre
+ * within 1.5 MHz, ui_update_frequency()'s rule), 0 if none. The RTTY band
+ * dial is keyed by it. ⚠ The recall must map too: the first bench test sent
+ * set_band with 14175000, the key was 14074000, and an exact match missed. */
+static uint32_t band_list_centre_hz(uint32_t hz)
+{
+    int band_count = 0, best = -1;
+    const cat_band_entry_t *bands = cat_get_band_list(&band_count);
+    uint32_t bd = 1500000u + 1u;
+    for (int i = 0; i < band_count; i++) {
+        uint32_t d = hz > bands[i].center_hz ? hz - bands[i].center_hz : bands[i].center_hz - hz;
+        if (d <= 1500000u && d < bd) { bd = d; best = i; }
+    }
+    return best >= 0 ? bands[best].center_hz : 0;
+}
+
+/* Operator, 2026-11-12: "I want those band changes i make to let the Freq
+ * land in the middle of those allocated rtty ranges". The dial goes to the
+ * middle of the DiGi segment, on a whole kHz, in place of the per-band
+ * recall - the same choice the CW page made for its own segment (band_preset_cb).
+ * A band with no DiGi segment keeps the recall. */
+uint32_t ui_band_change_target_hz(uint32_t center_hz, uint32_t recalled_hz)
+{
+    if (ui_mode_get() != UI_MODE_RTTY) return recalled_hz;
+    /* First the dial he last used on this band on the RTTY page (operator,
+     * 2026-11-12: "if i go away it will remember when i come back"), if it is
+     * still inside the band. Stored by rtty_band_dial_store(). */
+    uint32_t mem = 0, lo, hi;
+    if (settings_band_rtty_get(band_list_centre_hz(center_hz), &mem) &&
+        legal_band_edges(center_hz, &lo, &hi) && mem >= lo && mem <= hi)
+        return mem;
+    if (rtty_digi_range_hz(center_hz, &lo, &hi))
+        return ((lo + (hi - lo) / 2) / 1000u) * 1000u;
+    return recalled_hz;
+}
+
+/* Store the RTTY page's dial for the band it is on. Called when the RTTY page
+ * leaves a band and when the page itself is left - the two ways "go away"
+ * happens. The band is found by the same nearest-centre rule as
+ * ui_update_frequency(), so the key is the band list's own centre. */
+static void rtty_band_dial_store(uint32_t freq_hz)
+{
+    uint32_t c = band_list_centre_hz(freq_hz);
+    if (freq_hz && c) settings_band_rtty_set(c, freq_hz);
+}
+
 static bool effective_drag_edges(uint32_t center_hz, uint32_t *lo, uint32_t *hi)
 {
     if (!legal_band_edges(center_hz, lo, hi)) return false;
@@ -453,6 +546,7 @@ static void band_preset_cb(lv_event_t *e)
         uint32_t c = cw_segment_center_hz(center_hz);
         if (c) target = c;
     }
+    target = ui_band_change_target_hz(center_hz, target);   /* RTTY: mid DiGi */
     // Changing band with auto-answer running would transmit into an antenna
     // that is almost certainly not tuned for the new band - few operators have
     // an auto-ATU, and the robot arms within a cycle or two. Roy KI0ER: "that's
@@ -756,8 +850,15 @@ static uint32_t freq_buf_to_hz(const char *buf)
         p++;
     }
     if (gi == 0) {
-        // No "." entered at all: treat the whole number as Hz directly.
-        return groups[0];
+        /* No separator at all: the whole number is Hz. ⛔ NOT groups[0] - the
+         * 3-digit cap above stops it at 3 digits, so "14080000" was read as
+         * 140 Hz (bench2 2026-11-14, RTTY keypad; the same on every page).
+         * Read every digit here, to 9 (the 99 MHz the keypad can mean). */
+        uint32_t hz = 0;
+        int nd = 0;
+        for (const char *q = buf; *q; q++)
+            if (*q >= '0' && *q <= '9' && nd < 9) { hz = hz * 10 + (uint32_t)(*q - '0'); nd++; }
+        return hz;
     }
     for (int g = 1; g < 3; g++) {
         for (int d = gdigits[g]; d < 3; d++) groups[g] *= 10;
@@ -802,7 +903,14 @@ static void freq_apply_key(char key, lv_obj_t *target_btn)
                 }
                 return;
             }
-            if (s_freq_buf[0]) {
+            if (s_freq_buf[0] && ui_mode_get() == UI_MODE_RTTY) {
+                /* RTTY page: what is typed is the MARK frequency, the same
+                 * number Freq shows - see rtty_screen_view_mark_offset_hz(). */
+                uint32_t mark_hz = freq_buf_to_hz(s_freq_buf);
+                ESP_LOGI("ui", "Freq keypad (RTTY): '%s' -> mark %lu Hz",
+                         s_freq_buf, (unsigned long)mark_hz);
+                if (mark_hz) rtty_screen_view_tune_mark_hz(mark_hz);
+            } else if (s_freq_buf[0]) {
                 uint32_t target_hz = freq_buf_to_hz(s_freq_buf);
                 // Clamped on the CW page - typing a phone-band frequency
                 // there should still land in the CW segment.
@@ -2675,7 +2783,7 @@ void ui_screen_view_hz(int64_t *lo_out, int32_t *span_out)
  * covers them anyway. */
 int ui_spec_x0(void)
 {
-    return (ui_mode_get() == UI_MODE_CW) ? CW_PANE_W : 0;
+    return ui_mode_has_left_pane(ui_mode_get()) ? CW_PANE_W : 0;
 }
 
 int ui_spec_w(void)
@@ -3006,6 +3114,17 @@ static lv_obj_t *s_freq_label = NULL;
 // early-out on the normal path, and is what makes a dropped label write
 // recoverable rather than permanent (2026-08-20).
 static uint32_t s_freq_shown_hz = 0;
+
+/* What "Freq:" shows for a given dial. On the RTTY page it is the MARK
+ * frequency (dial + rtty_screen_view_mark_offset_hz()), rounded to 10 Hz so
+ * the AFC does not make the last digit flicker. Every writer of s_freq_label
+ * goes through this, or one path would quietly put the dial back. */
+static uint32_t freq_shown_hz(uint32_t dial_hz)
+{
+    if (dial_hz == 0 || ui_mode_get() != UI_MODE_RTTY) return dial_hz;
+    int64_t m = (int64_t)dial_hz + rtty_screen_view_mark_offset_hz();
+    return m > 0 ? (uint32_t)((m + 5) / 10 * 10) : dial_hz;
+}
 static lv_obj_t *s_smeter_bar = NULL;
 static lv_obj_t *s_band_label = NULL;   // Phase 5.10D: dedicated band slot
 static lv_obj_t *s_mode_label = NULL;
@@ -5800,7 +5919,9 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
              * request, so the log denied a switch that had just happened. */
             ESP_LOGI(TAG, "web requested view: %s",
                      want == UI_MODE_FT8  ? "FT8" :
-                     want == UI_MODE_WSPR ? "WSPR" : "Panadapter");
+                     want == UI_MODE_WSPR ? "WSPR" :
+                     want == UI_MODE_CW   ? "CW" :
+                     want == UI_MODE_RTTY ? "RTTY" : "Panadapter");
             // No animation: nobody is looking at the Tab5 when the request came
             // from a browser in another room, and the slide costs frames.
             ui_set_base_mode(want, false);
@@ -5820,6 +5941,12 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
     if (t && (date_confirm_modal_is_open() ||
               (!s_drawer_open && !ui_any_overlay_active() && !any_modal_open())))
         date_confirm_modal_tick();
+    // "Use the contacts on the card?" - same gate as the date question: a
+    // clear screen only, and never on a direct (t == NULL) call.
+    if (t && (archive_adopt_modal_is_open() ||
+              (!s_drawer_open && !ui_any_overlay_active() && !any_modal_open() &&
+               !date_confirm_modal_is_open())))
+        archive_adopt_modal_tick();
     if (!s_qmx_wait_overlay) return;
     bool hidden = lv_obj_has_flag(s_qmx_wait_overlay, LV_OBJ_FLAG_HIDDEN);
     // Never show the "turn on your QMX" breathing overlay over the docs Reader —
@@ -5908,8 +6035,13 @@ static void qmx_wait_poll_cb(lv_timer_t *t)
         static int s_cur_x = 0, s_cur_ly = 0, s_cur_hy = 90;
         static bool s_cur_wspr = false;
         const ui_mode_t m = ui_mode_get();
+        /* RTTY sits exactly where CW does (operator, 2026-11-12: "use MODE:
+         * CW as a template for the breathing text - its exactly the same
+         * place"): the same 320 px pane, so the same +150 px. A first cut
+         * centred it in the strip of waterfall above the 8-row text box; he
+         * corrected it before it was flashed. */
         const bool wspr = (m == UI_MODE_WSPR);
-        int want_x = (m == UI_MODE_FT8 || m == UI_MODE_CW) ? 150 : 0, want_ly = 0, want_hy = 90;
+        int want_x = (m == UI_MODE_FT8 || ui_mode_has_left_pane(m)) ? 150 : 0, want_ly = 0, want_hy = 90;
         if (wspr) {
             int cx, cy, w;
             wspr_screen_view_wf_geometry(&cx, &cy, &w);
@@ -6917,6 +7049,32 @@ static void update_bandplan_strip(uint32_t freq_hz)
                 cw_digi[cd++] = segs[i];
         if (cd > 0) { segs = cw_digi; n = cd; }
     }
+    /* RTTY page (operator, 2026-11-12: "re-arrange the band plan to match
+     * what is needed for the RTTY caps on different bands"). RTTY lives in the
+     * DiGi segment of every IARU region's plan, and that segment is what this
+     * table carries - there is no RTTY-only row to show. Strip only: tuning
+     * is NOT clamped to it, because RTTY receive is unrestricted and contest
+     * RTTY spills outside the segment. */
+    /* Since 2026-11-14: the track is rtty_strip_range() - DiGi plus margin
+     * and the view - with each neighbour shown, clipped, in its own colour. */
+    bp_seg_t rtty_segs[BANDPLAN_MAX_SEG];
+    if (ui_mode_get() == UI_MODE_RTTY) {
+        int32_t span_hz = (int32_t)(48000.0f / s_zoom_factor);
+        int64_t c = (int64_t)freq_hz + in.pan_hz;
+        uint32_t tl, th;
+        if (rtty_strip_range(segs, n, c - span_hz / 2, c + span_hz / 2, &tl, &th)) {
+            int k = 0;
+            for (int i = 0; i < n && k < BANDPLAN_MAX_SEG; i++) {
+                uint32_t a = segs[i].lo_hz > tl ? segs[i].lo_hz : tl;
+                uint32_t b = segs[i].hi_hz < th ? segs[i].hi_hz : th;
+                if (b <= a) continue;
+                rtty_segs[k] = segs[i];
+                rtty_segs[k].lo_hz = a; rtty_segs[k].hi_hz = b;
+                k++;
+            }
+            if (k > 0) { segs = rtty_segs; n = k; }
+        }
+    }
 
     uint32_t band_lo = segs[0].lo_hz;
     uint32_t band_hi = segs[n - 1].hi_hz;
@@ -6926,7 +7084,7 @@ static void update_bandplan_strip(uint32_t freq_hz)
     // 320 px left pane - full-width ran under the panel and covered its
     // status text (operator, 2026-08-01). Everywhere else: full width.
     // (LVGL no-ops unchanged coords, so re-asserting per tick is cheap.)
-    const int strip_x = (ui_mode_get() == UI_MODE_CW) ? 320 : 0;
+    const int strip_x = ui_mode_has_left_pane(ui_mode_get()) ? 320 : 0;
     const int W = DISPLAY_H_RES - strip_x;
     /* ⛔ DISPLAY_V_RES, not a literal 720. This said 720 - the Tab5's height -
      * and on the Waveshare's 600 px panel that is y=672, i.e. the whole strip
@@ -7508,9 +7666,21 @@ static void update_freq_axis_labels(uint32_t center_hz)
          * operator's answer was to narrow the drawing instead. */
         const int X0 = ui_spec_x0();
         const int VW = DISPLAY_H_RES - X0;
-        int x = X0 + (int)(((hz - lo) * VW) / span_hz) - 44;
-        if (x < X0 + 2) x = X0 + 2;
-        if (x > DISPLAY_H_RES - 92) x = DISPLAY_H_RES - 92;
+        /* ⛔ CENTRED ON THE TICK, BY THE TEXT'S MEASURED WIDTH. This used a
+         * fixed -44 px, right only for one text length: "14.105" is ~55 px
+         * and "14.106.500" ~95 px, so labels sat left of their ticks at some
+         * zooms (operator 2026-11-14: "scale label shall be centred under tick
+         * mark on every zoom level"). A label that cannot be centred without
+         * crossing the view's edge is HIDDEN, not pushed sideways - pushed,
+         * it names a tick it is not under. The tick mark itself stays. */
+        const lv_font_t *f = lv_obj_get_style_text_font(s_tick_labels[i], LV_PART_MAIN);
+        int tw = (int)lv_text_get_width(buf, (uint32_t)strlen(buf), f, 0);
+        int tx = X0 + (int)(((hz - lo) * VW) / span_hz);
+        int x = tx - tw / 2;
+        if (x < X0 + 2 || x + tw > DISPLAY_H_RES - 2) {
+            lv_obj_add_flag(s_tick_labels[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
         lv_obj_align(s_tick_labels[i], LV_ALIGN_BOTTOM_LEFT, x, -3);
     }
 }
@@ -8733,7 +8903,7 @@ static bool mouse_pan_tick(void)
          * window to move - with the still view off the spectrum follows the
          * dial and a pan has no meaning. Same three conditions the API's
          * set_pan refuses on. */
-        if (ui_mode_get() != UI_MODE_PANADAPTER && ui_mode_get() != UI_MODE_CW) return false;
+        if (ui_mode_get() != UI_MODE_PANADAPTER && !ui_mode_has_left_pane(ui_mode_get())) return false;
         if (!mouse_over_spectrum(lx, ly))        return false;
         if (!ui_pan_is_available())              return false;
         s_mouse_pan_active   = true;
@@ -9017,6 +9187,7 @@ void ui_init(lv_display_t *disp)
 
     ft8_screen_view_init(scr);
     cw_screen_view_init(scr);   // CW page overlays (hidden until UI_MODE_CW)
+    rtty_screen_view_init(scr); // RTTY page overlays (hidden until UI_MODE_RTTY) - R006
     wspr_screen_view_init(scr);   // WSPR page overlay (hidden until UI_MODE_WSPR)
 
     // Docs Reader page (third page of the left-swipe cycle). Built here, BEFORE
@@ -9444,7 +9615,7 @@ static void stroll_cancel(void)
         update_bandplan_strip(s_last_qmx_freq_hz);
         if (s_freq_label && !sv_effective()) {
             char fs[16], fb[32];
-            format_freq_hz(s_last_qmx_freq_hz, g_freq_style, fs, sizeof(fs));
+            format_freq_hz(freq_shown_hz(s_last_qmx_freq_hz), g_freq_style, fs, sizeof(fs));
             snprintf(fb, sizeof(fb), "Freq: %s Hz", fs);
             lv_label_set_text(s_freq_label, fb);
         }
@@ -9640,7 +9811,7 @@ static void pinch_poll_cb(lv_timer_t *t)
         static uint8_t s_prev_npts = 0;
         if (npts > 0 && s_prev_npts == 0) {
             int first_x = (int)s_tp->data.coords[0].y;   // landscape x = panel y
-            s_touch_on_cw_pane = (ui_mode_get() == UI_MODE_CW) && (first_x < CW_PANE_W);
+            s_touch_on_cw_pane = ui_mode_has_left_pane(ui_mode_get()) && (first_x < CW_PANE_W);
         } else if (npts == 0) {
             s_touch_on_cw_pane = false;
         }
@@ -9820,7 +9991,7 @@ static void pinch_poll_cb(lv_timer_t *t)
     // spectrum entirely, so a horizontal swipe there must still not start a
     // pan of it (and a two-finger pinch must not zoom it) - the sleep
     // double-tap above stays global on purpose regardless of mode.
-    if (ui_mode_get() != UI_MODE_PANADAPTER && ui_mode_get() != UI_MODE_CW) {
+    if (ui_mode_get() != UI_MODE_PANADAPTER && !ui_mode_has_left_pane(ui_mode_get())) {
         stroll_cancel();
         s_pinch_active = false;
         return;
@@ -10040,7 +10211,7 @@ static void pinch_poll_cb(lv_timer_t *t)
              * changing frequency into the readout would be a plain lie about
              * what the gesture is doing. */
             char fb[32];
-            uint32_t t = (uint32_t)tgt;
+            uint32_t t = freq_shown_hz((uint32_t)tgt);
             { char fs[16]; format_freq_hz(t, g_freq_style, fs, sizeof(fs));
               snprintf(fb, sizeof(fb), "Freq: %s Hz", fs); }
             lv_label_set_text(s_freq_label, fb);
@@ -10159,6 +10330,9 @@ void ui_update_frequency(uint32_t freq_hz)
                 bool pan = ui_mode_get() == UI_MODE_PANADAPTER;
                 settings_band_mem_set(bands[s_last_band_idx].center_hz, s_band_last_hz[s_last_band_idx],
                                       (pan && band_mem_mode_ok(s_current_mode)) ? s_current_mode : NULL);
+                /* RTTY page: the band being left also keeps its RTTY dial. */
+                if (ui_mode_get() == UI_MODE_RTTY)
+                    settings_band_rtty_set(bands[s_last_band_idx].center_hz, s_band_last_hz[s_last_band_idx]);
             }
             /* T195: the dB range goes with the band. The band being LEFT keeps
              * the range on screen now; the band entered gets its own back, in
@@ -10183,6 +10357,7 @@ void ui_update_frequency(uint32_t freq_hz)
     }
     uint32_t prev_freq_hz = s_last_qmx_freq_hz;
     s_last_qmx_freq_hz = freq_hz;
+    if (prev_freq_hz != 0 && prev_freq_hz != freq_hz) rtty_screen_view_dial_moved();
     audio_note_dial_hz(freq_hz);   /* so each sample carries its own dial (#298) */
     /* ⭐ STILL DISPLAY (#298). This line used to be `s_pan_offset_bins = 0;`
      * followed by recompute_zoom_pan() - re-deriving the pan from the passband
@@ -10240,13 +10415,13 @@ void ui_update_frequency(uint32_t freq_hz)
     if (dsp_source_is_real()) {
         snprintf(buf, sizeof(buf), "Line-in mode");
     } else {
-        char fs[16]; format_freq_hz((uint32_t)freq_hz, g_freq_style, fs, sizeof(fs));
+        char fs[16]; format_freq_hz(freq_shown_hz((uint32_t)freq_hz), g_freq_style, fs, sizeof(fs));
         snprintf(buf, sizeof(buf), "Freq: %s Hz", fs);
     }
     (void)mhz; (void)khz; (void)hz;
     if (display_lock(100)) {
         lv_label_set_text(s_freq_label, buf);
-        s_freq_shown_hz = freq_hz;   // so ui_refresh_freq_label() can early-out
+        s_freq_shown_hz = freq_shown_hz(freq_hz);   // so ui_refresh_freq_label() can early-out
         display_unlock();
     } else {
         // Not fatal any more: ui_refresh_freq_label() re-asserts this from the
@@ -10362,7 +10537,9 @@ void ui_refresh_band_label(uint32_t freq_hz)
 void ui_refresh_freq_label(uint32_t freq_hz)
 {
     if (!s_freq_label) return;
-    if (freq_hz == s_freq_shown_hz) return;   // already correct - the normal case
+    /* Compared as SHOWN: on the RTTY page the mark moves with a tap or the
+     * AFC while the dial stays, and this poll is what repaints it. */
+    if (freq_shown_hz(freq_hz) == s_freq_shown_hz) return;   // already correct - the normal case
 
     char buf[32];
     /* Same rule as ui_update_frequency() - see the note there. Both writers,
@@ -10370,7 +10547,7 @@ void ui_refresh_freq_label(uint32_t freq_hz)
     if (dsp_source_is_real()) {
         snprintf(buf, sizeof(buf), "Line-in mode");
     } else {
-        char fs[16]; format_freq_hz((uint32_t)freq_hz, g_freq_style, fs, sizeof(fs));
+        char fs[16]; format_freq_hz(freq_shown_hz((uint32_t)freq_hz), g_freq_style, fs, sizeof(fs));
         snprintf(buf, sizeof(buf), "Freq: %s Hz", fs);
     }
     // Short timeout: this runs on every FA poll, so a busy moment simply means
@@ -10378,7 +10555,7 @@ void ui_refresh_freq_label(uint32_t freq_hz)
     // reason - it would be noise, and the retry IS the recovery.
     if (display_lock(20)) {
         lv_label_set_text(s_freq_label, buf);
-        s_freq_shown_hz = freq_hz;
+        s_freq_shown_hz = freq_shown_hz(freq_hz);
         display_unlock();
     }
 }
@@ -10578,7 +10755,7 @@ static void top_bar_apply_mode(void)
      * not set at the mode transition: a per-mode state applied at the
      * transition is NOT applied on the path that has no transition, and a
      * board that BOOTS into CW has none (the v1.12.1 finding). */
-    const bool inert = owned || (m != UI_MODE_PANADAPTER && m != UI_MODE_CW);
+    const bool inert = owned || (m != UI_MODE_PANADAPTER && !ui_mode_has_left_pane(m));
 
     /* ⭐ FREQ STAYS LIVE ON THE WSPR PAGE, and nothing else does (operator,
      * 2026-09-08: "from the top bar i should not be able to activate any of the
@@ -10604,7 +10781,14 @@ static void top_bar_apply_mode(void)
      * reason restated above: a board that BOOTS into CW has no transition.
      * Operator, 2026-10-31: "Mode on top bar should be dimmed as it cannot be
      * changed here". */
-    const bool mode_dead = (m == UI_MODE_CW);
+    const bool mode_dead = (m == UI_MODE_CW || m == UI_MODE_RTTY);
+
+    /* RTTY (operator, 2026-11-12: "inactivate the top bar features that we
+     * will not need in MODE: RTTY - just like the other pages"). The decoder
+     * reads the QMX's I/Q directly, so neither the radio's mode nor its audio
+     * filter width changes what it receives: Mode and BW are dead there.
+     * Band, Freq and Zoom stay live - it is a tuning page, like CW. */
+    const bool bw_dead = (m == UI_MODE_RTTY);
 
     /* Same order as the hit_zones[] table this indexes - Band, Mode, BW, Freq,
      * Zoom - so TOPBAR_ZONE_FREQ addresses the label and its zone together. */
@@ -10614,6 +10798,7 @@ static void top_bar_apply_mode(void)
     for (int i = 0; i < N_TOPBAR_HIT_ZONES; i++) {
         bool live = !inert || (i == TOPBAR_ZONE_FREQ && freq_live);
         if (i == TOPBAR_ZONE_MODE && mode_dead) live = false;
+        if (i == TOPBAR_ZONE_BW && bw_dead) live = false;
 
         /* The LABELS are clickable in their own right, with 90-110 px click
          * halos (ext_click_area, so they are hittable on glass) that between
@@ -11659,6 +11844,7 @@ const char *ui_cw_tune_reason(ui_cw_tune_t r)
     case UI_CW_TUNE_NO_SPECTRUM: return "no spectrum yet";
     case UI_CW_TUNE_NO_SIGNAL:   return "no signal within 400 Hz";
     case UI_CW_TUNE_LISTENING:   return "listening for a signal";
+    case UI_CW_TUNE_BUSY:        return "display busy - press again";
     }
     return "?";
 }
@@ -11798,7 +11984,15 @@ ui_cw_tune_t ui_cw_tune_to_peak(int32_t *moved_hz)
     if (moved_hz) *moved_hz = 0;
     if (!strstr(s_current_mode, "CW"))  { s_cw_wait_until_us = 0; return UI_CW_TUNE_NOT_CW; }
     if (!s_last_qmx_freq_hz)            return UI_CW_TUNE_NO_FREQ;
-    if (!display_lock(50))              return UI_CW_TUNE_NO_SPECTRUM;
+    /* ⛔ A LOCK TIMEOUT IS NOT "NO SPECTRUM" (2026-11-15). The operator got
+     * "no spectrum yet" with a full spectrum on screen. The 'status' task
+     * holds the display lock 80-110 ms many times a minute (capture: "display
+     * lock held 99 ms by 'status'"), and this waited 50 ms. Wait 300 ms, and
+     * if it is still taken, say so. */
+    if (!display_lock(300)) {
+        ESP_LOGW(TAG, "CW tune: display lock busy for 300 ms");
+        return UI_CW_TUNE_BUSY;
+    }
     ui_cw_tune_t r = cw_tune_attempt(moved_hz);
     if (r == UI_CW_TUNE_NO_SIGNAL) {
         /* ⭐ KEEP LISTENING, because silence is normal. Operator: "can you
@@ -12182,6 +12376,21 @@ void ui_push_spectrum(const float *bins, int n_bins)
      * the one drawn over the signal he is dragging. */
     const float DRAG_PASSBAND_OPA = 0.35f;
 
+    /* RTTY page: no passband tint, no edges, no amber dial line (operator,
+     * 2026-11-12: "what is the old centre freq yellow line in middle of the
+     * passband doing here?" -> "hide them"). The decoder reads the wide I/Q at
+     * the orange tone lines; the QMX's own filter and the dial set nothing it
+     * hears, so both read as the receiver's target when they are not. The
+     * off-view arrow stays - it still says where the dial went and takes you
+     * back.
+     *
+     * ⛔ NEVER ON THIS PAGE - not for TX either. 2026-11-14 I put the tint and
+     * edges back for R010 (a tap now tunes the dial) and the operator: "the
+     * band pass is NOT supposed to be shown on the MODE: RTTY page ... It
+     * should never be shown here". Do not bring any of the three back. */
+    const bool pb_hidden = (ui_mode_get() == UI_MODE_RTTY);
+    SPEC_SIG(pb_hidden);
+
     // Dim, never hide, while panning and while the pan settles
     if (s_stroll_active) {
         fade_opacity = DRAG_PASSBAND_OPA;
@@ -12323,7 +12532,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
             b = (uint16_t)(b * fade_opacity);
             band_color = (r << 11) | (g << 5) | b;
         }
-        for (int x = edge_x_lo; x <= edge_x_hi; x++) {
+        for (int x = edge_x_lo; x <= edge_x_hi && !pb_hidden; x++) {
             for (int y = 0; y < SPECTRUM_H; y++) {
                 px[y * DISPLAY_H_RES + x] = band_color;
             }
@@ -12488,6 +12697,10 @@ void ui_push_spectrum(const float *bins, int n_bins)
      * equivalent of s_prev_y_top, and what makes it a line rather than dots.
      * -1 = no neighbour to join (frame start, or across a no-data gap). */
     int peak_prev_col = -1;
+    /* For the changed band: did the previous column's peak move this push,
+     * and where was it last push (its old joining segment). */
+    bool peak_prev_moved = false;   /* frame start: no joining segment */
+    int  peak_prev_old   = -1;
     {
         uint8_t secs = s_peak_secs;
         if (!secs) {
@@ -12583,6 +12796,8 @@ void ui_push_spectrum(const float *bins, int n_bins)
                     s_peak_show[x]  = (int16_t)SPECTRUM_H;
                     s_peak_prev[x]  = -1;
                     peak_prev_col   = -1;   /* never join across the hatch */
+                    peak_prev_moved = false; /* next column: no joining segment */
+                    peak_prev_old   = -1;
                 }
                 continue;
             }
@@ -12682,16 +12897,31 @@ void ui_push_spectrum(const float *bins, int n_bins)
              * glass until something else repaints that row. */
             if (s_frame_ytop) {
                 int pprev = s_frame_ytop_valid ? s_peak_prev[x] : -1;
-                if (pprev != py || plo != phi) {
+                /* ⛔ ONLY WHAT MOVED. This was `pprev != py || plo != phi`:
+                 * the second term is true wherever the line merely SLOPES,
+                 * so a held peak that had not moved still widened the band
+                 * every push. bench1 2026-11-15, RTTY page: band 30-70 px with
+                 * peak hold on, 15-32 off; draw 30-35 -> 25-27 ms. A column's
+                 * pixels depend on its own peak and the previous column's (the
+                 * joining segment), so it changed iff either moved. */
+                bool moved = pprev < 0 || pprev != py || peak_prev_moved;
+                if (moved) {
                     int lo3, hi3;
                     if (pprev < 0) { lo3 = 0; hi3 = SPECTRUM_H - 1; }
-                    else { /* the whole span this column just painted, and
-                            * where it painted last time */
-                           lo3 = (pprev < plo) ? pprev : plo;
-                           hi3 = (pprev > phi) ? pprev : phi; }
+                    else { /* the span painted now, and the one painted last
+                            * time (own old peak + the old joining segment) */
+                           int olo = pprev, ohi = pprev;
+                           if (peak_prev_old >= 0) {
+                               if (peak_prev_old < olo) olo = peak_prev_old;
+                               if (peak_prev_old > ohi) ohi = peak_prev_old;
+                           }
+                           lo3 = (olo < plo) ? olo : plo;
+                           hi3 = (ohi > phi) ? ohi : phi; }
                     if (lo3 - 1 < band_lo) band_lo = lo3 - 1;
                     if (hi3 + 1 > band_hi) band_hi = hi3 + 1;
                 }
+                peak_prev_moved = (pprev != py);
+                peak_prev_old   = pprev;
                 s_peak_prev[x] = (int16_t)py;
             }
         }
@@ -12779,7 +13009,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
         }
         for (int side = 0; side < 2; side++) {
             int edge_x = pb_x[side];
-            if (edge_x < X0 || edge_x >= DISPLAY_H_RES) continue;
+            if (pb_hidden || edge_x < X0 || edge_x >= DISPLAY_H_RES) continue;
             for (int y = 0; y < SPECTRUM_H; y++) {
                 px[y * DISPLAY_H_RES + edge_x] = faded_pb_color;
                 if (edge_x + 1 < DISPLAY_H_RES) px[y * DISPLAY_H_RES + edge_x + 1] = faded_pb_color;
@@ -12808,7 +13038,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
         // Drawing the marker at +residual puts it on the signal rather than up to
         // ~23 Hz beside it, and keeps it agreeing with where a tap now tunes.
         int cx = X0 + (int)((int64_t)(ui_get_if_residual_hz() - pan_hz_vfo) * VW / span_hz_vfo) + VW / 2;
-        if (cx >= X0 && cx < DISPLAY_H_RES) {
+        if (!pb_hidden && cx >= X0 && cx < DISPLAY_H_RES) {
             for (int y = 0; y < SPECTRUM_H; y++) {
                 px[y * DISPLAY_H_RES + cx] = center_color;
             }
@@ -13397,7 +13627,7 @@ void ui_push_waterfall_row(const uint8_t *rgb565_row)
         s_wf_pending_rows = 0;
         s_wf_shifts++;
         lv_area_t vis[2];
-        if (cw_screen_view_carpet_visible(vis)) {
+        if (cw_screen_view_carpet_visible(vis) || rtty_screen_view_carpet_visible(vis)) {
             /* CW page: lv_image_set_offset_y() would invalidate the WHOLE
              * carpet, and the pane + ticker on top were redrawn with it on
              * every shift - 57-62 ms frames against 16 ms with only the
@@ -14043,6 +14273,18 @@ static void touch_event_cb(lv_event_t *e)
                     s_bp_drag_band_hi = ch;
                 }
             }
+            /* RTTY page: the drag maps onto the strip's own track
+             * (rtty_strip_range), or the finger and the box disagree. Only
+             * the drag - taps, the keypad and the knob stay unrestricted. */
+            if (ui_mode_get() == UI_MODE_RTTY) {
+                int32_t span_hz = (int32_t)(48000.0f / s_zoom_factor);
+                uint32_t tl, th;
+                if (rtty_strip_range(segs, n, s_bp_drag_start_view_hz - span_hz / 2,
+                                     s_bp_drag_start_view_hz + span_hz / 2, &tl, &th)) {
+                    s_bp_drag_band_lo = tl;
+                    s_bp_drag_band_hi = th;
+                }
+            }
         } else {
             // Outside a known band: no absolute map exists, so this press drives
             // the centre-detented coarse tune instead (see BP_OOB_KNOB_W_PX).
@@ -14100,7 +14342,7 @@ static void touch_event_cb(lv_event_t *e)
             }
             if (s_freq_label) {
                 char fb[32];
-                uint32_t t = (uint32_t)target;
+                uint32_t t = freq_shown_hz((uint32_t)target);
                 { char fs[16]; format_freq_hz(t, g_freq_style, fs, sizeof(fs));
                   snprintf(fb, sizeof(fb), "Freq: %s Hz", fs); }
                 lv_label_set_text(s_freq_label, fb);
@@ -14175,7 +14417,7 @@ static void touch_event_cb(lv_event_t *e)
             // dial alone, which is the whole point of the gesture.
             if (s_freq_label) {
                 char fb[32];
-                { char fs[16]; format_freq_hz(dial_pred, g_freq_style, fs, sizeof(fs));
+                { char fs[16]; format_freq_hz(freq_shown_hz(dial_pred), g_freq_style, fs, sizeof(fs));
                   snprintf(fb, sizeof(fb), "Freq: %s Hz", fs); }
                 lv_label_set_text(s_freq_label, fb);
             }
@@ -14364,6 +14606,14 @@ static void touch_event_cb(lv_event_t *e)
             // The cursor is drawn from this same snap, so the marker still lands
             // exactly where the line was when the finger lifted.
             if (s_rit_armed) snap = 10;
+            /* R025: the RTTY page too, for the same reason - its tap moves the
+             * DECODER, never the dial. On the 500 Hz DiGi grid a tap landed up
+             * to 250 Hz off the pair, outside acquisition's +/-150 Hz, so it
+             * sat beside the station (operator, 2026-11-14: "snapping to
+             * 000/500 and this is often on each side of the real freq"). At
+             * 10 Hz the finger's own error is what is left, and acquisition
+             * pulls that in. */
+            if (ui_mode_get() == UI_MODE_RTTY) snap = 10;
             // Snap the absolute target frequency to the grid (e.g. ...200,
             // 300, 400 Hz), not the touch offset — otherwise the grid is
             // shifted by the VFO's own offset from a snap multiple.
@@ -14485,6 +14735,15 @@ static void touch_event_cb(lv_event_t *e)
         // Still armed afterwards, deliberately: running a frequency means a new
         // caller with a new offset every time, so the next tap should move RIT onto
         // them too. The pill is the way out.
+        /* RTTY page: a tap tunes the dial so the tapped signal sits at
+         * 1500 Hz audio and puts the decoder on it - see
+         * rtty_screen_view_tap_hz() (until 2026-11-14 the dial stayed). Before
+         * RIT: on this page RIT is not what a tap means. */
+        if (ui_mode_get() == UI_MODE_RTTY) {
+            rtty_screen_view_tap_hz(target_hz);
+            s_target_until_us = esp_timer_get_time() + 200000;
+            return;
+        }
         if (s_rit_armed) {
             int32_t delta = (int32_t)((int64_t)target_hz - (int64_t)s_last_qmx_freq_hz);
             int32_t want  = delta;
@@ -14662,7 +14921,7 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             s_bp_drag_target_hz = target;
             update_bandplan_strip((uint32_t)target);             // live strip position
             if (s_freq_label) {                                  // live top-bar freq (display only)
-                char fb[32]; uint32_t t = (uint32_t)target;
+                char fb[32]; uint32_t t = freq_shown_hz((uint32_t)target);
                 { char fs[16]; format_freq_hz(t, g_freq_style, fs, sizeof(fs));
                   snprintf(fb, sizeof(fb), "Freq: %s Hz", fs); }
                 lv_label_set_text(s_freq_label, fb);
@@ -21308,6 +21567,24 @@ void ui_apply_saved_mode_view(void)
         return;
     }
 
+    /* RTTY resumes (operator, 2026-11-12: "please boot up in this mode").
+     * No gate: the page is RX only. View half only - the decoder is turned
+     * on by the show, and rx_audio_task checks rtty_rx_is_on() when it
+     * starts, so nothing waits on CAT here. */
+    if (s_saved_ui_mode == UI_MODE_RTTY) {
+        ui_mode_set(UI_MODE_RTTY);
+        drawer_set_mode(UI_MODE_RTTY);
+        if (s_last_qmx_freq_hz) update_bandplan_strip(s_last_qmx_freq_hz);
+        recompute_zoom_pan();
+        draw_label_ticks();
+        if (s_last_qmx_freq_hz) update_freq_axis_labels(s_last_qmx_freq_hz);
+        rtty_screen_view_show();
+        top_bar_apply_mode();
+        apply_edge_grips_for_mode(UI_MODE_RTTY);
+        ESP_LOGI(TAG, "UI mode restored from NVS: RTTY");
+        return;
+    }
+
     /* WSPR resumes too, as of the 2026-08-28 launch. It used to fall through to
      * Panadapter on purpose - "a mode that ships dark should not be sticky
      * across a reboot" - and that reason ended when the page joined the swipe
@@ -21449,6 +21726,7 @@ static const char *mode_name(ui_mode_t m)
     return m == UI_MODE_FT8  ? "FT8"
          : m == UI_MODE_WSPR ? "WSPR"
          : m == UI_MODE_CW   ? "CW"
+         : m == UI_MODE_RTTY ? "RTTY"
                              : "Panadapter";
 }
 
@@ -21459,7 +21737,7 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
     // CW transitions are instant: the CW page shares the panadapter's live
     // widgets as its backdrop, so there is nothing meaningful to slide. The
     // animated path below stays exactly as it was for the P<->FT8 pair.
-    if (cur == UI_MODE_CW || next == UI_MODE_CW) animate = false;
+    if (ui_mode_has_left_pane(cur) || ui_mode_has_left_pane(next)) animate = false;
     /* ⛔ CHOOSING THE PAGE IS WHAT ENABLES IT. wspr_en began life as a master
      * unlock for a page that was not finished (default off, plus the hidden
      * unlock in ota_modal.c). Once WSPR has a button in the left drawer and a
@@ -21528,6 +21806,13 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
             cat_request_sidetone_absolute(false);
             s_cw_sidetone_managing = false;
         }
+    } else if (cur == UI_MODE_RTTY) {
+        /* R006: RTTY has no snapshot of its own - it is the panadapter with a
+         * decoder on top, so it reads and writes the panadapter's. Hiding the
+         * page turns the decoder off. */
+        rtty_screen_view_hide();
+        rtty_band_dial_store(s_last_qmx_freq_hz);   /* leaving the page = going away */
+        ui_save_snapshot(&s_pan_snapshot);
     } else if (cur == UI_MODE_WSPR) {
         wspr_rx_stop();               /* frees 8.6 MB and releases the capture */
         wspr_screen_view_hide();
@@ -21656,6 +21941,45 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
          * it looked like it worked. The panadapter branch below does the same. */
         spots_lane_set_visible(true);
         cw_screen_view_show();
+        return;
+    }
+
+    if (next == UI_MODE_RTTY) {
+        /* R006. The panadapter's widgets are the backdrop, as on the CW page,
+         * and so is its state: mode and zoom are not changed on entry (the
+         * dial is - see R021 below). From another overlay page the panadapter
+         * comes back first. */
+        if (cur == UI_MODE_FT8) {
+            ft8_screen_view_hide();
+            if (ft8) lv_obj_set_x(ft8, 0);
+        }
+        if (cur != UI_MODE_PANADAPTER) {
+            show_panadapter_widgets_instant();
+            if (s_pan_snapshot.valid) ui_restore_snapshot(&s_pan_snapshot);
+        }
+        /* R021: the DIAL does change on entry now (operator, 2026-11-12: "Yes,
+         * jump on entry"). It goes to this band's stored RTTY dial, else the
+         * DiGi middle - the band-change rule. Without it, entering on 40 m at
+         * 7.100 (phone) and then changing band stored 7.100 as the RTTY dial
+         * for 40 m, which nobody chose on this page. Mode and zoom still stay.
+         * Boot restore does not jump: the radio comes back on the dial this
+         * page last left it on. */
+        {
+            uint32_t c = band_list_centre_hz(s_last_qmx_freq_hz);
+            uint32_t f = c ? ui_band_change_target_hz(c, s_last_qmx_freq_hz) : 0;
+            if (f && f != s_last_qmx_freq_hz) {
+                ESP_LOGI(TAG, "RTTY entry: %lu Hz -> %lu Hz",
+                         (unsigned long)s_last_qmx_freq_hz, (unsigned long)f);
+                cat_set_frequency_forced(f);
+                ui_update_frequency(f);
+            }
+        }
+        if (s_last_qmx_freq_hz) update_bandplan_strip(s_last_qmx_freq_hz);
+        recompute_zoom_pan();
+        draw_label_ticks();
+        if (s_last_qmx_freq_hz) update_freq_axis_labels(s_last_qmx_freq_hz);
+        spots_lane_set_visible(true);   /* see the CW branch: SHOWN, not re-positioned */
+        rtty_screen_view_show();
         return;
     }
 
@@ -21958,8 +22282,18 @@ static lv_obj_t *left_drawer_add_btn(lv_obj_t *parent, int y, const char *txt,
  * measuring pass and the building pass cannot disagree about what is on the
  * drawer - a width measured over a different set of strings than the one
  * drawn is a bug that looks like a font problem. */
-static const char *LD_LABELS[] = {
-    "PANADAPTER", "MODE: CW", "MODE: FT8", "MODE: FT4", "MODE: JS8", "MODE: WSPR",
+/* Door order is the operator's: MODE: RTTY directly under MODE: CW
+ * (2026-11-12). Named indices, so the CW gate in left_drawer_layout() and the
+ * build below cannot drift apart when a door moves. */
+enum { LD_I_PAN, LD_I_CW, LD_I_RTTY, LD_I_FT8, LD_I_FT4, LD_I_JS8, LD_I_WSPR, LD_N };
+static const char *LD_LABELS[LD_N] = {
+    [LD_I_PAN]  = "PANADAPTER",
+    [LD_I_CW]   = "MODE: CW",
+    [LD_I_RTTY] = "MODE: RTTY",
+    [LD_I_FT8]  = "MODE: FT8",
+    [LD_I_FT4]  = "MODE: FT4",
+    [LD_I_JS8]  = "MODE: JS8",
+    [LD_I_WSPR] = "MODE: WSPR",
 };
 
 /* The buttons in LD_LABELS order, so the layout pass below can reach them.
@@ -21985,21 +22319,30 @@ static void left_drawer_layout(void)
     bool show[sizeof(LD_LABELS) / sizeof(LD_LABELS[0])];
     int  n_show = 0;
     for (int i = 0; i < n_all; i++) {
-        /* Index 1 is MODE: CW - gated, default off. Everything else is a
+        /* LD_I_CW is MODE: CW - gated (default ON since v1.24.0). Everything else is a
          * finished page and always has a door. */
-        show[i] = (i == 1) ? settings_get_cw_page_en() : true;
+        show[i] = (i == LD_I_CW) ? settings_get_cw_page_en() : true;
         if (show[i]) n_show++;
     }
 
-    const int stack_h = n_show * LD_BTN_H + (n_show - 1) * LD_BTN_GAP;
+    /* Seven doors at 104 px are 800 px on a 720 px screen. The height gives
+     * way, not the 48 pt label: (720 - 2*16 - 6*12) / 7 = 88 px, still well
+     * above the 72 px a 48 pt line was measured to need. Six doors keep 104. */
+    int btn_h = LD_BTN_H;
+    if (n_show > 0) {
+        int fit = (DISPLAY_V_RES - 2 * LD_PAD - (n_show - 1) * LD_BTN_GAP) / n_show;
+        if (fit < btn_h) btn_h = fit;
+    }
+    const int stack_h = n_show * btn_h + (n_show - 1) * LD_BTN_GAP;
     int y = (DISPLAY_V_RES - stack_h) / 2 - LD_PAD;
     if (y < 0) y = 0;
     for (int i = 0; i < n_all; i++) {
         if (!s_ld_btn[i]) continue;
         if (!show[i]) { lv_obj_add_flag(s_ld_btn[i], LV_OBJ_FLAG_HIDDEN); continue; }
         lv_obj_clear_flag(s_ld_btn[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_ld_btn[i], btn_h);
         lv_obj_set_y(s_ld_btn[i], y);
-        y += LD_BTN_H + LD_BTN_GAP;
+        y += btn_h + LD_BTN_GAP;
     }
 }
 
@@ -22065,7 +22408,7 @@ static void left_drawer_build(void)
     /* y is settled by left_drawer_layout() at the end, which knows which
      * buttons are shown. Everything is created at 0 and then placed. */
     int y = 0;
-    s_ld_btn[0] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[0], 0xFFFFFF,
+    s_ld_btn[LD_I_PAN] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_PAN], 0xFFFFFF,
                         LD_DEST(UI_MODE_PANADAPTER, 0xFF));
     /* CW takes no sub-mode: 0xFF is "leave the dial alone", the same value
      * PANADAPTER and WSPR pass. The page itself picks up the band-plan CW
@@ -22075,19 +22418,22 @@ static void left_drawer_build(void)
      * 2.9:1 as a label on this button and was the dimmest of the six. The
      * fill is unchanged - see the note on the constant for why brightening
      * the shared one only moves the problem onto the band-plan strip. */
-    s_ld_btn[1] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[1], UI_COLOR_MODE_CW_TEXT,
+    s_ld_btn[LD_I_CW] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_CW], UI_COLOR_MODE_CW_TEXT,
                         LD_DEST(UI_MODE_CW, 0xFF));
+    /* RTTY: the page title's own colour (rtty_screen_view.c), as for CW. */
+    s_ld_btn[LD_I_RTTY] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_RTTY], UI_COLOR_MODE_RTTY_TEXT,
+                        LD_DEST(UI_MODE_RTTY, 0xFF));
     /* UI_COLOR_ACCENT_GOLD, not the 0xFFDD00 that was written here: the FT8
      * page's title is the theme constant (0xFFD700) and this button is meant
      * to BE that title seen from outside. Six units of green apart is nothing
      * on the glass, but it is a hand-copied colour in a block whose own
      * comment says the colours are read out of the code - which is how the
      * other three would have drifted too. */
-    s_ld_btn[2] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[2], UI_COLOR_ACCENT_GOLD,
+    s_ld_btn[LD_I_FT8] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_FT8], UI_COLOR_ACCENT_GOLD,
                         LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT8));
-    s_ld_btn[3] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[3], FT4_ACCENT_HEX,
+    s_ld_btn[LD_I_FT4] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_FT4], FT4_ACCENT_HEX,
                         LD_DEST(UI_MODE_FT8, FT8_OP_MODE_FT4));
-    s_ld_btn[4] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[4], JS8_ACCENT_HEX,
+    s_ld_btn[LD_I_JS8] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_JS8], JS8_ACCENT_HEX,
                         LD_DEST(UI_MODE_FT8, FT8_OP_MODE_JS8));
     /* ⛔ NO wspr_feature_enabled() GATE HERE, and the old cycle's gate was not
      * a reason to copy one. I wrote that WSPR was gated "because the page is
@@ -22096,7 +22442,7 @@ static void left_drawer_build(void)
      * finished page from the operator who fixed it. WSPR is a peer mode and
      * gets a door like the rest. */
     /* _TEXT for the same reason CW uses it - see the constants. */
-    s_ld_btn[5] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[5], UI_COLOR_MODE_WSPR_TEXT,
+    s_ld_btn[LD_I_WSPR] = left_drawer_add_btn(s_left_drawer, y, LD_LABELS[LD_I_WSPR], UI_COLOR_MODE_WSPR_TEXT,
                         LD_DEST(UI_MODE_WSPR, 0xFF));
     left_drawer_layout();
 }

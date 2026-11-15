@@ -462,3 +462,133 @@ Sources: [QMX product page](https://qrp-labs.com/qmx.html) ·
 **RX-only remains the right first deliverable.** It is self-contained, it has
 abundant live signals to test against, and it is useful on its own as an RTTY
 monitor even if the R4 gate closes and TX never happens.
+
+---
+
+## Update 2026-11-12 — the 2026-11-10 revisit, and what landed since 10-08
+
+This section carries the revisit of 2026-11-10 (it lived only in a session
+transcript) into the branch `qmx-panadapter-rtty`, so the RTTY work does not
+start again from the June study. Everything above still stands unless this
+section says otherwise.
+
+### Flash and RAM budget (revisit 2026-11-10, re-measured 2026-11-12)
+
+| Item | Size | Source |
+|---|---|---|
+| Free in the smaller OTA slot (`ota_1`, 0x6D0000) | **1.14 MB** (1,192,176 B) | build of `529b754e`; it was 1.39 MB on 11-10, before web NR |
+| Whole CW mode (decoder, screen, QSO, callsign, TX queue) | ~47 KB | object sizes, 11-10 |
+| Whole WSPR mode (RX, decode, TX, screen, spots) | ~140 KB | object sizes, 11-10 |
+| RTTY, estimated from CW (same structure) | ~50–80 KB firmware + ~10–20 KB gz in the web page | estimate, NOT measured |
+
+Flash is not the limit. On the Tab5, **internal RAM and core 0 CPU** are the
+tighter limits. RTTY RX needs a few KB of buffers and should run only while its
+page is open, as CW and WSPR do. Measure it with the module running.
+
+### Gaps in this document (found 2026-11-10)
+
+- No RX algorithm detail: bit-clock recovery method, tuning-aid design, and
+  where the decoder takes its samples.
+- No UI layout for the Tab5 page or the web page.
+- The order "JS8 first, RTTY after" was agreed 2026-10-08. JS8 has shipped, so
+  that order is settled.
+
+### What landed since 10-08 that RTTY must use
+
+- ⚠ **The CW page does NOT demodulate on the Tab5.** Its text comes from the
+  QMX's own decoder over CAT (`TB;`, `main/cat/cat.c`). RTTY has no such radio
+  decoder over CAT, so RTTY RX is the first Tab5-side text demodulator. Its
+  sample source is the I/Q path that FT8 and WSPR use (`main/dsp/dsp.c`,
+  `main/wspr_rx.c`) - check which tap fits before designing the demod.
+- **UI model:** the CW page (`main/ui/cw_screen_view.c`): keyer pane, decode
+  ticker (`CW_TICKER_COLS`), station card, macros, the band-plan strip kept
+  visible. The port patch `main-10` (2026-11-12) made the ticker opaque and
+  redraws only the visible waterfall - copy that, not the old pattern.
+- **TX rules (all enforced by PRE_BUILD checkers):**
+  every keying site through `tx_band_guard_allows()` (`tools/check_tx_guard.py`);
+  every arming site in `docs/unattended-tx-inventory.md`
+  (`tools/check_unattended_tx.py`); no PSRAM-stack task ended with
+  `vTaskDelete` (`tools/check_psram_tasks.py`).
+- **Abort:** the CW work proved `KY` cannot be aborted. RTTY TX over
+  `TA<freq>;` toggling stops when the Tab5 stops sending, so a STOP must be
+  immediate - keep that property; do not route RTTY through a radio buffer.
+- **Web audio holes (T177):** the browser stream has 1–3 exact-zero holes a
+  second (the Tab5's gap frames). A web-side decoder must conceal them, as the
+  web NR does (`nrPlc` in `main/net/www/index.html`). A Tab5-side decoder on
+  the I/Q path is not affected.
+- **Keyboard:** Tab5 keyboard (I2C) and a Bluetooth keyboard both work, as on
+  the CW page.
+
+### Next step (unchanged)
+
+RX-only first (R1, R2), proven on a host harness against a known RTTY
+recording before anything touches hardware. R4 (can the QMX follow `TA<freq>;`
+at ~45/s while keyed) gates TX and needs the operator at the bench.
+
+---
+
+## R1 started 2026-11-12 (T196)
+
+### Sample tap - decided
+
+- ⛔ **Not the FT8/WSPR capture branch.** In those modes `fft_task` skips the
+  panadapter FFT (`main/dsp/dsp.c`, the `ui_mode_uses_iq_capture()` branch),
+  so the waterfall stops. RTTY is tuned on the waterfall.
+- **The RX-audio chain.** `rx_audio_task` (`main/audio/rx_audio.c`) already
+  mixes the tuned signal to complex baseband and decimates by 8, giving 6 kHz
+  complex. It runs on core 1 at a priority below `fft_task`. RTTY takes that
+  stage-1 output. The demod is tested at 6 kHz for this reason.
+- Integration work: `rx_audio` runs only for CW/USB/LSB/AM and only when a
+  listener is present. An open RTTY page must count as a third consumer.
+  `UI_MODE_RTTY` behaves as `UI_MODE_CW` does: the panadapter keeps running.
+
+### Demod - measured on the host
+
+`main/rtty_baudot.c`, `main/rtty_demod.c`, harness `test/rtty_harness.c`
+(build line in its header). Not in `main/CMakeLists.txt` yet, never run on a
+device.
+
+| SNR (2500 Hz) | CER measured | non-coherent FSK theory |
+|---|---|---|
+| -10 dB | 33.8 % | 20.3 % |
+| -8 dB | 6.7 % | 4.4 % |
+| -6 dB | 0.4 % | 0.3 % |
+| -4 dB | 0.0 % | 0.0 % |
+
+- With oracle timing the filter matches theory exactly (BER 0.0005 at
+  -6 dB). The remaining loss is timing.
+- Two framers were measured and rejected (reasons in `rtty_demod.h/.c`):
+  first-crossing timing (CER 5.4 % at -6 dB) and a half-bit grid that
+  slipped. The kept design locks a character clock and decodes at the
+  predicted slot (flywheel).
+- Baud error up to +/-2 %: no loss.
+- ⚠ **Tuning error:** +/-10 Hz -> CER 3 % at -6 dB (about 2 dB lost);
+  +/-20 Hz -> 17-20 %. **AFC is needed**, against the June "out of scope".
+- **AFC added** (`cfg.afc_hz`, lag-1 discriminator on the dominant tone,
+  steers only while locked and the last character conf >= 0.5). At -6 dB:
+  +/-30 Hz CER <= 2.5 %, 0 Hz no cost (12 000 chars: 0.6 % both),
+  0.2 Hz/s drift 0.9 %. +/-40 Hz pulls in slowly (12-16 % over 1500 chars;
+  3 % at -4 dB). On noise the offset wanders 11 Hz rms (peak 27 Hz in 60 s,
+  20 runs); without the conf gate it was 37 Hz rms.
+- **Squelch (R003) added:** smoothed conf with hysteresis + fast close + hold buffer; 0 noise characters in 30 min, ~2 junk characters after a transmission, no cost at -6 dB. AFC gated on it (0.42): wander 2.5 Hz rms, pull-in +/-30 Hz. Measurements in `rtty_demod.h` items 5-6. The line below is the state BEFORE it.
+- ⚠ **Squelch:** noise alone prints 275 chars/min unsquelched, 79 at the
+  confidence threshold 0.4. Needs a real signal-presence measure.
+- ⚠ The generator uses our own ITA2 encoder. A real recording, compared with
+  fldigi or MMTTY on the same audio, is the arbiter. The harness reads a WAV
+  (`--wav f.wav --centre <Hz> [--lsb]`).
+
+### Decisions
+
+- 2026-11-12, operator: **own RTTY page**, modelled on the CW page (not a mode inside the CW page).
+- 2026-11-12, operator: **bench2 is the RTTY bench**; flash it when needed. `tools/bench.json` (main checkout) updated.
+
+### Plan
+
+The work items are tracked as R001-R012 in `TODO-RTTY.md`.
+
+| Phase | Work | Blocked on |
+|---|---|---|
+| R1 (rest) | done 2026-11-12: real-signal check vs MMTTY/GRITTY (R004), acquisition +/-150 Hz (R013). Open: contest QRM (R015) | - |
+| R2 | `rx_audio` tap + RTTY page + web panel; RAM and CPU measured on bench2 | a flash |
+| R4 | `TA<freq>;` at 22 ms, dummy load, fldigi as arbiter | operator at the bench |
+| R5 | TX: encoder exists; sequencer, macros, keyboard; band guard + inventory | R4 result |

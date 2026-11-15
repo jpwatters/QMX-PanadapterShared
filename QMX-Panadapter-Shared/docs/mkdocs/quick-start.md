@@ -127,7 +127,7 @@ The entire app runs on **edge swipes and taps on the top bar**:
 
 | Action | Does |
 |---|---|
-| Swipe → from **left edge** | Open the **page picker** - tap Panadapter, CW, FT8, FT4, JS8 or WSPR |
+| Swipe → from **left edge** | Open the **page picker** - tap Panadapter, CW, RTTY, FT8, FT4, JS8 or WSPR |
 | Swipe ← from **right edge** | Open settings drawer |
 | Swipe ↑ from **bottom edge** | Open memory channel picker |
 | Tap any **top bar item** | Open that item's selector (Freq, Mode, BW, etc.) |
@@ -166,7 +166,7 @@ Swipe → from the left edge and tap **MODE: FT8** in the page picker to open th
 column to pick **FT8**, **FT4** or **JS8**; the Tab5 retunes to that mode's calling
 frequency on the band you are on.
 
-**JS8** *(beta)* is the keyboard mode: it carries free text instead of FT8's fixed
+**JS8** is the keyboard mode: it carries free text instead of FT8's fixed
 exchange, so you hold a short conversation. In JS8 the page shows **Stations**, **Conversation** and a type box together. Type
 a message in the box — it tells you how many seconds the message will hold the
 frequency before anything is transmitted. See [JS8](guide/js8.md).

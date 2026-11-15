@@ -404,6 +404,16 @@ panel instead of the FT8 one, at parity with the rest of this page:
   new. See [CW](cw.md) for the keyer, macros, band discipline and QSO-ladder
   concepts this panel is built on; everything there applies here too.
 
+## RTTY Control
+
+**Switch to RTTY** in the menu opens the RTTY page on the Tab5 and shows its controls under the waterfall: the decoded text over the waterfall (your own sent text in red), speed and shift, **Auto**, **Reverse**, **AFC**, **Squelch**, and a **RTTY send** block with **To:**, **CQ**, **Answer**, **Exch**, **73**, **STOP** and a **Type** line.
+
+- Click the waterfall to tune: the dial moves and the decoder starts on the click, as a tap on the Tab5.
+- Click a callsign in the text, or type it in **To:** and press Enter. The Tab5 and the browser share this station.
+- The **Type** line sends each key as you type it; **Enter** ends the over.
+
+Everything else - what each control does, and what the Tab5 checks before it keys - is in [RTTY](rtty.md).
+
 ## Memory channels
 
 The **Memory** button opens your 32 channels as a grid.
@@ -615,7 +625,7 @@ The bottom bar groups its actions into four popup menus, plus a battery indicato
 
 **Radio ▲** — the things that reach the radio itself:
 
-- **Switch to Panadapter / CW / FT8 / FT4 / JS8 / WSPR** — changes the Tab5’s own screen from the browser. *(v1.25.0: CW added to the list.)* The **Radio** menu lists all six pages, so each one is a single click; it no longer steps through them in sequence. Choosing a page is what enables it, and the menu follows the Tab5 if you switch there instead
+- **Switch to Panadapter / CW / RTTY / FT8 / FT4 / JS8 / WSPR** — changes the Tab5’s own screen from the browser. *(v1.25.0: CW added; v2.0.0: RTTY.)* The **Radio** menu lists all seven pages, in the order of the Tab5's left drawer, so each one is a single click; it no longer steps through them in sequence. Choosing a page is what enables it, and the menu follows the Tab5 if you switch there instead
 - **TX power** — transmit power on this band: a slider over the levels, with the
   wattage beside it. Drag it and let go to set. *(After v1.26.0: moved here from the
   top bar.)* The levels are the ones your own Calibrate Power sweep

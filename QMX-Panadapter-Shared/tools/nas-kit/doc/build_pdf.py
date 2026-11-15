@@ -123,7 +123,7 @@ TESTED = {1: "Hardware", 2: "Hardware", 3: "Hardware", 4: "Hardware", 5: "Hardwa
           7: "Kit tests", 8: "Hardware", 9: "Hardware", 10: "Bench only", 11: "Not on a Pi yet", 12: "Build",
           14: "Hardware", 15: "Hardware", 16: "Hardware", 17: "Hardware", 18: "Hardware", 21: "Marked tested",
           27: "Bench (fake radio)", 28: "Bench (fake radio)", 29: "Bench (fake radio)", 38: "Browser",
-          39: "Reproduced on radio", 40: "Build; base detected", 42: "Hardware"}
+          39: "Reproduced on radio", 40: "Build; base detected", 42: "Hardware", 44: "Build", 45: "Build"}
 
 PORT_STATUS = open(os.path.join(HERE, "port-status.txt")).read().strip().replace("{BASE}", BASE).replace("{NAS}", NAS) \
     if os.path.exists(os.path.join(HERE, "port-status.txt")) else ""

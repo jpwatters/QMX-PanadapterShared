@@ -1,7 +1,7 @@
-From 9f62b1232df618537210b556ed4a8311b5c9840b Mon Sep 17 00:00:00 2001
+From 128cafc1297f6f510a32eaa8da20faae48fe6160 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
-Subject: [PATCH 04/43] network-radio: full-rate NAS stream on the Tab5 - WiFi
+Subject: [PATCH 04/45] network-radio: full-rate NAS stream on the Tab5 - WiFi
  RX fixes, build on macOS
 
 Bring-up on the real hardware (Tab5 + QMX+ on a Synology DS416j) found the
@@ -43,7 +43,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
  CMakeLists.txt                                |  12 +
- main/idf_component.yml                        |  13 +-
+ main/idf_component.yml                        |  11 +-
  main/net/radio_relay.c                        |  12 +
  sdkconfig                                     |   8 +-
  tools/check_patches.py                        |  16 +
@@ -52,10 +52,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  tools/nas-relay/check.sh                      |  15 +-
  tools/nas-relay/qmx_nas_relay.py              |  65 +++--
  .../patches/apply_cdc_acm_close_tolerant.ps1  |  19 +-
- .../apply_esp_hosted_sdio_rx_copy_psram.ps1   | 132 +++++++++
+ .../apply_esp_hosted_sdio_rx_copy_psram.ps1   | 129 +++++++++
  .../apply_esp_hosted_sdio_split_bundles.ps1   | 274 ++++++++++++++++++
  .../apply_httpd_ws_dead_socket_close.ps1      |   6 +
- 13 files changed, 684 insertions(+), 28 deletions(-)
+ 13 files changed, 680 insertions(+), 27 deletions(-)
  create mode 100644 tools/mac-build-flash.sh
  create mode 100755 tools/mac-capture-serial.sh
  create mode 100644 tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
@@ -83,7 +83,7 @@ index 967f5420..987dc1b8 100644
 +
  project(qmx_panadapter)
 diff --git a/main/idf_component.yml b/main/idf_component.yml
-index d2343bb0..bb0ff727 100644
+index 94b4997f..8de7b185 100644
 --- a/main/idf_component.yml
 +++ b/main/idf_component.yml
 @@ -1,3 +1,8 @@
@@ -111,15 +111,6 @@ index d2343bb0..bb0ff727 100644
  
    espressif/esp-dsp: "^1.6.0"
  
-@@ -22,7 +27,7 @@ dependencies:
-   # mDNS: reach the Tab5 as qmx.local instead of hunting an IP that changes with
-   # the network. Added after an evening lost to exactly that (roamed onto a hotel
-   # WiFi, new lease, no way to find it).
--  espressif/mdns: "^1.2.0"
-+  espressif/mdns: "1.11.3"               # network-radio: pinned
- 
-   lvgl/lvgl: "~9.2.0"
-   espressif/esp_wifi_remote:
 diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
 index 1a065e20..1c6e15ce 100644
 --- a/main/net/radio_relay.c
@@ -526,10 +517,10 @@ index 645b27e0..4a051cc8 100644
                  self.stop("send failed: %s" % e)
                  return
 diff --git a/tools/patches/apply_cdc_acm_close_tolerant.ps1 b/tools/patches/apply_cdc_acm_close_tolerant.ps1
-index 089f5d5d..da326914 100644
+index 62088de4..97f1de09 100644
 --- a/tools/patches/apply_cdc_acm_close_tolerant.ps1
 +++ b/tools/patches/apply_cdc_acm_close_tolerant.ps1
-@@ -149,13 +149,30 @@ $patched = @'
+@@ -162,13 +162,30 @@ $patched = @'
  $originalLf = $original -replace "`r`n", "`n"
  $contentLf  = $content  -replace "`r`n", "`n"
  
@@ -563,10 +554,10 @@ index 089f5d5d..da326914 100644
  
 diff --git a/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1 b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
 new file mode 100644
-index 00000000..e43122e5
+index 00000000..5a0220df
 --- /dev/null
 +++ b/tools/patches/apply_esp_hosted_sdio_rx_copy_psram.ps1
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,129 @@
 +<#
 +.SYNOPSIS
 +    esp_hosted SDIO RX: copy each received WiFi frame into PSRAM instead of
@@ -684,10 +675,7 @@ index 00000000..e43122e5
 +    # first (alphabetical order) and replaces the assert with a drop-the-frame
 +    # branch. Replace that whole block - from the TODO comment to the memcpy -
 +    # with ours, which does the same and also moves the copy to PSRAM.
-+    $rx = [regex]'(?s)	+/\* TODO : Need to abstract heap_caps_malloc \*/
-+	+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);
-+.*?	+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);
-+'
++    $rx = [regex]'(?s)\t+/\* TODO : Need to abstract heap_caps_malloc \*/\r?\n\t+uint8_t \* copy_payload = \(uint8_t \*\)g_h\.funcs->_h_malloc\(buf_handle->payload_len\);\r?\n.*?\t+memcpy\(copy_payload, buf_handle->payload, buf_handle->payload_len\);\r?\n'
 +    $m = $rx.Matches($content)
 +    if ($m.Count -ne 1 -or -not $m[0].Value.Contains("QMX_PANADAPTER_SDIO_COPYPAYLOAD_TOLERANT")) {
 +        Write-Host "Anchor found $n times (expected 1), and no copypayload-patched block either - esp_hosted changed; patch by hand and update this script." -ForegroundColor Red

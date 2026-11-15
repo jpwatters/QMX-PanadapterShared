@@ -1,0 +1,43 @@
+From 21b4563b6a5d0a27780df03376e9fec5b2bd2e17 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 15 Nov 2026 08:25:57 -0600
+Subject: [PATCH 45/45] rtty: refuse to transmit while another device has the
+ transmitter
+
+v2.0.0 adds RTTY transmit. Like FT8/FT4 and WSPR, an RTTY over now refuses
+with "TX locked: Another Device has the transmitter" while the NAS relay
+reports that the Mac's TCI bridge holds the transmitter (the relay would
+drop the Tab5's TX; and tones anyway).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ main/rtty_tx.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/main/rtty_tx.c b/main/rtty_tx.c
+index 72feb44d..2101712e 100644
+--- a/main/rtty_tx.c
++++ b/main/rtty_tx.c
+@@ -10,6 +10,7 @@
+ #include "tx_band_guard.h"
+ #include "wspr_rx.h"
+ #include "cat/cat.h"
++#include "net/radio_relay.h"   // radio_relay_tx_locked - another device has the transmitter
+ #include "storage/settings.h"
+ #include "ui/ui.h"
+ 
+@@ -280,6 +281,10 @@ static esp_err_t start_over(char *err, size_t err_len)
+         snprintf(err, err_len, "another transmission holds the radio"); return ESP_ERR_INVALID_STATE;
+     }
+     if (wspr_rx_running())          { snprintf(err, err_len, "WSPR is running"); return ESP_ERR_INVALID_STATE; }
++    /* network radio: while the NAS relay reports that another device (the Mac's
++     * TCI bridge) has the transmitter, the relay would drop TX; and every tone
++     * anyway - refuse here and say why, as FT8/FT4 and WSPR do. */
++    if (radio_relay_tx_locked(NULL, 0)) { snprintf(err, err_len, "%s", RADIO_RELAY_TX_LOCKED_MSG); return ESP_ERR_INVALID_STATE; }
+ 
+     rtty_rx_status_t rs; rtty_rx_status(&rs);
+     if (!rs.cfg.on)                 { snprintf(err, err_len, "RTTY page is not open"); return ESP_ERR_INVALID_STATE; }
+-- 
+2.43.0
+

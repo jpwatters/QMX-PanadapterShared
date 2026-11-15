@@ -1,7 +1,7 @@
-From d6c948972144dc8f9428286f3dca84cf4f31df1a Mon Sep 17 00:00:00 2001
+From 98eed354acbef11dd52f4c9b8baa273abee2754d Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 23 Oct 2026 21:00:00 -0500
-Subject: [PATCH 30/43] README: features of v1.20.5-NAS - TX locked, one
+Subject: [PATCH 30/45] README: features of v1.20.5-NAS - TX locked, one
  transmitter at a time, I/Q copy, port status
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 10 insertions(+), 3 deletions(-)
 
 diff --git a/README.md b/README.md
-index 062e3171..06de1a80 100644
+index 7dd88437..c18a4f9f 100644
 --- a/README.md
 +++ b/README.md
 @@ -12,7 +12,10 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -22,7 +22,7 @@ index 062e3171..06de1a80 100644
 +6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
 +7. An update kit that rebuilds all of this on each new upstream release
 +
-+The NAS patches were last ported on 2026-11-12, to upstream v1.26.1 (compile-checked; upstream’s own checks and host tests give the same results as plain v1.26.1; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
++The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.0; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
  
  **Sharing the radio over the network**
  * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.

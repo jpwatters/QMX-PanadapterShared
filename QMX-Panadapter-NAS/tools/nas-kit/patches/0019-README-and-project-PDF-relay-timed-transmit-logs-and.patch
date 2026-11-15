@@ -1,7 +1,7 @@
-From 0713a4db135b00607aa19109ba04acec2203b408 Mon Sep 17 00:00:00 2001
+From 1489c048e58e915fb548bd4cf62875ea18dcaa9a Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 19:28:28 -0500
-Subject: [PATCH 19/43] README and project PDF: relay-timed transmit, logs and
+Subject: [PATCH 19/45] README and project PDF: relay-timed transmit, logs and
  guards; M5StackTab5QMX+SharedOverNetwork.pdf
 
 The README lists the relay-timed FT8/FT4 transmit, the I/Q pause, the CAT
@@ -5969,7 +5969,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/README.md b/README.md
-index a3c0e48c..ac14bda4 100644
+index 50cff73c..04ff4d14 100644
 --- a/README.md
 +++ b/README.md
 @@ -21,21 +21,24 @@ On the Tab5

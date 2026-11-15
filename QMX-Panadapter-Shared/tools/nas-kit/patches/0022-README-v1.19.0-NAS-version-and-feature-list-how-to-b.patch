@@ -1,7 +1,7 @@
-From 41b5fb801bda87491f840c97179a075e0eb4ec6e Mon Sep 17 00:00:00 2001
+From 0d2513f6072a7fcf936a74c5f9b885c0a1af5c5c Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 00:23:22 -0500
-Subject: [PATCH 22/43] README: v1.19.0-NAS version and feature list; how to
+Subject: [PATCH 22/45] README: v1.19.0-NAS version and feature list; how to
  build the current version
 
 The front page names the version (upstream v1.19.0 + NAS patches), lists
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 53 insertions(+), 23 deletions(-)
 
 diff --git a/README.md b/README.md
-index 8c80e74b..71756468 100644
+index 413c3bdb..882b1033 100644
 --- a/README.md
 +++ b/README.md
 @@ -4,44 +4,74 @@
@@ -116,7 +116,7 @@ index 8c80e74b..71756468 100644
 +* QMX-Panadapter-Shared.pdf: the same v1.19.0-NAS project under the Shared title. QMX-Panadapter-SharedViaNAS.pdf: the Synology NAS part only (relay, Tab5 firmware, timing), for readers who don't need the Raspberry Pi or Mac tools.
 +* The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.
  
- The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.
+ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8, FT4, JS8, RTTY and WSPR decoding and transmit, a CW page, ADIF logging, and a matching browser web UI.
  
 -- 
 2.43.0

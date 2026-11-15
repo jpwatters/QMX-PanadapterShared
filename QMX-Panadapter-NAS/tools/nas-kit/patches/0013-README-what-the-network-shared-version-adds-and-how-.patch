@@ -1,7 +1,7 @@
-From 456345686a69ae8b9ddf331918464016b04461bc Mon Sep 17 00:00:00 2001
+From c9a1dd921efa92c93ebb867e411c475de70cd5dc Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Fri, 9 Oct 2026 07:15:23 +0000
-Subject: [PATCH 13/43] README: what the network-shared version adds, and how
+Subject: [PATCH 13/45] README: what the network-shared version adds, and how
  far each part is tested
 
 Same text as QMX-Panadapter-Shared's README (commits 30dc89e + the wording
@@ -15,7 +15,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
  1 file changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 87947f0f..a3c0e48c 100644
+index e9f11717..50cff73c 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,9 +1,45 @@
@@ -62,7 +62,7 @@ index 87947f0f..a3c0e48c 100644
 +
 +
 +
- The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8/FT4/JS8 decoding and transmit, ADIF logging, and a matching browser web UI.
+ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Tab5 connects to the QMX as a USB host, decodes the I/Q in real time on the ESP32-P4, and renders a touch-driven panadapter with tap-to-tune, pinch-zoom, onboard FT8, FT4, JS8, RTTY and WSPR decoding and transmit, a CW page, ADIF logging, and a matching browser web UI.
  
  **Documentation:** [tab5.lav.dk](https://tab5.lav.dk) — the user guide, quick-start, and reference as plain web pages. A more approachable read than this page if you just want to set the device up; the source code and release downloads stay here on GitHub.
 -- 

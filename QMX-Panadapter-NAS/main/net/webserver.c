@@ -85,6 +85,9 @@
 #include "hid_cursor.h"
 #include "iq_balance.h"        // iq_balance_set_enabled - /api/settings
 #include "rx_audio.h"          // live AGC/clip tuning - /api/cmd "rxaudio"
+#include "rtty_rx.h"           // /api/cmd "rtty" - R005
+#include "rtty_tx.h"           // /api/cmd "rtty_send" / "rtty_stop" - R010, keys the radio
+#include "ui/rtty_screen_view.h" // /api/cmd "rtty" tune_hz - the Tab5 tap, shared
 #include "webradio.h"          // /api/cmd "webradio_play" - a stream without the directory
 #include "util/mic_probe.h"    // /api/cmd "mic_probe" - GitHub #17
 #include "spur_map.h"          // spur_map_set_enabled - /api/settings
@@ -124,6 +127,8 @@ extern uint32_t qmx_lv_event_chain_bad;
 #include "freertos/idf_additions.h"  // xTaskCreateWithCaps / vTaskDeleteWithCaps
 #include "freertos/queue.h"
 #include <stdlib.h>
+#include <math.h>
+#include "esp_attr.h"
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
@@ -764,6 +769,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
 
     cJSON_AddNumberToObject(root, "freq_hz",     (double)cat_get_frequency());
+    /* RTTY page: Freq shows dial + this (the MARK) - rtty_screen_view.h. */
+    if (ui_mode_get() == UI_MODE_RTTY)
+        cJSON_AddNumberToObject(root, "rtty_mark_off", rtty_screen_view_mark_offset_hz());
     cJSON_AddStringToObject(root, "radio_link",  cat_get_transport());   // "usb" / "net" / "none"
     cJSON_AddStringToObject(root, "qmx_fw",       cat_get_qmx_fw());
     cJSON_AddStringToObject(root, "mode",         ui_get_mode_str());
@@ -890,7 +898,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "screen",
         ui_mode_get() == UI_MODE_FT8  ? "ft8"  :
         ui_mode_get() == UI_MODE_WSPR ? "wspr" :
-        ui_mode_get() == UI_MODE_CW   ? "cw"   : "panadapter");
+        ui_mode_get() == UI_MODE_CW   ? "cw"   :
+        ui_mode_get() == UI_MODE_RTTY ? "rtty" : "panadapter");
     /* ⚠ ALSO IN /api/settings, AND BOTH ARE NEEDED. The web UI shows or hides
      * the whole WSPR card from THIS field, on the 1 Hz status poll - it never
      * reads /api/settings. Adding it only there (which is what shipped first)
@@ -1573,6 +1582,9 @@ static esp_err_t status_handler(httpd_req_t *req)
                         sp[i].mode == SPOT_MODE_CW   ? "cw"   :
                         sp[i].mode == SPOT_MODE_SSB  ? "ssb"  :
                         sp[i].mode == SPOT_MODE_DIGI ? "digi" : "");
+                    /* R007: the feed said RTTY. "m" stays "digi" so every
+                     * existing filter is unchanged; the RTTY page keys on this. */
+                    if (sp[i].rtty) cJSON_AddNumberToObject(o, "ry", 1);
                     // The browser only asks "is this RBN?" (anything else gets the
                     // activation colour), so naming SOTA here needs no browser
                     // change - but calling a summit "pota" in the API would be a
@@ -1989,6 +2001,9 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             // band preset recalled while on the CW page must land inside its
             // CW+Digi range exactly like every other tune on this page.
             uint32_t want = ui_cw_tune_clamp_hz(target ? target : center_hz);
+            /* RTTY page: the middle of the band's DiGi segment, exactly as
+             * the Tab5's band popup does - one function, both paths. */
+            want = ui_band_change_target_hz(center_hz, want);
             /* Forced, exactly as the Tab5's own band button does (ui.c
              * band_preset_cb). A band change is a deliberate one-shot, and the
              * plain call is droppable: tune, then change band within 200 ms,
@@ -2704,6 +2719,10 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                 }
                 ui_request_base_mode_m(UI_MODE_CW);
             }
+            else if (!strcmp(scr, "rtty")) {
+                /* R006. RX only, so no gate: the page cannot key the radio. */
+                ui_request_base_mode_m(UI_MODE_RTTY);
+            }
             else if (!strcmp(scr, "pan") || !strcmp(scr, "panadapter")) {
                 ui_request_base_mode_m(UI_MODE_PANADAPTER);
             }
@@ -2714,7 +2733,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_set_status(req, "400 Bad Request");
                 httpd_resp_sendstr(req,
-                    "{\"ok\":false,\"error\":\"screen must be pan, cw, ft8, ft4, js8 or wspr\"}");
+                    "{\"ok\":false,\"error\":\"screen must be pan, cw, rtty, ft8, ft4, js8 or wspr\"}");
                 return ESP_OK;
             }
         } else {
@@ -2722,7 +2741,7 @@ static esp_err_t cmd_handler(httpd_req_t *req)
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_status(req, "400 Bad Request");
             httpd_resp_sendstr(req,
-                "{\"ok\":false,\"error\":\"screen required (pan, cw, ft8, ft4, js8 or wspr)\"}");
+                "{\"ok\":false,\"error\":\"screen required (pan, cw, rtty, ft8, ft4, js8 or wspr)\"}");
             return ESP_OK;
         }
     } else if (action && strcmp(action, "reply") == 0) {
@@ -3384,6 +3403,64 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         httpd_resp_sendstr(req, txt ? txt : "{\"ok\":false}");
         free(txt);
         return ESP_OK;
+    } else if (action && strcmp(action, "rtty_send") == 0) {
+        /* R010 RTTY TX (docs/rtty-tx-design.md). ⛔ KEYS THE RADIO when idle;
+         * appends while an over runs. Refusals, the dial move and the band
+         * guard live in rtty_tx_send().
+         *   {"action":"rtty_send","text":"CQ CQ DE ...","end":true}
+         *   {"action":"rtty_send","macro":"cq"}   (cq | answer | exch | 73)
+         * "test":true sends R009's fixed text (THE QUICK BROWN FOX ... DE call)
+         * once, end of over after it - the on-air check with fldigi. */
+        /* "macro":"cq"|"answer"|"exch"|"73" - the Tab5's four buttons, built
+         * by rtty_tx_macro() so both surfaces send the same text. */
+        cJSON *mj = cJSON_GetObjectItem(root, "macro");
+        if (cJSON_IsString(mj)) {
+            static const char *const MN[4] = { "cq", "answer", "exch", "73" };
+            int m = -1;
+            for (int i = 0; i < 4; i++) if (!strcmp(mj->valuestring, MN[i])) m = i;
+            cJSON_Delete(root);
+            char merr[160] = "unknown macro (cq, answer, exch, 73)";
+            esp_err_t mr = m < 0 ? ESP_ERR_INVALID_ARG : rtty_tx_macro((rtty_msg_t)m, merr, sizeof merr);
+            cJSON *res = cJSON_CreateObject();
+            cJSON_AddBoolToObject(res, "ok", mr == ESP_OK);
+            if (mr != ESP_OK) cJSON_AddStringToObject(res, "error", merr);
+            char *txt = cJSON_PrintUnformatted(res);
+            cJSON_Delete(res);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_sendstr(req, txt ? txt : "{\"ok\":false}");
+            free(txt);
+            return ESP_OK;
+        }
+        static char ttext[600];
+        cJSON *tj = cJSON_GetObjectItem(root, "text");
+        bool end = !cJSON_IsFalse(cJSON_GetObjectItem(root, "end"));
+        if (cJSON_IsTrue(cJSON_GetObjectItem(root, "test"))) {
+            char call[16]; settings_get_my_callsign(call, sizeof call);
+            snprintf(ttext, sizeof ttext,
+                     "RYRYRYRYRY THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 0123456789 DE %s %s\n"
+                     "RYRYRYRYRY THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 0123456789 DE %s %s\n",
+                     call, call, call, call);
+        } else {
+            snprintf(ttext, sizeof ttext, "%s", cJSON_IsString(tj) ? tj->valuestring : "");
+        }
+        cJSON_Delete(root);
+        char terr[160] = "";
+        esp_err_t terr_code = rtty_tx_send(ttext, end, terr, sizeof terr);
+        cJSON *res = cJSON_CreateObject();
+        cJSON_AddBoolToObject(res, "ok", terr_code == ESP_OK);
+        if (terr_code != ESP_OK) cJSON_AddStringToObject(res, "error", terr);
+        char *txt = cJSON_PrintUnformatted(res);
+        cJSON_Delete(res);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, txt ? txt : "{\"ok\":false}");
+        free(txt);
+        return ESP_OK;
+    } else if (action && strcmp(action, "rtty_stop") == 0) {
+        cJSON_Delete(root);
+        rtty_tx_stop();
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
     } else if (action && strcmp(action, "update_check") == 0) {
         // Force the periodic check to run now rather than waiting out the
         // interval. Makes "did the release land?" answerable in seconds
@@ -3652,6 +3729,151 @@ static esp_err_t cmd_handler(httpd_req_t *req)
                  (unsigned long)n, (unsigned long)cap, DSP_SAMPLE_RATE_HZ);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, body);
+        return ESP_OK;
+    } else if (action && strcmp(action, "rtty") == 0) {
+        /* RTTY receive, R005/R006 (TODO-RTTY.md). Nothing here keys ("call"
+         * only names the station; rtty_send keys).
+         *   {"action":"rtty","on":true,"offset_hz":1423,"reverse":false,
+         *    "baud":45.45,"shift":170,"afc":true,"squelch":true}
+         *   {"action":"rtty"}             -> status + the last decoded text
+         * offset_hz is the tone centre as it sounds in USB audio, i.e. its RF
+         * offset from the dial. Omitted fields keep their current value. */
+        rtty_rx_cfg_t c;
+        rtty_rx_get_cfg(&c);
+        bool touched = false;
+        cJSON *j;
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "on")))        { c.on = cJSON_IsTrue(j); touched = true; }
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "offset_hz"))) { c.offset_hz = j->valueint; touched = true; }
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "reverse")))   { c.reverse = cJSON_IsTrue(j); touched = true; }
+        /* A fixed speed or shift is a choice: it turns R028's auto off, the
+         * same as on the Tab5 picker. "auto":true turns it back on. */
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "baud")))    { c.baud = (float)j->valuedouble; c.auto_mode = false; touched = true; }
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "shift")))   { c.shift_hz = (float)j->valuedouble; c.auto_mode = false; touched = true; }
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "auto")))      { c.auto_mode = cJSON_IsTrue(j); touched = true; }
+        /* development: "observe":true runs the estimator without applying;
+         * "iqcap":10 records the decoder's input -> GET /api/rxaudio.wav?rtty=1 */
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "observe")))   rtty_rx_set_observe(cJSON_IsTrue(j));
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "iqcap")))   rtty_rx_iqcap_start((float)j->valuedouble);
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "afc")))       { c.afc = cJSON_IsTrue(j); touched = true; }
+        if (cJSON_IsBool(j = cJSON_GetObjectItem(root, "squelch")))   { c.squelch = cJSON_IsTrue(j); touched = true; }
+        if (touched) rtty_rx_apply(&c);
+        rtty_rx_service();   /* RTTY can run with only the web page open - see rtty_rx.h */
+        /* "tune_hz": the web page's click on the waterfall - the SAME function
+         * as a Tab5 tap (dial to put it at 1500 Hz audio, decoder on it). */
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "tune_hz")) && j->valuedouble > 0)
+            rtty_screen_view_tap_hz((uint32_t)j->valuedouble);
+        /* "mark_hz": the web keypad on the RTTY page - the typed number is the
+         * mark, as on the Tab5 keypad. */
+        if (cJSON_IsNumber(j = cJSON_GetObjectItem(root, "mark_hz")) && j->valuedouble > 0)
+            rtty_screen_view_tune_mark_hz((uint32_t)j->valuedouble);
+        /* "clear":true - the web page's Clear. Empties the shared text ring;
+         * the Tab5 grid follows rtty_rx_text_clear_gen(). */
+        if (cJSON_IsTrue(cJSON_GetObjectItem(root, "clear"))) rtty_rx_text_clear();
+        /* "call": the station being worked ({CALL}, "To:"), shared with the
+         * Tab5 - a click on a callsign in the web text or one typed. "" clears.
+         * Not a callsign shape -> "call_error", nothing changed. */
+        bool call_bad = false;
+        if (cJSON_IsString(j = cJSON_GetObjectItem(root, "call")))
+            call_bad = !rtty_tx_set_call(j->valuestring);
+        /* Text stream for the web page: "rx_cur"/"tx_cur" are the counts it
+         * has read so far; the reply carries what came after each, so the
+         * page can show sent text in red where it went, as the Tab5 does.
+         * Without them the reply starts both cursors at "now". */
+        uint32_t rx_cur = rtty_rx_text_count(), tx_cur = rtty_tx_text_count();
+        bool want_rx = cJSON_IsNumber(j = cJSON_GetObjectItem(root, "rx_cur"));
+        if (want_rx) rx_cur = (uint32_t)j->valuedouble;
+        bool want_tx = cJSON_IsNumber(j = cJSON_GetObjectItem(root, "tx_cur"));
+        if (want_tx) tx_cur = (uint32_t)j->valuedouble;
+        cJSON_Delete(root);
+        static char rx_new[1025], tx_new[513];
+        size_t rn = want_rx ? rtty_rx_text_read(&rx_cur, rx_new, sizeof rx_new - 1) : 0;
+        size_t tn = want_tx ? rtty_tx_text_read(&tx_cur, tx_new, sizeof tx_new - 1) : 0;
+        rx_new[rn] = 0; tx_new[tn] = 0;
+        rtty_rx_status_t st;
+        rtty_rx_status(&st);
+        static char text[513];
+        rtty_rx_text_tail(text, sizeof(text));
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "on", st.cfg.on);
+        cJSON_AddNumberToObject(o, "offset_hz", st.cfg.offset_hz);
+        cJSON_AddBoolToObject(o, "reverse", st.cfg.reverse);
+        cJSON_AddNumberToObject(o, "baud", (int)(st.cfg.baud * 100.0f + 0.5f) / 100.0);
+        cJSON_AddNumberToObject(o, "shift", (int)st.cfg.shift_hz);
+        cJSON_AddBoolToObject(o, "afc", st.cfg.afc);
+        cJSON_AddBoolToObject(o, "squelch", st.cfg.squelch);
+        cJSON_AddBoolToObject(o, "auto", st.cfg.auto_mode);
+        if (st.auto_run) {   /* R028 estimator internals - development */
+            cJSON *d = cJSON_AddObjectToObject(o, "auto_dbg");
+            cJSON_AddBoolToObject(d, "shift_ok", st.auto_shift_ok);
+            cJSON_AddNumberToObject(d, "shift", (int)st.auto_shift);
+            cJSON_AddNumberToObject(d, "pair_db", (int)(st.auto_pair_db * 10.0f) / 10.0);
+            cJSON_AddNumberToObject(d, "pair_centre", (int)st.auto_pair_centre);
+            cJSON_AddNumberToObject(d, "runs", st.auto_runs);
+            cJSON_AddBoolToObject(d, "baud_ok", st.auto_baud_ok);
+            for (int p = 0; p < 2; p++) {   /* run lengths, 1 ms bins: [ms, count] pairs, non-zero only */
+                cJSON *h = cJSON_AddArrayToObject(d, p ? "hist_high" : "hist_low");
+                for (int k = 0; k < 64; k++)
+                    if (st.auto_hist[p][k]) {
+                        cJSON *pr = cJSON_CreateArray();
+                        cJSON_AddItemToArray(pr, cJSON_CreateNumber(k));
+                        cJSON_AddItemToArray(pr, cJSON_CreateNumber(st.auto_hist[p][k]));
+                        cJSON_AddItemToArray(h, pr);
+                    }
+            }
+            cJSON *sc = cJSON_AddArrayToObject(d, "scores");
+            for (int k = 0; k < 4; k++) cJSON_AddItemToArray(sc, cJSON_CreateNumber((int)(st.auto_score[k] * 100.0f) / 100.0));
+        }
+        if (st.auto_ok) {   /* what the estimator hears now (R028) */
+            cJSON *a = cJSON_AddObjectToObject(o, "heard");
+            cJSON_AddNumberToObject(a, "baud", (int)(st.auto_baud * 100.0f + 0.5f) / 100.0);
+            cJSON_AddNumberToObject(a, "shift", (int)st.auto_shift);
+            cJSON_AddBoolToObject(a, "reverse", st.auto_reverse);
+        }
+        cJSON_AddNumberToObject(o, "fs_hz", st.fs_hz);
+        cJSON_AddNumberToObject(o, "sig_lvl", (int)(st.sig_lvl * 100.0f + 0.5f) / 100.0);
+        cJSON_AddBoolToObject(o, "present", st.present);
+        cJSON_AddNumberToObject(o, "afc_hz", (int)(st.afc_hz * 10.0f) / 10.0);
+        cJSON_AddNumberToObject(o, "chars", st.chars);
+        cJSON_AddNumberToObject(o, "acq_jumps", st.acq_jumps);
+        {   /* development: the decoder's counters since its last restart */
+            cJSON *dm = cJSON_AddObjectToObject(o, "dem");
+            cJSON_AddNumberToObject(dm, "chars", st.dem_chars);
+            cJSON_AddNumberToObject(dm, "framing", st.dem_framing);
+            cJSON_AddNumberToObject(dm, "false_start", st.dem_false_start);
+            cJSON_AddNumberToObject(dm, "unlock", st.dem_unlock);
+            cJSON_AddNumberToObject(dm, "grid", st.dem_grid);
+            uint32_t iqn = 0; float iqfs = 0; bool iqr = false;
+            rtty_rx_iqcap_data(&iqn, &iqfs, &iqr);
+            cJSON_AddNumberToObject(dm, "iq_pairs", iqn);
+            cJSON_AddBoolToObject(dm, "iq_recording", iqr);
+        }
+        cJSON_AddStringToObject(o, "text", text);
+        cJSON_AddNumberToObject(o, "rx_cur", rx_cur);
+        cJSON_AddNumberToObject(o, "tx_cur", tx_cur);
+        if (rn) cJSON_AddStringToObject(o, "rx_new", rx_new);
+        if (tn) cJSON_AddStringToObject(o, "tx_new", tx_new);
+        cJSON_AddNumberToObject(o, "clear_gen", rtty_rx_text_clear_gen());
+        {
+            char call[16];
+            rtty_tx_get_call(call, sizeof call);
+            cJSON_AddStringToObject(o, "call", call);
+            if (call_bad) cJSON_AddStringToObject(o, "call_error", "not a callsign");
+        }
+        rtty_tx_status_t ts;
+        rtty_tx_status(&ts);
+        cJSON *tx = cJSON_AddObjectToObject(o, "tx");
+        cJSON_AddBoolToObject(tx, "keyed", ts.keyed);
+        cJSON_AddNumberToObject(tx, "queued", ts.queued);
+        cJSON_AddNumberToObject(tx, "sent", ts.sent);
+        cJSON_AddNumberToObject(tx, "centre_hz", ts.centre_hz);
+        cJSON_AddNumberToObject(tx, "seconds", ts.seconds);
+        cJSON_AddStringToObject(tx, "echo", ts.echo);
+        cJSON_AddStringToObject(tx, "error", ts.err);
+        char *body = cJSON_PrintUnformatted(o);
+        cJSON_Delete(o);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, body ? body : "{\"ok\":false}");
+        free(body);
         return ESP_OK;
     } else if (action && strcmp(action, "cw_clear") == 0) {
         /* Wipe the decoded-CW window (Bryan N0LUF, 2026-10-16: "it might be
@@ -5395,8 +5617,52 @@ static const httpd_uri_t uri_adif_edit = {
  * GET /api/rxaudio.json returns the sample index of every gap in the same
  * window, so an artefact in the waveform can be matched to one - or shown not
  * to coincide with any, which is just as useful an answer. */
+/* ?rtty=1: the RTTY decoder's I/Q input (rtty_rx_iqcap_*) as a stereo WAV,
+ * I left, Q right, scaled so the largest |sample| is 30000. Development. */
+static esp_err_t rtty_iq_wav(httpd_req_t *req)
+{
+    uint32_t n = 0; float fs = 0; bool run = false;
+    const float *iq = rtty_rx_iqcap_data(&n, &fs, &run);
+    if (!iq || run) {
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, run ? "still recording" :
+            "nothing recorded - POST /api/cmd {\"action\":\"rtty\",\"iqcap\":10} first");
+        return ESP_FAIL;
+    }
+    float mx = 1e-9f;
+    for (uint32_t i = 0; i < 2 * n; i++) { float a = fabsf(iq[i]); if (a > mx) mx = a; }
+    const float g = 30000.0f / mx;
+    const uint32_t rate = (uint32_t)(fs + 0.5f), data_bytes = n * 4;
+    uint8_t hdr[44];
+    #define W32(o,v) do{ hdr[o]=(uint8_t)((v)&0xff); hdr[o+1]=(uint8_t)(((v)>>8)&0xff); hdr[o+2]=(uint8_t)(((v)>>16)&0xff); hdr[o+3]=(uint8_t)(((v)>>24)&0xff);}while(0)
+    #define W16(o,v) do{ hdr[o]=(uint8_t)((v)&0xff); hdr[o+1]=(uint8_t)(((v)>>8)&0xff);}while(0)
+    memcpy(hdr, "RIFF", 4); W32(4, 36 + data_bytes); memcpy(hdr + 8, "WAVEfmt ", 8); W32(16, 16); W16(20, 1);
+    W16(22, 2); W32(24, rate); W32(28, rate * 4); W16(32, 4); W16(34, 16);
+    memcpy(hdr + 36, "data", 4); W32(40, data_bytes);
+    #undef W32
+    #undef W16
+    httpd_resp_set_type(req, "audio/wav");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=rtty_iq.wav");
+    webserver_ws_set_paused(true);
+    esp_err_t err = httpd_resp_send_chunk(req, (const char *)hdr, sizeof(hdr));
+    static EXT_RAM_BSS_ATTR int16_t buf[2048];   /* PSRAM - see rtty_rx.c s_text */
+    for (uint32_t off = 0; off < 2 * n && err == ESP_OK; off += 2048) {
+        uint32_t len = 2 * n - off < 2048 ? 2 * n - off : 2048;
+        for (uint32_t i = 0; i < len; i++) buf[i] = (int16_t)lroundf(iq[off + i] * g);
+        err = httpd_resp_send_chunk(req, (const char *)buf, (ssize_t)(len * 2));
+    }
+    if (err != ESP_OK) { webserver_ws_set_paused(false); return ESP_FAIL; }
+    httpd_resp_send_chunk(req, NULL, 0);
+    webserver_ws_set_paused(false);
+    return ESP_OK;
+}
+
 static esp_err_t rxaudio_wav_handler(httpd_req_t *req)
 {
+    {
+        char q[32];
+        if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK && strstr(q, "rtty=1"))
+            return rtty_iq_wav(req);
+    }
     uint32_t n = 0;
     const int16_t *pcm = rx_audio_cap_data(&n);
     if (!pcm || !n) {
@@ -8725,6 +8991,12 @@ static esp_err_t wspr_handler(httpd_req_t *req)
          * line said "off" as a string literal while the operator watched his
          * spots appear on wsprnet.org. */
         cJSON_AddStringToObject(o, "status", wsprnet_status());
+        /* Reports ACCEPTED since boot. A separate number from "confirmed"
+         * below and they will not agree: that one counts eligible callsigns
+         * in the current spot table, this one every accepted report, calls
+         * long aged out of the table included. Asked for after a 20-hour run
+         * where the per-pass count cleared every two minutes. */
+        cJSON_AddNumberToObject(o, "sent_total", wsprnet_sent_total());
         /* How many of the calls heard are eligible under the heard-more-than-
          * once rule that gates publication - the part an operator cannot work
          * out from anywhere else on the page. */
@@ -9924,6 +10196,13 @@ esp_err_t webserver_start(void)
      * list, and 80 costs 80 pointers of PSRAM-backed config. */
     config.max_uri_handlers = WEB_MAX_URI_HANDLERS;
     config.lru_purge_enable = true;
+    /* ⛔ BELOW rx_audio (3), 2026-11-15 (T201). The IDF default is 5 with no
+     * core affinity, so a request could run on core 1 above the audio task.
+     * Measured on bench1 (f3c7e7fd, per-frame task snapshot): in an 87 ms
+     * rx_audio frame httpd ran 35 ms, rx_audio itself 19 ms - one of the
+     * ~60 s stalls that each made a codec underrun. At 2 a request uses
+     * core-1 idle time (25-45 %); keying runs in its own tasks (rtty_tx 7). */
+    config.task_priority   = 2;
     // LWIP_MAX_SOCKETS is 16; httpd reserves 3, so up to 13 sessions are safe.
     // Give the browser headroom (WS + /api polls + reconnect bursts) so a stale
     // session can be LRU-purged instead of bouncing new connects off ENFILE.

@@ -1,7 +1,7 @@
-From b1cb8b660a4988803a9cb0028070612e85841b47 Mon Sep 17 00:00:00 2001
+From 7cbf790122c305cc23b66b04f2de1fe309a30445 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 17:12:57 -0500
-Subject: [PATCH 17/43] nas-relay: pause I/Q to the Tab5 from TX; to RX;
+Subject: [PATCH 17/45] nas-relay: pause I/Q to the Tab5 from TX; to RX;
 
 The incoming I/Q (~190 KB/s) is what overflows the Tab5's WiFi SDIO link
 during a burst; on 2026-10-14 one such stall held the last symbols back by

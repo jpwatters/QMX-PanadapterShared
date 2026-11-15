@@ -1,7 +1,7 @@
-From 3f366c8a595b6e272397cffe754dd37818ff22d8 Mon Sep 17 00:00:00 2001
+From 99ca21d7f7b9b8b9c5631d9b4567f8cd7d12fd32 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 08:21:10 -0500
-Subject: [PATCH 42/43] nas-relay: answer Find NAS from the interface the query
+Subject: [PATCH 42/45] nas-relay: answer Find NAS from the interface the query
  arrived on
 
 The relay answered "QMXR?" with, and from, whatever interface the routing

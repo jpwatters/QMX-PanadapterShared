@@ -1,0 +1,36 @@
+From 19882f32eaa32be01e1ea130c8445b4ef19c048e Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 15 Nov 2026 08:16:58 -0600
+Subject: [PATCH 44/45] patches: sdio recovery re-applies the other sdio
+ patches with the running PowerShell
+
+Upstream's v2.0.0 apply_esp_hosted_sdio_recovery.ps1 re-runs the other
+apply_esp_hosted_sdio_*.ps1 scripts after its whole-file copy, by calling a
+command named "powershell". macOS and Linux have only pwsh, so on the Mac
+(tools/mac-build-flash.sh) every re-apply would fail and stop the build. It
+now starts the same PowerShell that is running it ((Get-Process -Id $PID).Path),
+which is powershell.exe on Windows and pwsh elsewhere.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ tools/patches/apply_esp_hosted_sdio_recovery.ps1 | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/tools/patches/apply_esp_hosted_sdio_recovery.ps1 b/tools/patches/apply_esp_hosted_sdio_recovery.ps1
+index 96fa2613..a388e4f2 100644
+--- a/tools/patches/apply_esp_hosted_sdio_recovery.ps1
++++ b/tools/patches/apply_esp_hosted_sdio_recovery.ps1
+@@ -100,6 +100,8 @@ Write-Host "  $target"
+ Get-ChildItem (Join-Path $PSScriptRoot "apply_esp_hosted_sdio_*.ps1") |
+     Where-Object { $_.Name -ne (Split-Path -Leaf $PSCommandPath) } |
+     ForEach-Object {
+-        & powershell -ExecutionPolicy Bypass -File $_.FullName
++        # The PowerShell running this script, not a command named "powershell":
++        # macOS and Linux have only pwsh (network-radio, 2026-11-15).
++        & (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $_.FullName
+         if ($LASTEXITCODE -ne 0) { Write-Host "Re-apply failed: $($_.Name)" -ForegroundColor Red; exit 1 }
+     }
+-- 
+2.43.0
+
