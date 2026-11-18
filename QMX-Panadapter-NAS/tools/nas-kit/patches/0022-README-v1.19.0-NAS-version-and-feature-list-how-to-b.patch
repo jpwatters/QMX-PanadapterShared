@@ -1,7 +1,7 @@
-From 0d2513f6072a7fcf936a74c5f9b885c0a1af5c5c Mon Sep 17 00:00:00 2001
+From 3545313f40df05fd443c62e29a90831779d14d5c Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 15 Oct 2026 00:23:22 -0500
-Subject: [PATCH 22/45] README: v1.19.0-NAS version and feature list; how to
+Subject: [PATCH 22/46] README: v1.19.0-NAS version and feature list; how to
  build the current version
 
 The front page names the version (upstream v1.19.0 + NAS patches), lists
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 53 insertions(+), 23 deletions(-)
 
 diff --git a/README.md b/README.md
-index 413c3bdb..882b1033 100644
+index d239843e..dd3cc8c5 100644
 --- a/README.md
 +++ b/README.md
 @@ -4,44 +4,74 @@

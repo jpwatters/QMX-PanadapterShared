@@ -1,7 +1,7 @@
-From f2635a3b2cc1caed4bb4350433b214b88b65aba7 Mon Sep 17 00:00:00 2001
+From 357fc4e493e217f31d3aecf7439cda32cb80e44b Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sat, 31 Oct 2026 03:32:15 -0500
-Subject: [PATCH 41/45] README: appendix "Initial Setup of the QMX/QMX+ for use
+Subject: [PATCH 41/46] README: appendix "Initial Setup of the QMX/QMX+ for use
  with the Tab5-Panadapter"
 
 Firmware version, the radio settings the Tab5 needs (IQ mode, USB serial
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 94 insertions(+), 2 deletions(-)
 
 diff --git a/README.md b/README.md
-index 218dcbd6..2299d09d 100644
+index 0e34ba67..c1e3270f 100644
 --- a/README.md
 +++ b/README.md
 @@ -8,7 +8,7 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
@@ -107,10 +107,10 @@ index 218dcbd6..2299d09d 100644
  **Keeping up with upstream**
  * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
  * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-@@ -1585,3 +1644,36 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own
- GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
+@@ -1598,3 +1657,36 @@ GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1L
+ Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, the web radio's MP3 decoder is [minimp3](https://github.com/lieff/minimp3) under CC0 1.0 (vendored at `components/minimp3`), and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).
  
- Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).
+ The MP3 decoder was minimp3's predecessor, `chmorgan/esp-libhelix-mp3`, up to and including v2.0.1. The Component Registry labels that package Apache-2.0, but the label covers only the wrapper: its submodule ships RealNetworks' Helix DNA decoder under the RealNetworks Public Source License 1.0, which is copyleft over combined works (§4.1) and GPL-incompatible. It was replaced on 2026-11-18. Builds up to v2.0.1 are affected and are not being re-cut.
 +
 +---
 +

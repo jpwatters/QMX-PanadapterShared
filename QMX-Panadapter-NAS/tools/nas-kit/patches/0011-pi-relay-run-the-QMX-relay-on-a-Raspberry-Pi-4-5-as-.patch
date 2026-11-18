@@ -1,7 +1,7 @@
-From 987d9bffff35250df8c7b1e45cbf49cf46578c09 Mon Sep 17 00:00:00 2001
+From 0e8826a2c4cc6c26ac35789d1d61d0ea2c69aa99 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Thu, 8 Oct 2026 16:43:58 +0000
-Subject: [PATCH 11/45] pi-relay: run the QMX relay on a Raspberry Pi 4/5 as a
+Subject: [PATCH 11/46] pi-relay: run the QMX relay on a Raspberry Pi 4/5 as a
  systemd service
 
 tools/pi-relay installs the same relay (tools/nas-relay/qmx_nas_relay.py,

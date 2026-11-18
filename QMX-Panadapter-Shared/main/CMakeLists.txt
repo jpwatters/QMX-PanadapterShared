@@ -8,6 +8,8 @@ idf_component_register(
         "rtty_rx.c"
         "rtty_tx.c"
         "rtty_tx_core.c"
+        "rtty_qso.c"
+        "rtty_log.c"
         "cw_txq.c"
         "display/display.c"
         "ui/ui.c"
@@ -31,6 +33,8 @@ idf_component_register(
         "ui/ft8_screen_view.c"
         "ui/cw_screen_view.c"
         "ui/rtty_screen_view.c"
+        "ui/rtty_log_modal.c"
+        "ui/ui_drag.c"
         "cw_qso.c"
         "cw_callsign.c"
         "ui/wspr_screen_view.c"
@@ -77,6 +81,7 @@ idf_component_register(
     "util/freq_gridlines.c"
     "ft8_slot_gate.c"
     "util/net_guard.c"
+    "util/net_ifaddr.c"
     "util/ip_guard.c"
     "util/sock_probe.c"
     "util/heap_watch.c"
@@ -170,9 +175,13 @@ idf_component_register(
         "ft8_robot.c"
         "ft8_directed_cq.c"
         "tx_band_guard.c"
+        "tx_subnet.c"
         "ft8_sim.c"
         "js8_sim.c"
         "audio/webradio.c"
+        # minimp3 (CC0) instantiated once, and the only place its
+        # memory placement is decided. See the file for why.
+        "audio/minimp3_impl.c"
         "net/radio_browser.c"
         "wspr_proto.c"
         "wspr_fano.c"
@@ -239,6 +248,7 @@ idf_component_register(
         mbedtls
         json
         ft8_lib
+        minimp3       # vendored CC0 MP3 decoder - components/minimp3
         spiffs
         bt            # NimBLE host for the BLE mouse (controller is on the C6)
         esp_hid

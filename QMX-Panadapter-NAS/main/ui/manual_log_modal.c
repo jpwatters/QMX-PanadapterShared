@@ -18,6 +18,14 @@
 // ⭐ IT STAYS OPEN AFTER LOGGING. A run of CW contacts is not one dialog at a
 // time: Log writes the record, clears the callsign, keeps the reports, and
 // says what it wrote. Closing is a separate, deliberate press.
+//
+// ⭐ IT DOES NOT BLOCK THE SCREEN, AND IT MOVES (T204, Pete WK8S 2026-11-16:
+// "it covers the next signal I may want to work. I'd like to keep the log
+// window open while I move to next signal"). Keeping it open was useless
+// while a full-screen dimmed layer under it caught every tap: the waterfall,
+// the spectrum and the spots could not be reached. That layer is now
+// transparent and lets taps through, and the window can be dragged by its
+// body (ui_drag.c). It keeps its place between opens.
 
 #include "manual_log_modal.h"
 #include "activation_modal.h"
@@ -27,6 +35,8 @@
 #include "storage/settings.h"
 #include "ui_theme.h"
 #include "ui.h"
+#include "ui_drag.h"
+#include "ui_mode.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include <ctype.h>
@@ -59,17 +69,21 @@ static bool      s_from_pick = false;
  * is rejected by LoTW and is awkward to repair by hand later. */
 static const char *radio_mode(void)
 {
+    /* R030: on the RTTY page the radio is in DiGi (the page puts it there),
+     * and "DiGi" is not an ADIF mode - LoTW rejects the record. The page says
+     * what is being sent, so the log says RTTY. */
+    if (ui_mode_get() == UI_MODE_RTTY) return "RTTY";
     const char *m = cat_get_mode_str();
     return (m && m[0]) ? m : "";
 }
 
-/* "599" for CW, "59" for anything else. The QMX's mode strings are "CW",
+/* "599" for CW and RTTY, "59" for anything else. The QMX's mode strings are "CW",
  * "CW-R", "USB", "LSB", "DiGi" and "AM"; only the CW pair take the readability
  * -strength-tone form. */
 static const char *default_rst(void)
 {
     const char *m = radio_mode();
-    return (m[0] == 'C' || m[0] == 'c') ? "599" : "59";
+    return (m[0] == 'C' || m[0] == 'c' || m[0] == 'R') ? "599" : "59";   /* CW, RTTY: RST */
 }
 
 /* T120 - THE RECEIVED REPORT'S S DIGIT IS MEASURED, THE OTHER TWO ARE NOT.
@@ -104,7 +118,7 @@ static void measured_rst_rcvd(char *buf, size_t len)
     if (units > 9) units = 9;
 
     const char *m = radio_mode();
-    bool cw = (m[0] == 'C' || m[0] == 'c');
+    bool cw = (m[0] == 'C' || m[0] == 'c' || m[0] == 'R');   /* RTTY reports RST too */
     /* R stays 5 and T stays 9 - the defaults the operator would have typed. */
     if (cw) snprintf(buf, len, "5%d9", units);
     else    snprintf(buf, len, "5%d",  units);
@@ -161,6 +175,8 @@ static void ta_focused_cb(lv_event_t *e)
     if (!s_keyboard) return;
     lv_obj_align(s_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(s_keyboard, ta);
+    /* A window dragged low would end up under the on-screen keyboard (280 px). */
+    if (!ui_phys_kbd_active()) ui_drag_keep_above(s_panel, 720 - 280);
     ui_osk_show(s_keyboard);
 }
 
@@ -310,8 +326,10 @@ static void modal_build(void)
     s_modal = lv_obj_create(scr);
     lv_obj_set_size(s_modal, LV_PCT(100), LV_PCT(100));
     lv_obj_set_pos(s_modal, 0, 0);
-    lv_obj_set_style_bg_color(s_modal, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(s_modal, UI_OPA_MODAL_SCRIM, 0);
+    /* A holder, not a scrim: transparent and not clickable, so a tap that
+     * misses the window reaches the page under it (T204). */
+    lv_obj_set_style_bg_opa(s_modal, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(s_modal, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_border_width(s_modal, 0, 0);
     lv_obj_set_style_radius(s_modal, 0, 0);
     lv_obj_set_style_pad_all(s_modal, 0, 0);
@@ -321,15 +339,20 @@ static void modal_build(void)
     /* Top-aligned for the same reason js8_text_modal is: the on-screen keyboard
      * owns the bottom 280 px, and a centred panel ends up behind it. */
     s_panel = lv_obj_create(s_modal);
-    lv_obj_set_size(s_panel, 900, 340);
+    /* 300, was 340: the buttons sit right under the fields now (operator,
+     * 2026-11-16: remove the dead space, centre the buttons). */
+    lv_obj_set_size(s_panel, 900, 300);
     lv_obj_align(s_panel, LV_ALIGN_TOP_MID, 0, 70);
     lv_obj_set_style_bg_color(s_panel, lv_color_hex(UI_COLOR_SURFACE), 0);
     lv_obj_set_style_bg_opa(s_panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(s_panel, lv_color_hex(UI_COLOR_BORDER), 0);
-    lv_obj_set_style_border_width(s_panel, 2, 0);
     lv_obj_set_style_radius(s_panel, 10, 0);
     lv_obj_set_style_pad_all(s_panel, 20, 0);
     lv_obj_clear_flag(s_panel, LV_OBJ_FLAG_SCROLLABLE);
+    /* No dimmed layer behind it: a brighter, wider border keeps it reading
+     * as on top. NOT a shadow - a 24 px shadow is redrawn on every drag step
+     * and made the drag lag (bench1 2026-11-16). */
+    lv_obj_set_style_border_color(s_panel, lv_color_hex(0x8a93a0), 0);
+    lv_obj_set_style_border_width(s_panel, 3, 0);
 
     lv_obj_t *title = lv_label_create(s_panel);
     lv_label_set_text(title, "Log a contact");
@@ -353,20 +376,21 @@ static void modal_build(void)
 
     s_note_lbl = lv_label_create(s_panel);
     lv_label_set_long_mode(s_note_lbl, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(s_note_lbl, 520);
-    lv_obj_align(s_note_lbl, LV_ALIGN_TOP_LEFT, 0, 152);
+    lv_obj_set_width(s_note_lbl, 820);
+    lv_obj_set_style_text_align(s_note_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_note_lbl, LV_ALIGN_TOP_MID, 0, 224);   /* under the buttons */
     lv_obj_set_style_text_font(s_note_lbl, &lv_font_montserrat_24, 0);
     lv_label_set_text(s_note_lbl, "");
 
     struct { const char *lbl; uint32_t col; lv_event_cb_t cb; int dx; } btns[2] = {
-        { "Log",   UI_COLOR_SUCCESS, log_cb,   0    },
-        { "Close", UI_COLOR_DANGER,  close_cb, -196 },
+        { "Log",   UI_COLOR_SUCCESS, log_cb,    98 },   /* centred pair, 16 px apart */
+        { "Close", UI_COLOR_DANGER,  close_cb, -98 },
     };
     lv_obj_t *btn_close = NULL;
     for (int i = 0; i < 2; i++) {
         lv_obj_t *b = lv_button_create(s_panel);
         lv_obj_set_size(b, 180, 64);
-        lv_obj_align(b, LV_ALIGN_BOTTOM_RIGHT, btns[i].dx, 0);
+        lv_obj_align(b, LV_ALIGN_TOP_MID, btns[i].dx, 150);   /* right under the fields (end at 138) */
         lv_obj_set_style_bg_color(b, lv_color_hex(btns[i].col), 0);
         lv_obj_set_style_radius(b, 8, 0);
         lv_obj_set_style_border_width(b, 0, 0);
@@ -386,6 +410,7 @@ static void modal_build(void)
     }
     lv_obj_add_state(s_btn_log, LV_STATE_DISABLED);
     ui_kbd_set_buttons(s_btn_log, btn_close);
+    ui_drag_enable(s_panel);   /* T204: after its children, at its built place */
 
     /* The project's keyboard, not LVGL's default - the three calls are copied
      * from js8_text_modal.c rather than reinvented. */

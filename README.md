@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v2.0.1-NAS** — upstream QMX-Panadapter **v2.0.1** plus the NAS patch series 0001-0045 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v2.0.2-NAS** — upstream QMX-Panadapter **v2.0.2** plus the NAS patch series 0001-0046 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -24,6 +24,7 @@ Each new upstream release can stop the patches applying: new settings take the s
 | v1.26.1 (2026-11-12) | Bit 159 taken: the settings table was full; new web Radio menu rows; DX cluster and RBN files removed | Settings table enlarged to 192 bits, relay setting bit 160; Radio source kept in the menu; nothing to carry for the removed files |
 | v1.26.3 (2026-11-13) | Nothing - the patches applied as they were | - |
 | v2.0.0 (2026-11-15) | Upstream also enlarged the settings table and took bit 160 (RTTY); the web status gained an RTTY field where the NAS adds its own; a frequency function was renamed; upstream’s Wi-Fi driver fix now re-runs the other driver patches with a command that macOS doesn’t have; RTTY transmit is new | Relay setting bit 161; both status fields kept; the NAS frequency check moved into the renamed function; the driver fix re-runs them with the PowerShell already running (pwsh on the Mac); RTTY refuses to transmit while another device has the transmitter |
+| v2.0.2 (2026-11-18) | Upstream took bits 161 (RTTY contest) and 162 (TX subnet interlock); the README’s licence section, where the NAS appendix follows, changed; the web radio’s MP3 decoder was replaced | Relay setting bit 163; the appendix kept after upstream’s new licence text; nothing to carry for the MP3 decoder |
 
 <p align="center"><img src="QMX-Panadapter-NAS/docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 
@@ -32,12 +33,13 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 2. FT8/FT4 transmit timed by the relay
 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
-5. M5Stack Tab5 discovery with the web browser at http://qmx.local
-6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
-7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
-8. An update kit that rebuilds all of this on each new upstream release
+5. QMX Bridge, a native Mac app: Discover, Probe, the serial port and the TCI server in one window, with a virtual USB serial port driver
+6. M5Stack Tab5 discovery with the web browser at http://qmx.local
+7. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
+8. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
+9. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.0; not yet flashed). The last build flashed and marked tested on the Tab5 was v2.0.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
+The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v2.0.2-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -123,6 +125,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
 *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
 
 **MacOS Client for TCI and Serial Connection**
+* QMX Bridge for the Mac (tools/mac-bridge-app): a native Swift app that does what the Python bridge below does, in one window - Discover (QMXR?), Probe (read-only ID; FA; MD; and the I/Q copy), the port-3 serial port and the TCI server. The serial port is either a virtual USB serial port, /dev/cu.QMX-NAS, from the app’s DriverKit driver, so every program’s port list shows it, or a pseudo-terminal at ~/cu.QMX-NAS (QMX Bridge Lite, no driver). Build with `tools/mac-bridge-app/build.sh`; the driver needs SIP relaxed and `systemextensionsctl developer on` until Apple grants the DriverKit entitlements (see tools/mac-bridge-app/README.md). Built on Xcode 27.2; not yet tested on the air.
 * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
 * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 
@@ -163,7 +166,7 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v2.0.1-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v2.0.2-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 
@@ -201,7 +204,7 @@ Other options:
 * `--ref v1.20.5`: builds a specific release instead of the newest.
 * `--force`: rebuilds even when there’s nothing new.
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v2.0.1-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v2.0.2-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -247,13 +250,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v2.0.1.** v2.0.1 fixes the card-archive offer: with WiFi on, **Use them** and **Leave it** now take effect. Every goal on the original roadmap is met. A complete, self-contained station for the QMX: spectrum and waterfall, the digital modes **FT8, FT4, JS8, RTTY and WSPR** and a CW page - each one a page of its own in the left drawer - with on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v2.0.0 adds MODE: RTTY**: decoded and sent on the Tab5 and in the browser, with Auto speed, shift and polarity, CQ, Answer, Exch and 73 in one press, or typed live - see [RTTY](#rtty). **Receive audio no longer breaks up or drifts in pitch on a busy band.** **No page is a beta any more**: where a limit remains, the guide states it. v1.26.3 made the QSO log safe when it fills up, and v1.26.0 gave the browser noise reduction and an auto-notch - see [docs/mkdocs/releases.md](QMX-Panadapter-NAS/docs/mkdocs/releases.md) for every release.
+> **Release — v2.0.2.** v2.0.2 logs RTTY contacts on the Tab5 and in the browser, lets the log window move out of the way, and replaces the web radio's MP3 decoder for licence reasons. Every goal on the original roadmap is met. A complete, self-contained station for the QMX: spectrum and waterfall, the digital modes **FT8, FT4, JS8, RTTY and WSPR** and a CW page - each one a page of its own in the left drawer - with on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v2.0.0 adds MODE: RTTY**: decoded and sent on the Tab5 and in the browser, with Auto speed, shift and polarity, CQ, Answer, Exch and 73 in one press, or typed live - see [RTTY](#rtty). **Receive audio no longer breaks up or drifts in pitch on a busy band.** **No page is a beta any more**: where a limit remains, the guide states it. v1.26.3 made the QSO log safe when it fills up, and v1.26.0 gave the browser noise reduction and an auto-notch - see [docs/mkdocs/releases.md](QMX-Panadapter-NAS/docs/mkdocs/releases.md) for every release.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](QMX-Panadapter-NAS/docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](QMX-Panadapter-NAS/docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](QMX-Panadapter-NAS/docs/QMX-Panadapter-UserGuide-v2.0.1.pdf).
+Prefer a single printable file? [Download the User Guide PDF](QMX-Panadapter-NAS/docs/QMX-Panadapter-UserGuide-v2.0.2.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -617,6 +620,11 @@ and waterfall come from the DSP rather than from the Tab5's canvases, and a brow
 listening to the audio overrides the suspend. Touch the Tab5 to come back. It is not
 remembered across a reboot, deliberately: a unit that boots dark looks broken.
 
+**Refuse TX from off-network** (under Server mode, off by default) — the web API can key
+the radio and has no password. With this on, a request that would transmit is refused
+unless it comes from the Tab5's own network. It is not a login: anyone on your WiFi still
+passes. For remote access, use a VPN or tunnel.
+
 ### Know what time it is
 
 **A GPS of your own, and a sky view** — Two receivers work, and both are confirmed on
@@ -792,7 +800,7 @@ The whole app is driven by **one-finger swipes from the screen edges** and **tap
 | Swipe ↑ | Bottom edge | Open memory channel picker |
 | Tap or swipe ↓ | Any top-bar item | Open that item's selector |
 
-Slim "breathing" grip handles on each edge show where to swipe — faint enough not to clutter the display, visible if you look for them. A tap on the left grip opens the page picker and a tap on the right grip opens the settings drawer. The bottom grip is swipe only.
+Slim "breathing" grip handles on each edge show where to swipe — faint enough not to clutter the display, visible if you look for them. A tap on the left grip opens the page picker, a tap on the right grip opens the settings drawer, and a tap on the bottom grip opens the memory channel picker.
 
 The top bar reads **Band · Mode · BW · Freq · Signal · Zoom** left to right. Tap any item to open a selector — **Freq** opens the frequency keypad; **Mode** switches USB/LSB/CW/DiGi, plus AM on QMX firmware 1.04 or later; **BW** selects SSB filter width (USB/LSB only); **Band** jumps to a configured band; **Zoom** selects a zoom preset.
 
@@ -1035,12 +1043,17 @@ no PC and no sound card.
   tones stand clear of the noise.
 - **Send:** tap their callsign in the text, then **CQ**, **Answer**, **Exch** or
   **73**; or **Type...** and each key goes out as you type. **STOP** ends the over
-  at once. You transmit on the decoder's tones. The radio is put in DiGi mode if
-  needed, the band guard checks both tones right before key-down, and one over is
-  at most 180 s.
-- **In the browser:** the same controls and the same text, with sending. A
-  callsign picked in the browser is the one the Tab5 sends to, and the other way
-  round.
+  at once. You transmit on the decoder's tones. The band guard checks both tones
+  right before key-down, and one over is at most 180 s.
+- **Log:** **73** (or **TU** in contest mode) and **Log** open **Log this QSO?**
+  with the callsign, reports and exchange filled in from the decoded text. Nothing
+  is logged until you press **Log**; a tapped word in the text fills its field.
+  **Contest mode** sends `CQ TEST`, `599` and a serial number, and marks dupes.
+- **In the browser:** the same controls and the same text, with sending and
+  logging. A callsign picked in the browser is the one the Tab5 sends to, and the
+  other way round.
+- Opening the page puts the radio in DiGi mode; its previous mode comes back when
+  you leave.
 - The Tab5 speaker plays the signal under the decoder's lines, not the whole
   passband.
 
@@ -1366,6 +1379,7 @@ clock that is wrong, WiFi that will not hold, a card that stops being written.
 | Swipe ← from right edge | Right edge strip | Open settings drawer |
 | Tap left grip handle | Left edge | Open the page picker (alternative) |
 | Tap right grip handle | Right edge | Open settings drawer (alternative) |
+| Tap bottom grip handle | Bottom edge | Open memory channel picker (alternative) |
 | Two-finger double-tap | Anywhere | Blank the display |
 | Swipe → | Open drawer, or spectrum while drawer open | Close settings drawer |
 | Swipe ↑ from bottom edge | Bottom edge strip | Open memory channel picker |
@@ -1547,7 +1561,7 @@ The full per-version changelog — every release from v0.1.0 onward — lives in
 
 ### Next up
 
-**v2.0.1 is here.** Next on the bench:
+**v2.0.2 is here.** Next on the bench:
 
 - **A full two-way JS8 QSO, watched from both ends.** Receiving, sending free text and calling CQ are all proven on air, and the automatic exchange **is implemented** - with automatic replies on, the Tab5 answers JS8 callers by itself and has since v1.17.0. What is missing is a complete exchange observed end to end, not the code to do it. An earlier version of this line said the exchange "is not written yet", which was wrong and was corrected publicly in the v1.18.0 notes after Gyula HA3HZ found four stations answered unattended in his own log.
 - **JS8 Slow, Fast and Turbo on the air.** All four speeds are selectable from v1.19.0 and they transmit, but no contact has been made on anything but Normal. The Tab5's own side of Turbo is measured and fast enough; the radio's side is not.
@@ -1663,7 +1677,9 @@ This is a solo project — all coding is done by the author (OZ1LAV) at his own 
 
 GNU General Public License v3 (see LICENSE). Copyright © 2026 Steffen Lav (OZ1LAV).
 
-Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).
+Relicensed from MIT on 2026-10-09. The reason was JS8: its coding tables exist only inside JS8Call, which is GPL-3, and a permissive licence put them out of reach. Nothing about using or flashing this firmware changes — the obligation falls on anyone DISTRIBUTING a modified build, who must publish their source. Everything this project depends on is one-way compatible: ESP-IDF and the Espressif components are Apache-2.0, ft8_lib and LVGL are MIT, the web radio's MP3 decoder is [minimp3](https://github.com/lieff/minimp3) under CC0 1.0 (vendored at `components/minimp3`), and no proprietary binary is linked (the ESP32-P4 has no radio — WiFi lives on a separate chip over esp_hosted).
+
+The MP3 decoder was minimp3's predecessor, `chmorgan/esp-libhelix-mp3`, up to and including v2.0.1. The Component Registry labels that package Apache-2.0, but the label covers only the wrapper: its submodule ships RealNetworks' Helix DNA decoder under the RealNetworks Public Source License 1.0, which is copyleft over combined works (§4.1) and GPL-incompatible. It was replaced on 2026-11-18. Builds up to v2.0.1 are affected and are not being re-cut.
 
 ---
 

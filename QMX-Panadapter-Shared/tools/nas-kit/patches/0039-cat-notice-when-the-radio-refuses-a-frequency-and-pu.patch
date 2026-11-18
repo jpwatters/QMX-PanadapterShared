@@ -1,7 +1,7 @@
-From a56a3d5c27bd717edf032dd3a04fd4db898d4691 Mon Sep 17 00:00:00 2001
+From f85a9af76be9bf396d14d4c879e23917d881aceb Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
-Subject: [PATCH 39/45] cat: notice when the radio refuses a frequency, and put
+Subject: [PATCH 39/46] cat: notice when the radio refuses a frequency, and put
  the display back
 
 Reported: selecting 60 m on the Tab5 or the web page "sets 40 m or 60 m".
@@ -32,10 +32,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 41 insertions(+)
 
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index 337f5956..c66c67b7 100644
+index a81a3424..13713d9b 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
-@@ -180,6 +180,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
+@@ -181,6 +181,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
  static uint64_t s_wspr_pa_check_us = 0; // last non-blocking WSPR PA-guard check
  
  static uint32_t s_last_freq_hz = 0;
@@ -47,7 +47,7 @@ index 337f5956..c66c67b7 100644
  static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
  
  /* ⭐ T129 (Bryan N0LUF): IS THE RADIO TRANSMITTING, WHOEVER KEYED IT.
-@@ -1327,6 +1332,36 @@ static void process_cat_message(const char *msg, size_t len)
+@@ -1341,6 +1346,36 @@ static void process_cat_message(const char *msg, size_t len)
              }
              freq_hz = freq_hz * 10 + (d - '0');
          }
@@ -84,7 +84,7 @@ index 337f5956..c66c67b7 100644
          if (freq_hz != s_last_freq_hz) {
              s_last_freq_hz = freq_hz;
              ESP_LOGI(TAG, "Freq = %lu Hz (%lu.%03lu MHz)",
-@@ -4118,6 +4153,12 @@ static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller)
+@@ -4139,6 +4174,12 @@ static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller)
          return err;
      }
      ESP_LOGI(TAG, "Sent: %s (target %lu Hz) from %p", cmd, (unsigned long)freq_hz, caller);

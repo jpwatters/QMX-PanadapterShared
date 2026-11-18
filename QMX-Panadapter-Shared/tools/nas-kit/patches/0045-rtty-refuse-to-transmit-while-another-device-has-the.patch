@@ -1,7 +1,7 @@
-From 21b4563b6a5d0a27780df03376e9fec5b2bd2e17 Mon Sep 17 00:00:00 2001
+From 88364b37c861ec9e33fba375932e1b812309c0da Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 15 Nov 2026 08:25:57 -0600
-Subject: [PATCH 45/45] rtty: refuse to transmit while another device has the
+Subject: [PATCH 45/46] rtty: refuse to transmit while another device has the
  transmitter
 
 v2.0.0 adds RTTY transmit. Like FT8/FT4 and WSPR, an RTTY over now refuses
@@ -16,10 +16,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 5 insertions(+)
 
 diff --git a/main/rtty_tx.c b/main/rtty_tx.c
-index 72feb44d..2101712e 100644
+index 1cda7bf7..f18f5b44 100644
 --- a/main/rtty_tx.c
 +++ b/main/rtty_tx.c
-@@ -10,6 +10,7 @@
+@@ -11,6 +11,7 @@
  #include "tx_band_guard.h"
  #include "wspr_rx.h"
  #include "cat/cat.h"
@@ -27,7 +27,7 @@ index 72feb44d..2101712e 100644
  #include "storage/settings.h"
  #include "ui/ui.h"
  
-@@ -280,6 +281,10 @@ static esp_err_t start_over(char *err, size_t err_len)
+@@ -281,6 +282,10 @@ static esp_err_t start_over(char *err, size_t err_len)
          snprintf(err, err_len, "another transmission holds the radio"); return ESP_ERR_INVALID_STATE;
      }
      if (wspr_rx_running())          { snprintf(err, err_len, "WSPR is running"); return ESP_ERR_INVALID_STATE; }

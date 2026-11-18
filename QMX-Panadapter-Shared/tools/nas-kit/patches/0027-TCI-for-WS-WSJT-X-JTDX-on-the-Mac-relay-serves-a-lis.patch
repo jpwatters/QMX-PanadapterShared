@@ -1,7 +1,7 @@
-From 70f60fbc3aac87852b2603e5529c534a1ecea1d8 Mon Sep 17 00:00:00 2001
+From 0ae8d9f053b9434ec9ae89d7022015ebc97f8d30 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 10:00:00 -0500
-Subject: [PATCH 27/45] TCI for WS / WSJT-X / JTDX on the Mac; relay serves a
+Subject: [PATCH 27/46] TCI for WS / WSJT-X / JTDX on the Mac; relay serves a
  listen-only I/Q copy on 7357
 
 WS and WSJT-X on macOS could not open the bridge's pseudo-terminal serial
@@ -7823,7 +7823,7 @@ z7*Z@31#<2GZ^fSm|MH9W+oki5lV7WoEPMTt_>t$2Z`0HN5&e<m|NQ1)|MB|YA5r`(
 Qjgt(|{R+d{sPpUp1lf|!cmMzZ
 
 diff --git a/README.md b/README.md
-index d15fafbc..86244926 100644
+index a274ab90..673e67ef 100644
 --- a/README.md
 +++ b/README.md
 @@ -10,7 +10,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,

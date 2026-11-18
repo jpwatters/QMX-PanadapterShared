@@ -1,7 +1,7 @@
-From b66144df731c5842e1d00b5f799972509f21ba59 Mon Sep 17 00:00:00 2001
+From 7f0be720df4f956d02e4cea9cf20bdffe90fe4b1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
-Subject: [PATCH 29/45] Tab5: "TX locked: Another Device has the transmitter"
+Subject: [PATCH 29/46] Tab5: "TX locked: Another Device has the transmitter"
 
 The relay now tells the Tab5 when another device has the transmitter, so the
 Tab5 can say so instead of "transmitting" bursts the relay drops. A new
@@ -9581,7 +9581,7 @@ z{pG*?_g|zRCGeZ|Yr{&C*Kg<#e*AbfJ^zQ`Hyr)zT?G5=_3yJF{FT626eE5G!LHH!
 G^?v|zW!0<z
 
 diff --git a/README.md b/README.md
-index 7da7b8f1..7dd88437 100644
+index 66690853..4dd0ee50 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -9766,10 +9766,10 @@ index 1ea06f03..90cdd46f 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index f18d063c..6af255d9 100644
+index 493b3ec5..cacaf9af 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -523,6 +523,11 @@ static void add_ft8_tx_status(cJSON *root)
+@@ -527,6 +527,11 @@ static void add_ft8_tx_status(cJSON *root)
          st = "swr_fault";
          snprintf(b, sizeof(b), "SWR %.1f:1 - TX STOPPED - check antenna - tap to clear",
                   (double)trip_swr);
@@ -9781,7 +9781,7 @@ index f18d063c..6af255d9 100644
      } else if (tx_st == FT8_TX_ACTIVE) {
          st = "active";
          // Shorter on purpose (operator, 2026-09-05) - one less word to fit
-@@ -676,6 +681,8 @@ static bool web_tune_start(void)
+@@ -722,6 +727,8 @@ static bool web_tune_start(httpd_req_t *req, char *tune_err, size_t tune_err_len
      // Never while the operator has released the radio: Tune keys a carrier, and
      // the mode write it needs would go into a menu they are standing in front of.
      if (cat_user_pause_active()) return false;
@@ -9791,7 +9791,7 @@ index f18d063c..6af255d9 100644
       * the Tab5's: nobody is standing in front of the radio. Tune keys a
       * carrier on the DIAL in MD8 - no audio offset. */
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index adcfb057..ce7bbfd1 100644
+index 4a65862e..4e397a9c 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -901,6 +901,9 @@

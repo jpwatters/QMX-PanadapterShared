@@ -1527,6 +1527,37 @@
       <button type="button" data-macro="73" title="CALL DE MYCALL TNX FER QSO 73 GL / CALL DE MYCALL SK">73</button>
       <button type="button" id="rtty-stop" title="Stop now: tone off, back to receive, the rest dropped">STOP</button>
     </div>
+    <!-- R030 logging: the Tab5's QSO card, Log dialog and contest settings.
+         Nothing is logged without the form being seen: 73 and Log... open it. -->
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px;">
+      <span id="rtty-heard" style="font-size:14px;"></span>
+      <span id="rtty-log-msg" style="font-size:14px; color:#30e060;"></span>
+      <button type="button" id="rtty-log-open" style="margin-left:auto;" title="Log this QSO - opens the form to check first">Log...</button>
+      <button type="button" id="rtty-contest-open" title="Contest mode: CQ TEST, short exchange with a serial, dupes">Contest...</button>
+    </div>
+    <div id="rtty-log-form" hidden style="margin-top:8px; padding:10px; border:1px solid #555; border-radius:8px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <label>Callsign<br><input id="rlog-call" type="text" maxlength="15" style="width:9em; text-transform:uppercase;"></label>
+        <label>RST sent<br><input id="rlog-rs" type="text" maxlength="3" style="width:4em;"></label>
+        <label>RST rcvd<br><input id="rlog-rr" type="text" maxlength="3" style="width:4em;"></label>
+        <label class="rlog-x">Exch sent<br><input id="rlog-xs" type="text" maxlength="11" style="width:6em; text-transform:uppercase;"></label>
+        <label class="rlog-x">Exch rcvd<br><input id="rlog-xr" type="text" maxlength="11" style="width:6em; text-transform:uppercase;"></label>
+        <button type="button" id="rlog-do">Log</button>
+        <button type="button" id="rlog-cancel">Cancel</button>
+      </div>
+      <div id="rlog-note" style="font-size:13px; margin-top:6px; color:var(--dim);">Click a word in the text to fill its field.</div>
+    </div>
+    <div id="rtty-contest-form" hidden style="margin-top:8px; padding:10px; border:1px solid #555; border-radius:8px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <label><input id="rct-on" type="checkbox"> Contest mode</label>
+        <label>Contest name (log CONTEST_ID)<br><input id="rct-name" type="text" maxlength="23" placeholder="WAE-DX-RTTY" style="width:12em; text-transform:uppercase;"></label>
+        <label>Next serial<br><input id="rct-next" type="number" min="1" max="9999" style="width:6em;"></label>
+        <label>Sent exch<br><input id="rct-exch" type="text" maxlength="11" placeholder="serial" style="width:6em; text-transform:uppercase;"></label>
+        <button type="button" id="rct-save">Save</button>
+        <button type="button" id="rct-close">Close</button>
+      </div>
+      <div style="font-size:13px; margin-top:6px; color:var(--dim);">ON: CQ TEST, short Exch (599 + serial), TU. The serial moves on when a QSO is logged. Dupes are this contest's QSOs on the band. Shared with the Tab5.</div>
+    </div>
     <div style="display:flex; gap:8px; margin-top:8px;">
       <input id="rtty-type" type="text" autocomplete="off" spellcheck="false"
              placeholder="Type: each key is sent as you type. Enter ends the over."
@@ -5294,6 +5325,13 @@ const SET_FIELDS = [
      "The map of who has heard you. The Tab5 has had this switch since the map was added"],
   /* T48. Worded as turning the CHECK OFF, not the guard on, so the default
      reads correctly: unchecked = the Tab5 refuses out-of-band transmissions. */
+  /* T206 TX interlock. Worded as what it DOES - refuse requests from off the
+     network - and deliberately NOT as "require a login" or "secure the API",
+     because it is neither. It stops the internet; it does not stop a guest on
+     your WiFi. Default off: anyone already driving this API from another
+     subnet (Jim KC9KKO's shared-radio fork) keeps working until they tick it. */
+  ["Station", "tx_subnet_interlock", "bool", "Refuse transmit from outside this network",
+   "The Tab5's web API can key the radio, and it has no password. With this ticked, a request that did not arrive from the Tab5's own network is refused and told why - transmit only, receive and the display are untouched. \u26a0 It is not a login: anyone on the same WiFi still passes, so for real remote access put the Tab5 behind a VPN or tunnel and leave this on as the second lock. Leave it OFF if you drive this radio over the network on purpose, for example through a shared-radio front end on another subnet"],
   ["Station", "tx_band_guard_off", "bool", "Allow transmitting outside the band plan",
    "Normally the Tab5 refuses to key the radio if the transmission would fall outside your IARU region's allocation, and says so. Tick this only if your licence gives you access the built-in band plan does not know about - it is a coarse table and has been wrong at a band edge before. With the guard on you must also have the IARU region set (or a grid, from the GPS), because the band cannot be checked without it"],
 
@@ -8308,7 +8346,15 @@ function rttyRowEl(text, mask, cur, sel) {
       for (const w of seg.split(/([^A-Za-z0-9\/]+)/)) {
         if (!w) continue;
         const up = w.toUpperCase();
-        if (RTTY_CALL_RE.test(up)) {
+        /* R030: with the log form open every word fills a field instead. */
+        if (rttyLogOpenNow() && /[A-Za-z0-9]/.test(w)) {
+          const sp = document.createElement("span");
+          sp.className = "rtty-callw";
+          sp.textContent = w;
+          sp.title = "Put " + up + " in the log form";
+          sp.addEventListener("click", (ev) => { ev.stopPropagation(); rttyFillWord(up); });
+          d.appendChild(sp);
+        } else if (RTTY_CALL_RE.test(up)) {
           const sp = document.createElement("span");
           sp.className = "rtty-callw" + (up === sel ? " rtty-sel" : "");
           sp.textContent = w;
@@ -8322,6 +8368,108 @@ function rttyRowEl(text, mask, cur, sel) {
   }
   return d;
 }
+/* ---- R030 logging: form, tap-to-fill, contest settings ---------------- */
+const RTTY_MACRO_TITLES = {
+  off: { cq: "CQ CQ CQ DE MYCALL MYCALL MYCALL, twice, PSE K", answer: "CALL CALL DE MYCALL MYCALL MYCALL K",
+         exch: "CALL DE MYCALL TNX FER CALL UR RST 599 599 QTH grid grid / CALL DE MYCALL K",
+         "73": "CALL DE MYCALL TNX FER QSO 73 GL / CALL DE MYCALL SK - then asks to log" },
+  on:  { cq: "CQ TEST MYCALL MYCALL CQ", answer: "MYCALL MYCALL",
+         exch: "CALL 599 NNN NNN (the serial, or the contest's fixed exchange)", "73": "TU MYCALL - then asks to log" } };
+/* Rows again from what is already held. A copy without _stream: the real
+   reply's rx_new/tx_new were applied once already, and twice would print
+   them twice. */
+function rttyRerender() { if (lastRtty) rttyRender(Object.assign({}, lastRtty, { _stream: false })); }
+function rttyLogOpenNow() { const f = document.getElementById("rtty-log-form"); return !!f && !f.hidden; }
+function rttyLogNote(t, col) { const n = document.getElementById("rlog-note"); if (n) { n.textContent = t; n.style.color = col || "var(--dim)"; } }
+function rttyLogRender(r) {
+  const q = r.qso, c = r.contest || {};
+  const h = document.getElementById("rtty-heard");
+  if (h) {
+    if (!r.call) h.innerHTML = "";
+    else {
+      const mark = q && q.dupe ? '<b style="color:#ff5050">DUPE</b>'
+        : c.on ? '<span style="color:#ffa040">Send ' + c.sent + '</span>'
+        : q && q.worked ? '<span style="color:#8a93a0">Worked on band</span>'
+        : '<span style="color:#30e060">New</span>';
+      const rc = q && q.heard ? "Rcvd " + q.rst + (c.on ? " " + q.exch : "") + (q.to_me ? " (after your call)" : "") : "Rcvd -";
+      h.innerHTML = '<b style="color:#5fd4ff">' + r.call + "</b> " + mark + " " + rc;
+    }
+  }
+  const lo = document.getElementById("rtty-log-open");
+  if (lo) lo.disabled = !r.call;
+  const t = RTTY_MACRO_TITLES[c.on ? "on" : "off"];
+  document.querySelectorAll("#rtty-tx-btns button[data-macro]").forEach((bt) => { bt.title = t[bt.dataset.macro] || bt.title; });
+  const co = document.getElementById("rtty-contest-open");
+  if (co) { co.textContent = c.on ? "Contest: ON #" + c.sent : "Contest..."; co.classList.toggle("on", !!c.on); }
+}
+/* Prefilled from what the Tab5 card shows. RST rcvd and Exch rcvd only when
+   heard - an empty field is honest, a 599 nobody sent is not. */
+function rttyLogOpen() {
+  const r = lastRtty || {}, q = r.qso || {}, c = r.contest || {};
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ""; };
+  set("rlog-call", r.call); set("rlog-rs", "599"); set("rlog-rr", q.heard ? q.rst : "");
+  set("rlog-xs", c.on ? c.sent : ""); set("rlog-xr", c.on && q.heard ? q.exch : "");
+  document.querySelectorAll("#rtty-log-form .rlog-x").forEach((e) => { e.style.display = c.on ? "" : "none"; });
+  rttyLogNote(q.dupe ? "DUPE - already logged on this band in this contest. Click a word in the text to fill its field."
+                     : "Click a word in the text to fill its field.", q.dupe ? "#ff5050" : null);
+  document.getElementById("rtty-log-form").hidden = false;
+  document.getElementById("rtty-log-msg").textContent = "";
+  rttyRerender();   /* make every word clickable now */
+}
+function rttyLogClose() {
+  document.getElementById("rtty-log-form").hidden = true;
+  rttyRerender();
+}
+async function rttyFillWord(w) {
+  const r = await sendCmd({ action: "rtty_word", word: w });
+  const k = r && r.kind;
+  const id = k === "rst" ? "rlog-rr" : k === "call" ? "rlog-call"
+           : (k === "exch" && document.getElementById("rlog-xr").parentElement.style.display !== "none") ? "rlog-xr" : null;
+  if (!id) { rttyLogNote("'" + w + "' is not a call, report or exchange"); return; }
+  document.getElementById(id).value = r.value;
+  rttyLogNote({ "rlog-rr": "RST rcvd", "rlog-call": "Callsign", "rlog-xr": "Exch rcvd" }[id] + " <- " + r.value, "#5fd4ff");
+}
+async function rttyLogDo() {
+  const v = (id) => (document.getElementById(id).value || "").trim().toUpperCase();
+  const body = { action: "rtty_log", call: v("rlog-call"), rst_sent: v("rlog-rs"), rst_rcvd: v("rlog-rr"),
+                 stx: v("rlog-xs"), srx: v("rlog-xr") };
+  if (!body.call) { rttyLogNote("Enter a callsign", "#ff9f40"); return; }
+  const r = await sendCmd(body);
+  if (!r || !r.ok) { rttyLogNote((r && r.error) || "no answer from the Tab5 - not logged", "#ff5050"); return; }
+  rttyLogClose();
+  document.getElementById("rtty-log-msg").textContent = "Logged " + body.call + " - " + r.count + " in the log";
+  rttyPoll();
+}
+function rttyContestOpen() {
+  const c = (lastRtty && lastRtty.contest) || {};
+  document.getElementById("rct-on").checked = !!c.on;
+  document.getElementById("rct-name").value = c.name || "";
+  document.getElementById("rct-next").value = c.next || 1;
+  document.getElementById("rct-exch").value = c.exch || "";
+  document.getElementById("rtty-contest-form").hidden = false;
+}
+async function rttyContestSave() {
+  const n = parseInt(document.getElementById("rct-next").value, 10);
+  const body = { action: "rtty_contest", on: document.getElementById("rct-on").checked,
+                 name: document.getElementById("rct-name").value.trim().toUpperCase(),
+                 exch: document.getElementById("rct-exch").value.trim().toUpperCase() };
+  if (n >= 1 && n <= 9999) body.next = n;
+  const r = await sendCmd(body);
+  if (!r || !r.ok) { rttyShowErr("contest settings not saved - no answer from the Tab5"); return; }
+  document.getElementById("rtty-contest-form").hidden = true;
+  rttyPoll();
+}
+(function wireRttyLog() {
+  const b = (id, fn) => { const e = document.getElementById(id); if (e) e.addEventListener("click", fn); };
+  b("rtty-log-open", rttyLogOpen); b("rlog-do", rttyLogDo); b("rlog-cancel", rttyLogClose);
+  b("rtty-contest-open", rttyContestOpen); b("rct-save", rttyContestSave);
+  b("rct-close", () => { document.getElementById("rtty-contest-form").hidden = true; });
+  const f = document.getElementById("rtty-log-form");
+  if (f) f.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); rttyLogDo(); }
+    else if (ev.key === "Escape") { ev.preventDefault(); rttyLogClose(); }
+  });
+})();
 let rttyErr = "", rttyErrUntil = 0, rttyMacro = null;
 function rttyShowErr(e) { rttyErr = e || "refused"; rttyErrUntil = Date.now() + 8000; }
 function rttyRender(r) {
@@ -8378,6 +8526,7 @@ function rttyRender(r) {
   });
   const stop = document.getElementById("rtty-stop");
   if (stop) stop.classList.toggle("keyed", !!tx.keyed);
+  rttyLogRender(r);
   const ts = document.getElementById("rtty-tx-status");
   if (ts) {
     if (tx.keyed) { ts.style.color = "#ff5050"; ts.textContent = "TX " + (tx.seconds || 0) + " s  " + (tx.echo || ""); }
@@ -8436,7 +8585,11 @@ async function rttySend(body, poll = true) {
   /* ⛔ KEYS THE RADIO: every one of these is a click or a key press. */
   document.querySelectorAll("#rtty-tx-btns button[data-macro]").forEach((bt) =>
     bt.addEventListener("click", async () => {
-      if (await rttySend({ macro: bt.dataset.macro })) rttyMacro = bt.dataset.macro;
+      if (await rttySend({ macro: bt.dataset.macro })) {
+        rttyMacro = bt.dataset.macro;
+        /* R030: 73/TU ends the QSO - ask to log it, as the Tab5 does. */
+        if (bt.dataset.macro === "73") rttyLogOpen();
+      }
     }));
   b("rtty-stop", async () => { await sendCmd({ action: "rtty_stop" }); rttyPoll(); });
 
@@ -12635,7 +12788,10 @@ function bpSolveView(wantCenterHz) {
      whole band on the CW page instead of staying inside CW+Digi (operator,
      2026-11-09). Same fix, same reason, both ends of the one gesture. */
   if (lastBandplan) {
-    const r = bpEffectiveRange(lastBandplan);
+    /* RTTY: the whole band, as effective_drag_edges() in ui.c, which narrows
+       on the CW page only - the RTTY track is a strip, never a tune clamp. */
+    const r = (lastScreen === "rtty") ? { lo: lastBandplan.lo, hi: lastBandplan.hi }
+                                      : bpEffectiveRange(lastBandplan);
     d = Math.max(r.lo, Math.min(r.hi, d));
   }
   return { dial: d, center: d + pan };
@@ -12655,14 +12811,39 @@ function bpSolveView(wantCenterHz) {
    a pointer px meant a different Hz to each: the knob moved faster than the
    pointer, and clamping to the full band let it drag past the strip's own
    edges (operator, 2026-11-09). One pair of functions, used everywhere. */
+/* RTTY page track - same arithmetic as rtty_strip_range() in main/ui/ui.c:
+   the FIRST Digi segment plus half its width on each side, grown to include
+   the visible window, clipped to the band. ⛔ This was "Digi only" (R007)
+   after the Tab5 had moved to the wider track on 2026-11-14, so the web strip
+   painted a window outside Digi (e.g. 7.078-7.084 MHz, Phone) as Digi
+   (operator, 2026-11-16: "the web band plan is not synced with the Tab5").
+   Null when the band has no Digi row. bpRttyFrozen holds the track from the
+   pointer-down while a drag runs, as ui.c uses s_bp_drag_start_view_hz -
+   otherwise the track moves under the finger. */
+let bpRttyFrozen = null;
+function bpRttyTrack(bp) {
+  if (bpRttyFrozen) return bpRttyFrozen;
+  const d = bp.segs.find(s => s.l === "Digi");
+  if (!d) return null;
+  const spanHz = lastView ? lastView.span : 48000 / lastZoom;
+  const c = lastView ? lastView.lo + lastView.span / 2
+                     : lastFreqHz + lastPanBins * HZ_PER_BIN;
+  const m = (d.hi - d.lo) / 2;
+  let lo = Math.min(d.lo - m, c - spanHz / 2), hi = Math.max(d.hi + m, c + spanHz / 2);
+  lo = Math.max(lo, bp.segs[0].lo);
+  hi = Math.min(hi, bp.segs[bp.segs.length - 1].hi);
+  return hi > lo ? { lo, hi } : null;
+}
 function bpEffectiveSegs(bp) {
-  /* RTTY page (R007): DiGi only, as the Tab5's strip on that page - RTTY's
-     segment in every IARU plan. The drag below maps onto the same range,
-     which is the rule written above. Falls back to the whole band if a band
-     has no DiGi row. */
   if (lastScreen === "rtty") {
-    const d = bp.segs.filter(s => s.l === "Digi");
-    return d.length ? d : bp.segs;
+    const t = bpRttyTrack(bp);
+    if (!t) return bp.segs;
+    const out = [];
+    bp.segs.forEach(s => {
+      const lo = Math.max(s.lo, t.lo), hi = Math.min(s.hi, t.hi);
+      if (hi > lo) out.push({ ...s, lo, hi });
+    });
+    return out.length ? out : bp.segs;
   }
   return (lastScreen === "cw")
     ? bp.segs.filter(s => s.l === "CW" || s.l === "Digi")
@@ -12856,6 +13037,8 @@ function drawBandplanOob(ctx, W, H, dpr) {
                     ? lastView.lo + lastView.span / 2
                     : lastFreqHz;
     targetCenter = startCenter;
+    bpRttyFrozen = null;
+    if (lastScreen === "rtty" && lastBandplan) bpRttyFrozen = bpRttyTrack(lastBandplan);
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -12980,11 +13163,13 @@ function drawBandplanOob(ctx, W, H, dpr) {
       commit(clamp(r.lo + (startX - rect.left) * hzPerPx));
     }
     bpDragging = false;
+    bpRttyFrozen = null;   /* commit*() above drew with the frozen track; the next poll recomputes */
   });
 
   canvas.addEventListener("pointercancel", () => {
     active = false;
     bpDragging = false;
+    bpRttyFrozen = null;
     bpOobOffPx = 0;      // detent back to centre, same as a release (#216)
     canvas.classList.remove("dragging");
     drawBandplan();

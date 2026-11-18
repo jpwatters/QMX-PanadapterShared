@@ -1,7 +1,7 @@
-From ab7a4ffd3628efce01a45856bbdc6288486b9e8e Mon Sep 17 00:00:00 2001
+From 1722ef0e7ee71f53f5e87913e647f695dd8ef87f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 18 Oct 2026 11:00:00 -0500
-Subject: [PATCH 28/45] Relay: one transmitter at a time - the Tab5 is kept off
+Subject: [PATCH 28/46] Relay: one transmitter at a time - the Tab5 is kept off
  while a TCI program is connected
 
 The Mac's TCI bridge announces tx=1 in its I/Q listener HELLO, and connects
@@ -7850,7 +7850,7 @@ zyZ-B+!m1?f_Irk-cOtzPIC&$9KVGA<-%GS82(d(||6PyYHvji8%^&srb?_&0aKFEP
 prGL=s$6v$a|FZj)rT=oDXPmwML$=%hiDP+Q7XJjp4Y&EH{~wPHvMm4r
 
 diff --git a/README.md b/README.md
-index 86244926..7da7b8f1 100644
+index 673e67ef..66690853 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,

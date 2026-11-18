@@ -1,0 +1,3912 @@
+From d65ce72517b8dcacf2b4c54e6e2092cbd9f35887 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 18 Nov 2026 13:17:18 -0600
+Subject: [PATCH 46/46] mac-bridge-app: native macOS QMX Bridge app with a
+ virtual USB serial port
+
+QMX Bridge.app (Swift/SwiftUI) replaces the Python mac-serial-bridge in one
+window: Discover (QMXR? on UDP 7355), Probe (read-only ID; FA; MD; on port 3
+and the I/Q copy's hello), the port-3 serial bridge and the TCI server for
+WS / WSJT-X 3 / JTDX (USB demodulator, one-tone transmit as TA<Hz>;).
+
+The serial port is either QMXSerialDriver.dext - a DriverKit IOUserSerial
+driver that makes /dev/cu.QMX-NAS appear like a USB serial adapter - or a
+pseudo-terminal linked at ~/cu.QMX-NAS (QMX Bridge Lite.app, no driver).
+build.sh generates the Xcode project with XcodeGen and builds both apps;
+README.md covers signing, approving the driver and the entitlement request.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md                                     |  10 +-
+ tools/mac-bridge-app/.gitignore               |   3 +
+ .../QMXBridge/Core/Discovery.swift            | 168 ++++++
+ tools/mac-bridge-app/QMXBridge/Core/Log.swift |  52 ++
+ tools/mac-bridge-app/QMXBridge/Core/Net.swift | 208 +++++++
+ .../mac-bridge-app/QMXBridge/Core/Probe.swift |  79 +++
+ .../QMXBridge/Core/PtyEndpoint.swift          |  99 ++++
+ .../QMXBridge/Core/SerialBridge.swift         | 193 +++++++
+ .../QMXBridge/Driver/DriverEndpoint.swift     | 175 ++++++
+ .../QMXBridge/Driver/DriverInstaller.swift    |  87 +++
+ .../QMXBridge/QMXBridge-Bridging-Header.h     |   2 +
+ .../QMXBridge/QMXBridge.entitlements          |  12 +
+ .../QMXBridge/QMXBridgeLite.entitlements      |   5 +
+ tools/mac-bridge-app/QMXBridge/TCI/Dsp.swift  | 167 ++++++
+ .../QMXBridge/TCI/TciServer.swift             | 544 ++++++++++++++++++
+ .../QMXBridge/TCI/WebSocket.swift             | 157 +++++
+ .../QMXBridge/UI/BridgeModel.swift            | 165 ++++++
+ .../QMXBridge/UI/ContentView.swift            | 279 +++++++++
+ .../QMXBridge/UI/QMXBridgeApp.swift           |  27 +
+ .../mac-bridge-app/QMXSerialDriver/Info.plist |  76 +++
+ .../QMXSerialDriver/QMXBridgeControl.cpp      |  46 ++
+ .../QMXSerialDriver/QMXBridgeControl.iig      |  18 +
+ .../QMXSerialDriver/QMXBridgeUserClient.cpp   | 166 ++++++
+ .../QMXSerialDriver/QMXBridgeUserClient.iig   |  26 +
+ .../QMXSerialDriver/QMXSerialDriver.cpp       | 392 +++++++++++++
+ .../QMXSerialDriver.entitlements              |  12 +
+ .../QMXSerialDriver/QMXSerialDriver.iig       |  58 ++
+ tools/mac-bridge-app/README.md                | 120 ++++
+ tools/mac-bridge-app/Shared/QMXBridgeShared.h |  56 ++
+ tools/mac-bridge-app/build.sh                 | 118 ++++
+ tools/mac-bridge-app/project.yml              | 108 ++++
+ 31 files changed, 3624 insertions(+), 4 deletions(-)
+ create mode 100644 tools/mac-bridge-app/.gitignore
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/Discovery.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/Log.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/Net.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/Probe.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/PtyEndpoint.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Core/SerialBridge.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Driver/DriverEndpoint.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/Driver/DriverInstaller.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/QMXBridge-Bridging-Header.h
+ create mode 100644 tools/mac-bridge-app/QMXBridge/QMXBridge.entitlements
+ create mode 100644 tools/mac-bridge-app/QMXBridge/QMXBridgeLite.entitlements
+ create mode 100644 tools/mac-bridge-app/QMXBridge/TCI/Dsp.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/TCI/TciServer.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/TCI/WebSocket.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/UI/BridgeModel.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/UI/ContentView.swift
+ create mode 100644 tools/mac-bridge-app/QMXBridge/UI/QMXBridgeApp.swift
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/Info.plist
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.cpp
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.iig
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.cpp
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.iig
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.cpp
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.entitlements
+ create mode 100644 tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.iig
+ create mode 100644 tools/mac-bridge-app/README.md
+ create mode 100644 tools/mac-bridge-app/Shared/QMXBridgeShared.h
+ create mode 100755 tools/mac-bridge-app/build.sh
+ create mode 100644 tools/mac-bridge-app/project.yml
+
+diff --git a/README.md b/README.md
+index 22cbdd85..139ce5c3 100644
+--- a/README.md
++++ b/README.md
+@@ -33,10 +33,11 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+ 2. FT8/FT4 transmit timed by the relay
+ 3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
+ 4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
+-5. M5Stack Tab5 discovery with the web browser at http://qmx.local
+-6. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
+-7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
+-8. An update kit that rebuilds all of this on each new upstream release
++5. QMX Bridge, a native Mac app: Discover, Probe, the serial port and the TCI server in one window, with a virtual USB serial port driver
++6. M5Stack Tab5 discovery with the web browser at http://qmx.local
++7. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
++8. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
++9. An update kit that rebuilds all of this on each new upstream release
+ 
+ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
+ 
+@@ -124,6 +125,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
+ *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
+ 
+ **MacOS Client for TCI and Serial Connection**
++* QMX Bridge for the Mac (tools/mac-bridge-app): a native Swift app that does what the Python bridge below does, in one window - Discover (QMXR?), Probe (read-only ID; FA; MD; and the I/Q copy), the port-3 serial port and the TCI server. The serial port is either a virtual USB serial port, /dev/cu.QMX-NAS, from the app’s DriverKit driver, so every program’s port list shows it, or a pseudo-terminal at ~/cu.QMX-NAS (QMX Bridge Lite, no driver). Build with `tools/mac-bridge-app/build.sh`; the driver needs SIP relaxed and `systemextensionsctl developer on` until Apple grants the DriverKit entitlements (see tools/mac-bridge-app/README.md). Built on Xcode 27.2; not yet tested on the air.
+ * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
+ * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
+ 
+diff --git a/tools/mac-bridge-app/.gitignore b/tools/mac-bridge-app/.gitignore
+new file mode 100644
+index 00000000..afcead06
+--- /dev/null
++++ b/tools/mac-bridge-app/.gitignore
+@@ -0,0 +1,3 @@
++build/
++.tools/
++QMXBridge.xcodeproj/
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/Discovery.swift b/tools/mac-bridge-app/QMXBridge/Core/Discovery.swift
+new file mode 100644
+index 00000000..5b28ad48
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/Discovery.swift
+@@ -0,0 +1,168 @@
++// Discovery.swift - find the NAS relay the same way the Tab5's Find NAS does:
++// broadcast "QMXR?" on UDP 7355 and collect "QMXR! <ip> <tcp port>" answers.
++
++import Foundation
++import Darwin
++
++struct Relay: Hashable, CustomStringConvertible {
++    let ip: String
++    let port: Int
++    var description: String { "QMXR! \(ip) \(port)" }
++}
++
++struct BridgeSettings: Codable, Equatable {
++    var host: String = ""            // empty = find it with QMXR?
++    var fallbackHost: String = ""
++    var discoveryPort: Int = 7355
++    var port: Int = 7356             // relay: QMX serial port 3, raw bytes
++    var iqPort: Int = 7357           // relay: listen-only copy of the I/Q
++    var idle: Int = 120              // seconds; 0 = never release
++    var keepConnected: Bool = false
++    var linkPath: String = "~/cu.QMX-NAS"
++    var tciListen: String = "127.0.0.1"
++    var tciPort: Int = 40001
++    var verbose: Bool = false
++
++    var fixedHost: String? { host.trimmingCharacters(in: .whitespaces).isEmpty ? nil : host.trimmingCharacters(in: .whitespaces) }
++    var fallback: String? { fallbackHost.trimmingCharacters(in: .whitespaces).isEmpty ? nil : fallbackHost.trimmingCharacters(in: .whitespaces) }
++
++    static let key = "BridgeSettings"
++    static func load() -> BridgeSettings {
++        if let d = UserDefaults.standard.data(forKey: key), let s = try? JSONDecoder().decode(BridgeSettings.self, from: d) { return s }
++        return BridgeSettings()
++    }
++    func save() { if let d = try? JSONEncoder().encode(self) { UserDefaults.standard.set(d, forKey: Self.key) } }
++}
++
++enum Discovery {
++    static let time = 1.5            // "QMXR?" is sent 3 times in this window, like the Tab5
++    static let query = "QMXR?"
++    static let reply = "QMXR!"
++
++    /// 255.255.255.255 plus each up interface's own broadcast address. A Mac sends
++    /// 255.255.255.255 out of one interface only, so with Wi-Fi and Ethernet both up
++    /// the directed addresses make sure the NAS's network is asked too.
++    static func broadcastAddresses() -> [String] {
++        var out = ["255.255.255.255"]
++        var ifa: UnsafeMutablePointer<ifaddrs>?
++        guard getifaddrs(&ifa) == 0 else { return out }
++        defer { freeifaddrs(ifa) }
++        var p = ifa
++        while let i = p {
++            let f = Int32(i.pointee.ifa_flags)
++            if let a = i.pointee.ifa_addr, a.pointee.sa_family == sa_family_t(AF_INET),
++               f & IFF_UP != 0, f & IFF_BROADCAST != 0, f & IFF_LOOPBACK == 0,
++               let b = i.pointee.ifa_dstaddr {     // ifa_broadaddr == ifa_dstaddr on BSD
++                var sin = sockaddr_in()
++                memcpy(&sin, b, MemoryLayout<sockaddr_in>.size)
++                var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
++                inet_ntop(AF_INET, &sin.sin_addr, &buf, socklen_t(INET_ADDRSTRLEN))
++                let s = String(cString: buf)
++                if !s.isEmpty, s != "0.0.0.0", !out.contains(s) { out.append(s) }
++            }
++            p = i.pointee.ifa_next
++        }
++        return out
++    }
++
++    /// Ask the network for QMX relays; distinct answers in arrival order.
++    static func discover(udpPort: Int = 7355, timeout: Double = time) -> [Relay] {
++        let targets = broadcastAddresses()
++        var found: [Relay] = []
++        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
++        if fd < 0 { logW("discovery: socket failed: \(String(cString: strerror(errno)))"); return found }
++        defer { close(fd) }
++        var one: Int32 = 1
++        setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, socklen_t(MemoryLayout<Int32>.size))
++        var tv = timeval(tv_sec: 0, tv_usec: 100_000)
++        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
++        let start = Date()
++        var sent = 0
++        let q = Array(query.utf8)
++        while Date().timeIntervalSince(start) < timeout {
++            let el = Date().timeIntervalSince(start)
++            if sent < 3 && el >= Double(sent) * timeout / 3 {
++                for t in targets {
++                    var to = sockaddr_in()
++                    to.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
++                    to.sin_family = sa_family_t(AF_INET)
++                    to.sin_port = in_port_t(UInt16(udpPort).bigEndian)
++                    inet_pton(AF_INET, t, &to.sin_addr)
++                    let r = withUnsafePointer(to: &to) {
++                        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                            sendto(fd, q, q.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
++                        }
++                    }
++                    if r < 0 { logD("discovery: send to \(t) failed: \(String(cString: strerror(errno)))") }
++                }
++                sent += 1
++            }
++            var buf = [UInt8](repeating: 0, count: 256)
++            var peer = sockaddr_in()
++            var plen = socklen_t(MemoryLayout<sockaddr_in>.size)
++            let n = withUnsafeMutablePointer(to: &peer) {
++                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &buf, 256, 0, $0, &plen) }
++            }
++            if n <= 0 { continue }
++            let parts = String(decoding: buf[0..<n], as: UTF8.self).split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" }).map(String.init)
++            guard parts.first == reply else { continue }
++            var ip = parts.count > 1 ? parts[1] : ""
++            var tmp = in_addr()
++            if ip.split(separator: ".").count != 4 || inet_pton(AF_INET, ip, &tmp) != 1 {
++                var pb = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
++                inet_ntop(AF_INET, &peer.sin_addr, &pb, socklen_t(INET_ADDRSTRLEN))
++                ip = String(cString: pb)
++            }
++            var port = parts.count > 2 ? Int(parts[2]) ?? 7355 : 7355
++            if !(1..<65536).contains(port) { port = 7355 }
++            let r = Relay(ip: ip, port: port)
++            if !found.contains(r) { found.append(r) }
++        }
++        return found
++    }
++}
++
++/// Where the relay is: a fixed address, or found by QMXR? (with a fallback),
++/// asked again at most every 3 s.
++final class RelayLocator {
++    private let settings: BridgeSettings
++    private(set) var host: String?
++    private var searchedAt = Date.distantPast
++    private let lock = NSLock()
++
++    init(settings: BridgeSettings) {
++        self.settings = settings
++        host = settings.fixedHost
++    }
++
++    var searching: Bool { settings.fixedHost == nil }
++
++    /// Search (if allowed now); true if a host is known afterwards.
++    @discardableResult
++    func find() -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        if !searching { return host != nil }
++        if Date().timeIntervalSince(searchedAt) < 3 { return host != nil }
++        searchedAt = Date()
++        let found = Discovery.discover(udpPort: settings.discoveryPort)
++        if let f = found.first {
++            if f.ip != host { logI("found the NAS relay: \(f) - using \(f.ip):\(settings.port) for QMX port 3") }
++            if found.count > 1 { logI("other relays answered too (using the first): \(found.dropFirst().map { "\($0.ip):\($0.port)" }.joined(separator: ", "))") }
++            host = f.ip
++            return true
++        }
++        if let fb = settings.fallback {
++            if host != fb { logW("no relay answered QMXR? on UDP \(settings.discoveryPort); using the fallback \(fb)") }
++            host = fb
++            return true
++        }
++        logW("no relay answered QMXR? on UDP \(settings.discoveryPort) (is the relay running, and the Mac on the same network as the NAS?)")
++        return host != nil
++    }
++
++    /// The host, searching first if none is known yet.
++    func current() -> String? {
++        if host == nil { find() }
++        return host
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/Log.swift b/tools/mac-bridge-app/QMXBridge/Core/Log.swift
+new file mode 100644
+index 00000000..a851e014
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/Log.swift
+@@ -0,0 +1,52 @@
++// Log.swift - one log for the whole app, shown in the window and in Console.
++
++import Foundation
++import os
++
++final class AppLog: ObservableObject {
++    static let shared = AppLog()
++
++    struct Line: Identifiable {
++        let id: Int
++        let time: Date
++        let level: Level
++        let text: String
++    }
++
++    enum Level: String { case debug = "DEBUG", info = "INFO", warning = "WARN", error = "ERROR" }
++
++    @Published private(set) var lines: [Line] = []
++    var verbose = false
++    private var next = 0
++    private let osLog = Logger(subsystem: "com.qmx.panadapter.bridge", category: "bridge")
++    private let maxLines = 2000
++
++    func log(_ level: Level, _ text: String) {
++        if level == .debug && !verbose { return }
++        switch level {
++        case .debug: osLog.debug("\(text, privacy: .public)")
++        case .info: osLog.info("\(text, privacy: .public)")
++        case .warning: osLog.warning("\(text, privacy: .public)")
++        case .error: osLog.error("\(text, privacy: .public)")
++        }
++        let now = Date()
++        DispatchQueue.main.async {
++            self.lines.append(Line(id: self.next, time: now, level: level, text: text))
++            self.next += 1
++            if self.lines.count > self.maxLines { self.lines.removeFirst(self.lines.count - self.maxLines) }
++        }
++    }
++
++    func clear() { DispatchQueue.main.async { self.lines.removeAll() } }
++
++    var text: String {
++        let f = DateFormatter()
++        f.dateFormat = "HH:mm:ss"
++        return lines.map { "\(f.string(from: $0.time)) \($0.level.rawValue) \($0.text)" }.joined(separator: "\n")
++    }
++}
++
++func logD(_ s: @autoclosure () -> String) { if AppLog.shared.verbose { AppLog.shared.log(.debug, s()) } }
++func logI(_ s: String) { AppLog.shared.log(.info, s) }
++func logW(_ s: String) { AppLog.shared.log(.warning, s) }
++func logE(_ s: String) { AppLog.shared.log(.error, s) }
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/Net.swift b/tools/mac-bridge-app/QMXBridge/Core/Net.swift
+new file mode 100644
+index 00000000..7b955bfb
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/Net.swift
+@@ -0,0 +1,208 @@
++// Net.swift - small blocking BSD-socket helpers (the bridge runs on its own
++// threads, like the Python version, so plain sockets keep the port simple).
++
++import Foundation
++import Darwin
++
++enum NetError: Error, CustomStringConvertible {
++    case resolve(String)
++    case sys(String, Int32)
++    case timeout(String)
++    case closed
++
++    var description: String {
++        switch self {
++        case .resolve(let h): return "can't resolve \(h)"
++        case .sys(let what, let e): return "\(what): \(String(cString: strerror(e)))"
++        case .timeout(let what): return "\(what): timed out"
++        case .closed: return "connection closed"
++        }
++    }
++
++    var errno: Int32? { if case .sys(_, let e) = self { return e }; return nil }
++}
++
++/// A connected TCP socket.
++final class TCPSocket {
++    let fd: Int32
++    private var closedFlag = false
++    private let lock = NSLock()
++
++    init(fd: Int32) { self.fd = fd }
++    deinit { close() }
++
++    /// Connect to host:port with a timeout (seconds).
++    static func connect(host: String, port: Int, timeout: Double) throws -> TCPSocket {
++        var addr = sockaddr_in()
++        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
++        addr.sin_family = sa_family_t(AF_INET)
++        addr.sin_port = in_port_t(UInt16(port).bigEndian)
++        if inet_pton(AF_INET, host, &addr.sin_addr) != 1 {
++            // not a dotted quad: resolve
++            var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM,
++                                 ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
++            var res: UnsafeMutablePointer<addrinfo>?
++            guard getaddrinfo(host, nil, &hints, &res) == 0, let r = res, let sa = r.pointee.ai_addr else {
++                throw NetError.resolve(host)
++            }
++            sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { addr.sin_addr = $0.pointee.sin_addr }
++            freeaddrinfo(res)
++        }
++        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
++        if fd < 0 { throw NetError.sys("socket", Darwin.errno) }
++        var one: Int32 = 1
++        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
++        let flags = fcntl(fd, F_GETFL)
++        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
++        let rc = withUnsafePointer(to: &addr) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
++            }
++        }
++        if rc != 0 {
++            let e = Darwin.errno
++            if e != EINPROGRESS { Darwin.close(fd); throw NetError.sys("connect \(host):\(port)", e) }
++            var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
++            let n = poll(&p, 1, Int32(timeout * 1000))
++            if n <= 0 { Darwin.close(fd); throw NetError.timeout("connect \(host):\(port)") }
++            var err: Int32 = 0
++            var len = socklen_t(MemoryLayout<Int32>.size)
++            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
++            if err != 0 { Darwin.close(fd); throw NetError.sys("connect \(host):\(port)", err) }
++        }
++        _ = fcntl(fd, F_SETFL, flags & ~O_NONBLOCK)
++        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
++        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
++        return TCPSocket(fd: fd)
++    }
++
++    var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closedFlag }
++
++    func close() {
++        lock.lock()
++        if !closedFlag {
++            closedFlag = true
++            Darwin.shutdown(fd, SHUT_RDWR)
++            Darwin.close(fd)
++        }
++        lock.unlock()
++    }
++
++    /// Receive timeout for blocking reads; 0 = none.
++    func setReadTimeout(_ seconds: Double) {
++        var tv = timeval(tv_sec: Int(seconds), tv_usec: Int32((seconds - Double(Int(seconds))) * 1e6))
++        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
++    }
++
++    func sendAll(_ data: Data) throws {
++        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
++            guard var p = raw.baseAddress else { return }
++            var left = raw.count
++            while left > 0 {
++                let n = Darwin.send(fd, p, left, 0)
++                if n < 0 {
++                    if Darwin.errno == EINTR { continue }
++                    throw NetError.sys("send", Darwin.errno)
++                }
++                p += n
++                left -= n
++            }
++        }
++    }
++
++    func sendAll(_ s: String) throws { try sendAll(Data(s.utf8)) }
++
++    /// Up to `max` bytes; empty Data = peer closed. Throws on error or timeout.
++    func recv(max: Int = 4096) throws -> Data {
++        var buf = [UInt8](repeating: 0, count: max)
++        while true {
++            let n = Darwin.recv(fd, &buf, max, 0)
++            if n >= 0 { return Data(buf[0..<n]) }
++            let e = Darwin.errno
++            if e == EINTR { continue }
++            if e == EAGAIN || e == EWOULDBLOCK { throw NetError.timeout("recv") }
++            throw NetError.sys("recv", e)
++        }
++    }
++
++    func recvExact(_ n: Int) throws -> Data {
++        var out = Data()
++        out.reserveCapacity(n)
++        while out.count < n {
++            let c = try recv(max: n - out.count)
++            if c.isEmpty { throw NetError.closed }
++            out.append(c)
++        }
++        return out
++    }
++}
++
++/// A listening TCP socket.
++final class TCPListener {
++    let fd: Int32
++
++    init(address: String, port: Int) throws {
++        fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
++        if fd < 0 { throw NetError.sys("socket", Darwin.errno) }
++        var one: Int32 = 1
++        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
++        var addr = sockaddr_in()
++        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
++        addr.sin_family = sa_family_t(AF_INET)
++        addr.sin_port = in_port_t(UInt16(port).bigEndian)
++        if inet_pton(AF_INET, address, &addr.sin_addr) != 1 { addr.sin_addr.s_addr = INADDR_ANY }
++        let rc = withUnsafePointer(to: &addr) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
++                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
++            }
++        }
++        if rc != 0 { let e = Darwin.errno; Darwin.close(fd); throw NetError.sys("bind \(address):\(port)", e) }
++        if listen(fd, 4) != 0 { let e = Darwin.errno; Darwin.close(fd); throw NetError.sys("listen", e) }
++    }
++
++    /// Blocks; returns nil once the listener is closed.
++    func accept() -> (TCPSocket, String)? {
++        var addr = sockaddr_in()
++        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
++        let c = withUnsafeMutablePointer(to: &addr) {
++            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.accept(fd, $0, &len) }
++        }
++        if c < 0 { return nil }
++        var one: Int32 = 1
++        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
++        setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
++        var ip = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
++        inet_ntop(AF_INET, &addr.sin_addr, &ip, socklen_t(INET_ADDRSTRLEN))
++        return (TCPSocket(fd: c), "\(String(cString: ip)):\(UInt16(bigEndian: addr.sin_port))")
++    }
++
++    func close() {
++        Darwin.shutdown(fd, SHUT_RDWR)
++        Darwin.close(fd)
++    }
++}
++
++/// QMXR/1 frame header: type, flags, little-endian length.
++enum QMXR {
++    static let hello: UInt8 = 1, iq: UInt8 = 2, cat: UInt8 = 3, ping: UInt8 = 4
++
++    static func frame(_ type: UInt8, _ payload: Data) -> Data {
++        var d = Data([type, 0, UInt8(payload.count & 0xFF), UInt8((payload.count >> 8) & 0xFF)])
++        d.append(payload)
++        return d
++    }
++
++    static func readFrame(_ s: TCPSocket) throws -> (UInt8, Data) {
++        let h = try s.recvExact(4)
++        let n = Int(h[h.startIndex + 2]) | (Int(h[h.startIndex + 3]) << 8)
++        return (h[h.startIndex], n > 0 ? try s.recvExact(n) : Data())
++    }
++}
++
++extension Data {
++    /// ASCII view for logs, shortened.
++    func logText(_ n: Int = 60) -> String {
++        let s = String(decoding: self, as: UTF8.self)
++        return s.count <= n ? s : String(s.prefix(n)) + "..."
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/Probe.swift b/tools/mac-bridge-app/QMXBridge/Core/Probe.swift
+new file mode 100644
+index 00000000..4ac7a92a
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/Probe.swift
+@@ -0,0 +1,79 @@
++// Probe.swift - one-off check through the relay: read-only CAT queries
++// (ID; FA; MD;) on port 3 and the I/Q copy's hello. Never transmits.
++
++import Foundation
++
++enum Probe {
++    struct Result {
++        var lines: [String] = []
++        var passed = false
++    }
++
++    static func run(settings: BridgeSettings, requireIQ: Bool = false) -> Result {
++        var r = Result()
++        func say(_ s: String) { r.lines.append(s); logI("probe: " + s) }
++        var host = settings.fixedHost
++        if host == nil {
++            let found = Discovery.discover(udpPort: settings.discoveryPort)
++            if let f = found.first {
++                say("ok  : QMXR? -> " + found.map(\.description).joined(separator: ", "))
++                host = f.ip
++            } else if let fb = settings.fallback {
++                say("note: no relay answered QMXR?; using the fallback \(fb)")
++                host = fb
++            } else {
++                say("FAIL: no relay answered QMXR? on UDP \(settings.discoveryPort)")
++                return r
++            }
++        }
++        guard let h = host else { return r }
++        let s: TCPSocket
++        do {
++            s = try TCPSocket.connect(host: h, port: settings.port, timeout: 3)
++        } catch {
++            say("FAIL: can't reach the relay at \(h):\(settings.port): \(error)")
++            return r
++        }
++        say("ok  : connected to \(h):\(settings.port) (QMX port 3)")
++        s.setReadTimeout(3)
++        var ok = true
++        for q in ["ID;", "FA;", "MD;"] {
++            do { try s.sendAll(q) } catch { say("FAIL: send \(q): \(error)"); s.close(); return r }
++            var reply = Data()
++            let end = Date().addingTimeInterval(3)
++            while Date() < end && reply.last != UInt8(ascii: ";") {
++                do {
++                    let c = try s.recv(max: 256)
++                    if c.isEmpty {
++                        say("FAIL: the relay closed port 3 - is the QMX on, with 'USB serial ports' = 3?")
++                        s.close()
++                        return r
++                    }
++                    reply.append(c)
++                } catch { break }
++            }
++            let good = reply.last == UInt8(ascii: ";")
++            ok = ok && good
++            say("\(good ? "ok  " : "FAIL"): \(q) -> \(reply.isEmpty ? "(no reply)" : reply.logText())")
++        }
++        s.close()
++        // the listen-only I/Q copy the TCI server uses (relay port 7357)
++        do {
++            let q = try TCPSocket.connect(host: h, port: settings.iqPort, timeout: 3)
++            q.setReadTimeout(3)
++            try q.sendAll(QMXR.frame(QMXR.hello, Data("QMXR/1 probe".utf8)))
++            let (t, hello) = try QMXR.readFrame(q)
++            let txt = String(decoding: hello, as: UTF8.self)
++            let good = t == QMXR.hello && txt.contains("role=listen")
++            say("\(good ? "ok  " : "FAIL"): I/Q copy on \(h):\(settings.iqPort) -> \(txt.isEmpty ? "(no answer)" : hello.logText())")
++            if requireIQ { ok = ok && good }
++            q.close()
++        } catch {
++            say("\(requireIQ ? "FAIL" : "note"): I/Q copy on \(h):\(settings.iqPort): \(error) (the relay needs updating for TCI)")
++            if requireIQ { ok = false }
++        }
++        r.passed = ok
++        say("PROBE \(ok ? "PASSED" : "FAILED")")
++        return r
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/PtyEndpoint.swift b/tools/mac-bridge-app/QMXBridge/Core/PtyEndpoint.swift
+new file mode 100644
+index 00000000..ad304b66
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/PtyEndpoint.swift
+@@ -0,0 +1,99 @@
++// PtyEndpoint.swift - a pseudo-terminal linked at a fixed path (default
++// ~/cu.QMX-NAS). Works without the driver; programs that only list /dev/cu.*
++// ports won't show it, but anything that accepts a typed path will.
++
++import Foundation
++import Darwin
++
++final class PtyEndpoint: SerialEndpoint {
++    private var master: Int32 = -1
++    private var slave: Int32 = -1
++    private let link: String
++    private var deviceName = ""
++    private var source: DispatchSourceRead?
++    private let q = DispatchQueue(label: "qmx.pty")
++
++    init(linkPath: String) {
++        link = (linkPath as NSString).expandingTildeInPath
++    }
++
++    var displayPath: String { deviceName.isEmpty ? link : "\(link)  (device \(deviceName))" }
++
++    func start(onData: @escaping (Data) -> Void, onOpen: @escaping (Bool) -> Void) throws {
++        var m: Int32 = -1, s: Int32 = -1
++        guard openpty(&m, &s, nil, nil, nil) == 0 else { throw NetError.sys("openpty", errno) }
++        master = m; slave = s
++        // Raw 8-bit, no echo: an echo would send the radio's replies back to it.
++        var t = termios()
++        tcgetattr(slave, &t)
++        cfmakeraw(&t)
++        t.c_lflag &= ~tcflag_t(ECHO | ECHONL)
++        tcsetattr(slave, TCSANOW, &t)
++        _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
++        deviceName = String(cString: ttyname(slave))
++        // We keep our own handle on the device open (and never read it), so the
++        // device stays put while programs open and close it.
++        let dir = (link as NSString).deletingLastPathComponent
++        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
++        let tmp = "\(link).\(getpid()).tmp"
++        unlink(tmp)
++        guard symlink(deviceName, tmp) == 0 else { throw NetError.sys("symlink \(tmp)", errno) }
++        guard rename(tmp, link) == 0 else { let e = errno; unlink(tmp); throw NetError.sys("rename to \(link)", e) }
++
++        let src = DispatchSource.makeReadSource(fileDescriptor: master, queue: q)
++        src.setEventHandler { [weak self] in
++            guard let self = self else { return }
++            var buf = [UInt8](repeating: 0, count: 4096)
++            let n = read(self.master, &buf, buf.count)
++            if n > 0 {
++                onData(Data(buf[0..<n]))
++            } else if n < 0 && errno == EIO {
++                usleep(50_000)          // no program has the port open
++            }
++        }
++        src.resume()
++        source = src
++    }
++
++    /// Programs may change the port settings; never allow echo, which would
++    /// loop the radio's replies straight back into the radio.
++    private func noEcho() {
++        var t = termios()
++        guard tcgetattr(slave, &t) == 0 else { return }
++        let bad = tcflag_t(ECHO | ECHONL)
++        if t.c_lflag & bad != 0 {
++            t.c_lflag &= ~bad
++            tcsetattr(slave, TCSANOW, &t)
++            logI("turned echo off on the serial port")
++        }
++    }
++
++    func write(_ data: Data) {
++        noEcho()
++        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
++            guard var p = raw.baseAddress else { return }
++            var left = raw.count
++            while left > 0 {
++                let n = Darwin.write(master, p, left)
++                if n < 0 {
++                    if errno == EAGAIN { logW("serial port full (nothing reading it): dropped \(left) bytes") }
++                    else { logW("serial port write failed: \(String(cString: strerror(errno)))") }
++                    return
++                }
++                p += n; left -= n
++            }
++        }
++    }
++
++    func flushStale() { tcflush(slave, TCIFLUSH) }
++
++    func stop() {
++        source?.cancel()
++        source = nil
++        var target = [CChar](repeating: 0, count: 1024)
++        let n = readlink(link, &target, 1023)
++        if n > 0 && String(cString: target) == deviceName { unlink(link) }
++        if slave >= 0 { close(slave); slave = -1 }
++        if master >= 0 { close(master); master = -1 }
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Core/SerialBridge.swift b/tools/mac-bridge-app/QMXBridge/Core/SerialBridge.swift
+new file mode 100644
+index 00000000..ba00edc3
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Core/SerialBridge.swift
+@@ -0,0 +1,193 @@
++// SerialBridge.swift - the QMX on the NAS as a serial port on this Mac.
++//
++//   QMX --USB--> NAS relay --TCP 7356 (QMX serial port 3, raw bytes)--> this app
++//       --> a serial device on the Mac: the QMX Bridge virtual USB serial port
++//           (DriverKit driver), or a pseudo-terminal linked at ~/cu.QMX-NAS.
++//
++// Same behaviour as qmx_serial_bridge.py: connects to the relay only when a
++// program talks to the port, releases it after `idle` seconds of silence, drops
++// commands (and retries) while the radio is unreachable, bytes pass unchanged.
++
++import Foundation
++
++/// The Mac side of the bridge: something programs open as a serial port.
++protocol SerialEndpoint: AnyObject {
++    /// Human-readable path, e.g. /dev/cu.QMX-NAS or ~/cu.QMX-NAS -> /dev/ttys012
++    var displayPath: String { get }
++    /// Start delivering what programs write (onData) and open/close events.
++    func start(onData: @escaping (Data) -> Void, onOpen: @escaping (Bool) -> Void) throws
++    /// Bytes from the radio, for the program.
++    func write(_ data: Data)
++    /// Throw away radio bytes no program has read yet.
++    func flushStale()
++    func stop()
++}
++
++final class SerialBridge {
++    static let connectTimeout = 3.0
++    static let retryAfter = 3.0
++    static let quickClose = 1.5
++
++    let settings: BridgeSettings
++    let endpoint: SerialEndpoint
++    let locator: RelayLocator
++    private let q = DispatchQueue(label: "qmx.serial-bridge")
++    private var sock: TCPSocket?
++    private var connectedAt = Date.distantPast
++    private var gotReply = false
++    private var lastTraffic = Date.distantPast
++    private var retryAt = Date.distantPast
++    private var droppedNote = Date.distantPast
++    private var timer: DispatchSourceTimer?
++    private(set) var running = false
++
++    /// Called on the main queue when the relay connection changes.
++    var onState: ((_ relayConnected: Bool, _ host: String?) -> Void)?
++
++    init(settings: BridgeSettings, endpoint: SerialEndpoint) {
++        self.settings = settings
++        self.endpoint = endpoint
++        self.locator = RelayLocator(settings: settings)
++    }
++
++    func start() throws {
++        try endpoint.start(onData: { [weak self] d in self?.onPortData(d) },
++                           onOpen: { [weak self] open in self?.onPortOpen(open) })
++        running = true
++        logI("serial port ready: \(endpoint.displayPath)")
++        q.async {
++            if self.locator.searching { self.locator.find() }
++            let mode = self.settings.keepConnected ? "kept connected"
++                : self.settings.idle > 0 ? "connects on demand, releases after \(self.settings.idle)s idle"
++                : "connects on demand, stays connected"
++            logI("relay: \(self.locator.host ?? "(not found yet)"):\(self.settings.port)   \(mode)")
++            self.notify()
++        }
++        let t = DispatchSource.makeTimerSource(queue: q)
++        t.schedule(deadline: .now() + 1, repeating: 1)
++        t.setEventHandler { [weak self] in self?.tick() }
++        t.resume()
++        timer = t
++    }
++
++    func stop() {
++        running = false
++        timer?.cancel()
++        timer = nil
++        q.sync { disconnect("stopping") }
++        endpoint.stop()
++    }
++
++    private func notify() {
++        let c = sock != nil, h = locator.host
++        DispatchQueue.main.async { self.onState?(c, h) }
++    }
++
++    // MARK: - relay
++
++    private func connect() -> Bool {
++        if locator.host == nil && !(locator.searching && locator.find()) {
++            retryAt = Date().addingTimeInterval(Self.retryAfter)
++            return false
++        }
++        guard let host = locator.host else { return false }
++        do {
++            let s = try TCPSocket.connect(host: host, port: settings.port, timeout: Self.connectTimeout)
++            sock = s
++            connectedAt = Date(); lastTraffic = connectedAt
++            gotReply = false
++            endpoint.flushStale()
++            logI("connected to the relay \(host):\(settings.port) (QMX serial port 3)")
++            let th = Thread { [weak self] in self?.reader(s) }
++            th.name = "relay-rx"
++            th.start()
++            notify()
++            return true
++        } catch {
++            logW("can't reach the relay at \(host):\(settings.port): \(error)")
++            if let e = (error as? NetError)?.errno, e == EHOSTUNREACH || e == ENETUNREACH || e == EPERM {
++                logW("if this Mac is on the NAS's network, check System Settings -> Privacy & Security -> Local Network allows QMX Bridge")
++            }
++            let old = locator.host
++            if locator.searching && locator.find() && locator.host != old {
++                return connect()      // the NAS moved: try its new address once
++            }
++            retryAt = Date().addingTimeInterval(Self.retryAfter)
++            return false
++        }
++    }
++
++    private func disconnect(_ why: String) {
++        if let s = sock {
++            s.close()
++            sock = nil
++            logI("released the relay: \(why)")
++            notify()
++        }
++    }
++
++    private func reader(_ s: TCPSocket) {
++        var why = "relay closed the connection (QMX off or relay restarted)"
++        while true {
++            do {
++                let d = try s.recv(max: 4096)
++                if d.isEmpty { break }
++                q.async { if self.sock === s { self.gotReply = true; self.lastTraffic = Date() } }
++                logD("radio -> port: \(d.logText())")
++                endpoint.write(d)
++            } catch {
++                why = "connection lost: \(error)"
++                break
++            }
++        }
++        q.async {
++            guard self.sock === s else { return }
++            if !self.quickCloseCheck() { self.disconnect(why) }
++        }
++    }
++
++    /// The relay drops port 3 at once when the radio can't serve it.
++    private func quickCloseCheck() -> Bool {
++        if !gotReply && Date().timeIntervalSince(connectedAt) < Self.quickClose {
++            logW("the relay closed port 3 straight away. Is the QMX on, and is 'USB serial ports' set to 3 on the radio? (see the relay's log)")
++            retryAt = Date().addingTimeInterval(Self.retryAfter)
++            disconnect("port 3 refused")
++            return true
++        }
++        return false
++    }
++
++    // MARK: - port side
++
++    private func onPortData(_ d: Data) {
++        q.async {
++            logD("port -> radio: \(d.logText())")
++            let now = Date()
++            if self.sock == nil {
++                if now < self.retryAt || !self.connect() {
++                    if now.timeIntervalSince(self.droppedNote) > 30 {
++                        logI("radio not reachable: dropping commands (retrying)")
++                        self.droppedNote = now
++                    }
++                    return
++                }
++            }
++            self.lastTraffic = now
++            do { try self.sock?.sendAll(d) } catch { self.disconnect("send failed: \(error)") }
++        }
++    }
++
++    private func onPortOpen(_ open: Bool) {
++        logI(open ? "a program opened the serial port" : "the program closed the serial port")
++    }
++
++    private func tick() {
++        let now = Date()
++        if settings.keepConnected && sock == nil && now >= retryAt { _ = connect() }
++        if sock != nil && settings.idle > 0 && !settings.keepConnected &&
++            now.timeIntervalSince(lastTraffic) > Double(settings.idle) {
++            disconnect("idle for \(settings.idle)s")
++            endpoint.flushStale()
++        }
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Driver/DriverEndpoint.swift b/tools/mac-bridge-app/QMXBridge/Driver/DriverEndpoint.swift
+new file mode 100644
+index 00000000..8142aa85
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Driver/DriverEndpoint.swift
+@@ -0,0 +1,175 @@
++// DriverEndpoint.swift - the virtual USB serial port (QMXSerialDriver.dext) as
++// the bridge's serial endpoint: programs open /dev/cu.QMX-NAS like any USB
++// serial adapter; this side talks to the driver through its user client.
++
++import Foundation
++import IOKit
++import IOKit.serial
++
++final class DriverEndpoint: SerialEndpoint {
++    enum DriverError: Error, CustomStringConvertible {
++        case notInstalled, open(kern_return_t), notify(kern_return_t)
++        var description: String {
++            switch self {
++            case .notInstalled: return "the QMX serial driver is not running (install it from the Driver tab)"
++            case .open(let r): return "can't open the QMX serial driver (IOServiceOpen 0x\(String(UInt32(bitPattern: r), radix: 16)))"
++            case .notify(let r): return "the QMX serial driver refused notifications (0x\(String(UInt32(bitPattern: r), radix: 16)))"
++            }
++        }
++    }
++
++    struct Status {
++        var portReady = false, open = false, queues = false
++        var rxSize = 0, txSize = 0, rxDropped = 0, baud = 0, ringMode = 0
++    }
++
++    private var service: io_service_t = 0
++    private var connect: io_connect_t = 0
++    private var notifyPort: IONotificationPortRef?
++    private let q = DispatchQueue(label: "qmx.driver")
++    private var onData: ((Data) -> Void)?
++    private var onOpen: ((Bool) -> Void)?
++    private var asyncRef = [io_user_reference_t](repeating: 0, count: Int(kOSAsyncRef64Count))
++
++    var displayPath: String { Self.calloutPath() ?? "/dev/cu.\(kQMXSerialTTYBaseName)" }
++
++    /// The /dev/cu.* path the serial family gave our port, if it exists.
++    static func calloutPath() -> String? {
++        guard let match = IOServiceMatching(kIOSerialBSDServiceValue) else { return nil }
++        var it: io_iterator_t = 0
++        guard IOServiceGetMatchingServices(kIOMainPortDefault, match, &it) == KERN_SUCCESS else { return nil }
++        defer { IOObjectRelease(it) }
++        var found: String?
++        while case let s = IOIteratorNext(it), s != 0 {
++            defer { IOObjectRelease(s) }
++            if let p = IORegistryEntryCreateCFProperty(s, kIOCalloutDeviceKey as CFString, kCFAllocatorDefault, 0)?
++                .takeRetainedValue() as? String, p.contains(kQMXSerialTTYBaseName) {
++                found = p
++            }
++        }
++        return found
++    }
++
++    static func controlService() -> io_service_t {
++        let match: NSDictionary = [kIOPropertyMatchKey: ["IOUserClass": kQMXBridgeControlClass]]
++        return IOServiceGetMatchingService(kIOMainPortDefault, match as CFDictionary)
++    }
++
++    static var isDriverRunning: Bool {
++        let s = controlService()
++        if s != 0 { IOObjectRelease(s); return true }
++        return false
++    }
++
++    func start(onData: @escaping (Data) -> Void, onOpen: @escaping (Bool) -> Void) throws {
++        self.onData = onData
++        self.onOpen = onOpen
++        service = Self.controlService()
++        guard service != 0 else { throw DriverError.notInstalled }
++        let r = IOServiceOpen(service, mach_task_self_, UInt32(kQMXBridgeUserClientType), &connect)
++        guard r == KERN_SUCCESS else { IOObjectRelease(service); service = 0; throw DriverError.open(r) }
++
++        guard let port = IONotificationPortCreate(kIOMainPortDefault) else { throw DriverError.notify(kIOReturnNoMemory) }
++        notifyPort = port
++        IONotificationPortSetDispatchQueue(port, q)
++        let callback: IOAsyncCallback = { refcon, result, args, numArgs in
++            guard let refcon = refcon else { return }
++            let me = Unmanaged<DriverEndpoint>.fromOpaque(refcon).takeUnretainedValue()
++            var vals: [UInt64] = []
++            if let a = args {
++                for i in 0..<Int(numArgs) { vals.append(UInt64(UInt(bitPattern: a[i]))) }
++            }
++            me.event(vals)
++        }
++        asyncRef[Int(kIOAsyncCalloutFuncIndex)] = io_user_reference_t(UInt(bitPattern: unsafeBitCast(callback, to: UnsafeRawPointer.self)))
++        asyncRef[Int(kIOAsyncCalloutRefconIndex)] = io_user_reference_t(UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque()))
++        var outCnt: UInt32 = 0
++        let nr = IOConnectCallAsyncScalarMethod(connect, UInt32(kQMXMethodNotify), IONotificationPortGetMachPort(port),
++                                                &asyncRef, UInt32(kOSAsyncRef64Count), nil, 0, nil, &outCnt)
++        guard nr == KERN_SUCCESS else { throw DriverError.notify(nr) }
++        let st = status()
++        if st.open { onOpen(true) }
++        q.async { self.drain() }       // anything written before we connected
++    }
++
++    private func event(_ v: [UInt64]) {
++        guard let e = v.first else { return }
++        switch Int(e) {
++        case kQMXEventTxData: drain()
++        case kQMXEventOpen: onOpen?(true)
++        case kQMXEventClose: onOpen?(false)
++        case kQMXEventMCR: logD("port: DTR \(v.count > 1 && v[1] & 1 != 0 ? "on" : "off"), RTS \(v.count > 1 && v[1] & 2 != 0 ? "on" : "off")")
++        case kQMXEventQueues: logD("port: rings \(v.count > 1 && v[1] != 0 ? "connected" : "disconnected")")
++        default: break
++        }
++    }
++
++    /// Pull everything the program wrote.
++    private func drain() {
++        guard connect != 0 else { return }
++        var buf = [UInt8](repeating: 0, count: 4096)
++        while true {
++            var size = buf.count
++            let r = IOConnectCallStructMethod(connect, UInt32(kQMXMethodRead), nil, 0, &buf, &size)
++            if r != KERN_SUCCESS || size == 0 { break }
++            onData?(Data(buf[0..<size]))
++        }
++    }
++
++    func write(_ data: Data) {
++        guard connect != 0 else { return }
++        var off = 0
++        while off < data.count {
++            let chunk = data.subdata(in: off..<min(off + 4096, data.count))
++            var accepted: UInt64 = 0
++            var outCnt: UInt32 = 1
++            let r = chunk.withUnsafeBytes { p in
++                IOConnectCallMethod(connect, UInt32(kQMXMethodWrite), nil, 0, p.baseAddress, chunk.count,
++                                    &accepted, &outCnt, nil, nil)
++            }
++            if r != KERN_SUCCESS {
++                logW("serial driver write failed (0x\(String(UInt32(bitPattern: r), radix: 16)))")
++                return
++            }
++            if Int(accepted) < chunk.count {
++                logW("serial port full or closed (nothing reading it): dropped \(chunk.count - Int(accepted)) bytes")
++                return
++            }
++            off += chunk.count
++        }
++    }
++
++    func flushStale() {
++        guard connect != 0 else { return }
++        _ = IOConnectCallScalarMethod(connect, UInt32(kQMXMethodFlushRx), nil, 0, nil, nil)
++    }
++
++    func setRingMode(_ mode: Int) {
++        guard connect != 0 else { return }
++        var v = UInt64(mode)
++        _ = IOConnectCallScalarMethod(connect, UInt32(kQMXMethodSetRingMode), &v, 1, nil, nil)
++    }
++
++    func status() -> Status {
++        var s = Status()
++        guard connect != 0 else { return s }
++        var out = [UInt64](repeating: 0, count: Int(kQMXStatCount))
++        var n = UInt32(kQMXStatCount)
++        guard IOConnectCallScalarMethod(connect, UInt32(kQMXMethodStatus), nil, 0, &out, &n) == KERN_SUCCESS else { return s }
++        s.portReady = out[Int(kQMXStatPortReady)] != 0
++        s.open = out[Int(kQMXStatOpen)] != 0
++        s.queues = out[Int(kQMXStatQueues)] != 0
++        s.rxSize = Int(out[Int(kQMXStatRxSize)])
++        s.txSize = Int(out[Int(kQMXStatTxSize)])
++        s.rxDropped = Int(out[Int(kQMXStatRxDropped)])
++        s.baud = Int(out[Int(kQMXStatBaud)])
++        s.ringMode = Int(out[Int(kQMXStatRingMode)])
++        return s
++    }
++
++    func stop() {
++        if connect != 0 { IOServiceClose(connect); connect = 0 }
++        if let p = notifyPort { IONotificationPortDestroy(p); notifyPort = nil }
++        if service != 0 { IOObjectRelease(service); service = 0 }
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/Driver/DriverInstaller.swift b/tools/mac-bridge-app/QMXBridge/Driver/DriverInstaller.swift
+new file mode 100644
+index 00000000..8e243591
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/Driver/DriverInstaller.swift
+@@ -0,0 +1,87 @@
++// DriverInstaller.swift - install / remove the QMX serial driver
++// (a DriverKit system extension embedded in the app).
++
++import Foundation
++import SystemExtensions
++
++final class DriverInstaller: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
++    static let dextIdentifier = "com.qmx.panadapter.bridge.serialdriver"
++
++    enum State: Equatable {
++        case unknown, notInstalled, waitingForApproval, installing, installed, removing, failed(String)
++    }
++
++    @Published var state: State = .unknown
++
++    func refresh() {
++        state = DriverEndpoint.isDriverRunning ? .installed : (state == .waitingForApproval ? state : .notInstalled)
++    }
++
++    func install() {
++        state = .installing
++        logI("driver: asking macOS to install \(Self.dextIdentifier)")
++        let r = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: Self.dextIdentifier, queue: .main)
++        r.delegate = self
++        OSSystemExtensionManager.shared.submitRequest(r)
++    }
++
++    func uninstall() {
++        state = .removing
++        logI("driver: asking macOS to remove \(Self.dextIdentifier)")
++        let r = OSSystemExtensionRequest.deactivationRequest(forExtensionWithIdentifier: Self.dextIdentifier, queue: .main)
++        r.delegate = self
++        OSSystemExtensionManager.shared.submitRequest(r)
++    }
++
++    // MARK: OSSystemExtensionRequestDelegate
++
++    func request(_ request: OSSystemExtensionRequest,
++                 actionForReplacingExtension existing: OSSystemExtensionProperties,
++                 withExtension ext: OSSystemExtensionProperties) -> OSSystemExtensionRequest.ReplacementAction {
++        logI("driver: replacing version \(existing.bundleShortVersion) (\(existing.bundleVersion)) with \(ext.bundleShortVersion) (\(ext.bundleVersion))")
++        return .replace
++    }
++
++    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
++        logW("driver: approve it in System Settings -> General -> Login Items & Extensions -> Driver Extensions (or Privacy & Security), then come back")
++        state = .waitingForApproval
++    }
++
++    func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {
++        switch result {
++        case .completed:
++            logI("driver: done")
++        case .willCompleteAfterReboot:
++            logW("driver: macOS will finish this after a restart")
++        @unknown default:
++            logI("driver: finished (\(result.rawValue))")
++        }
++        if state == .removing {
++            state = .notInstalled
++        } else {
++            // the driver's services appear a moment after activation
++            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
++            state = .installed
++        }
++    }
++
++    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
++        let e = error as NSError
++        var why = e.localizedDescription
++        if e.domain == OSSystemExtensionErrorDomain, let code = OSSystemExtensionError.Code(rawValue: e.code) {
++            switch code {
++            case .unsupportedParentBundleLocation:
++                why = "move QMX Bridge.app to /Applications first (or turn on 'systemextensionsctl developer on')"
++            case .missingEntitlement:
++                why = "the app or driver is missing a DriverKit entitlement - see tools/mac-bridge-app/README.md"
++            case .codeSignatureInvalid, .validationFailed:
++                why = "macOS rejected the driver's signature - see README.md (development signing needs SIP relaxed and 'systemextensionsctl developer on')"
++            case .requestCanceled:
++                why = "cancelled"
++            default: break
++            }
++        }
++        logE("driver: \(why) [\(e.domain) \(e.code)]")
++        state = .failed(why)
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/QMXBridge-Bridging-Header.h b/tools/mac-bridge-app/QMXBridge/QMXBridge-Bridging-Header.h
+new file mode 100644
+index 00000000..578153d6
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/QMXBridge-Bridging-Header.h
+@@ -0,0 +1,2 @@
++// Constants shared with the driver.
++#include "../Shared/QMXBridgeShared.h"
+diff --git a/tools/mac-bridge-app/QMXBridge/QMXBridge.entitlements b/tools/mac-bridge-app/QMXBridge/QMXBridge.entitlements
+new file mode 100644
+index 00000000..299213d3
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/QMXBridge.entitlements
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.developer.system-extension.install</key>
++	<true/>
++	<key>com.apple.developer.driverkit.userclient-access</key>
++	<array>
++		<string>com.qmx.panadapter.bridge.serialdriver</string>
++	</array>
++</dict>
++</plist>
+diff --git a/tools/mac-bridge-app/QMXBridge/QMXBridgeLite.entitlements b/tools/mac-bridge-app/QMXBridge/QMXBridgeLite.entitlements
+new file mode 100644
+index 00000000..0c67376e
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/QMXBridgeLite.entitlements
+@@ -0,0 +1,5 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict/>
++</plist>
+diff --git a/tools/mac-bridge-app/QMXBridge/TCI/Dsp.swift b/tools/mac-bridge-app/QMXBridge/TCI/Dsp.swift
+new file mode 100644
+index 00000000..344ad5a8
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/TCI/Dsp.swift
+@@ -0,0 +1,167 @@
++// Dsp.swift - receive: I/Q -> upper-sideband audio; transmit: one-tone
++// frequency tracking. Straight ports of UsbDemod and ToneTracker in qmx_tci.py.
++
++import Foundation
++import Accelerate
++
++let tciSampleRate = 48000
++let dialOffsetHz = 12000.0          // the QMX's dial is +12 kHz in its I/Q stream
++
++/// 48 kHz complex I/Q -> 48 kHz USB audio (0.1-3.2 kHz above the dial).
++/// Shift dial+1650 Hz to 0, low-pass +-1550 Hz (complex), shift back up by
++/// 1650 Hz and keep the real part. A slow AGC keeps the level steady.
++final class UsbDemod {
++    let fs: Double
++    let center = 1650.0
++    private var h: [Double]
++    private var tailRe: [Double]
++    private var tailIm: [Double]
++    private var ph1 = 0.0, ph2 = 0.0
++    private let w1: Double, w2: Double
++    private var gain = 1.0
++    private(set) var levelDb = -120.0
++
++    init(fs: Int = tciSampleRate, taps: Int = 255) {
++        self.fs = Double(fs)
++        let cut = 1550.0
++        var hh = [Double](repeating: 0, count: taps)
++        let m = Double(taps - 1)
++        for i in 0..<taps {
++            let n = Double(i) - m / 2
++            let x = 2 * cut / self.fs * n
++            let sinc = x == 0 ? 1.0 : sin(Double.pi * x) / (Double.pi * x)
++            let black = 0.42 - 0.5 * cos(2 * Double.pi * Double(i) / m) + 0.08 * cos(4 * Double.pi * Double(i) / m)
++            hh[i] = sinc * (2 * cut / self.fs) * black
++        }
++        let sum = hh.reduce(0, +)
++        h = hh.map { $0 / sum }
++        tailRe = [Double](repeating: 0, count: taps - 1)
++        tailIm = [Double](repeating: 0, count: taps - 1)
++        w1 = -2 * Double.pi * (dialOffsetHz + center) / self.fs
++        w2 = 2 * Double.pi * center / self.fs
++    }
++
++    /// Interleaved little-endian int16 I,Q -> mono float audio.
++    func process(_ s16: Data) -> [Float] {
++        let n = s16.count / 4
++        if n == 0 { return [] }
++        var re = [Double](repeating: 0, count: n)
++        var im = [Double](repeating: 0, count: n)
++        s16.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
++            for k in 0..<n {
++                let i = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: 4 * k, as: Int16.self))
++                let q = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: 4 * k + 2, as: Int16.self))
++                let a = Double(i) / 32768.0, b = Double(q) / 32768.0
++                let p = ph1 + w1 * Double(k)
++                let c = cos(p), s = sin(p)
++                re[k] = a * c - b * s
++                im[k] = a * s + b * c
++            }
++        }
++        ph1 = (ph1 + w1 * Double(n)).truncatingRemainder(dividingBy: 2 * Double.pi)
++        let xr = tailRe + re, xi = tailIm + im
++        let taps = h.count
++        var yr = [Double](repeating: 0, count: n)
++        var yi = [Double](repeating: 0, count: n)
++        // h is symmetric, so correlation (vDSP_convD) == convolution
++        vDSP_convD(xr, 1, h, 1, &yr, 1, vDSP_Length(n), vDSP_Length(taps))
++        vDSP_convD(xi, 1, h, 1, &yi, 1, vDSP_Length(n), vDSP_Length(taps))
++        tailRe = Array(xr[(xr.count - (taps - 1))...])
++        tailIm = Array(xi[(xi.count - (taps - 1))...])
++        var audio = [Double](repeating: 0, count: n)
++        var sq = 0.0
++        for k in 0..<n {
++            let p = ph2 + w2 * Double(k)
++            let v = (yr[k] * cos(p) - yi[k] * sin(p)) * 2.0
++            audio[k] = v
++            sq += v * v
++        }
++        ph2 = (ph2 + w2 * Double(n)).truncatingRemainder(dividingBy: 2 * Double.pi)
++        let rms = (sq / Double(n)).squareRoot() + 1e-12
++        levelDb = 20 * log10(rms)
++        // slow AGC towards an RMS of 0.05 (about -26 dBFS); gain limited to +60 dB
++        let target = 0.05 / rms
++        gain += (min(target, 1000.0) - gain) * 0.02
++        return audio.map { Float(max(-1.0, min(1.0, $0 * gain))) }
++    }
++}
++
++/// Measures the frequency of a one-tone signal (FT8/FT4/JS8/WSPR/tune) from its
++/// rising zero crossings and reports a new tone each time the frequency settles
++/// somewhere new (within plateauHz for plateauMs). Silence is reported as 0.
++final class ToneTracker {
++    static let plateauHz = 0.25
++    static let plateauMs = 8.0
++    static let changeHz = 0.5
++    static let silence = 0.01
++
++    let fs: Double
++    private var n = 0.0                 // samples seen
++    private var prev = 0.0
++    private var lastCross: Double?
++    private var periods: [(t: Double, f: Double)] = []
++    private(set) var tone = 0.0
++    private var quiet = 0
++
++    init(fs: Int = tciSampleRate) { self.fs = Double(fs) }
++
++    func reset() {
++        n = 0; prev = 0; lastCross = nil; periods.removeAll(); tone = 0; quiet = 0
++    }
++
++    /// Mono samples in; (sample index, tone Hz) changes out.
++    func feed(_ x: [Double]) -> [(Double, Double)] {
++        var out: [(Double, Double)] = []
++        if x.isEmpty { return out }
++        let base = n
++        var lastLoud = -1
++        for (i, v) in x.enumerated() {
++            if abs(v) > Self.silence { lastLoud = i }
++            let a = i == 0 ? prev : x[i - 1]
++            // rising crossing between sample i-1 and i
++            if a <= 0 && v > 0 {
++                let t = base + Double(i) - 1 + (v != a ? -a / (v - a) : 0)
++                if let lc = lastCross {
++                    let p = t - lc
++                    if p > 0 { periods.append((t, fs / p)) }
++                }
++                lastCross = t
++            }
++        }
++        if lastLoud >= 0 { quiet = x.count - 1 - lastLoud } else { quiet += x.count }
++        prev = x[x.count - 1]
++        n += Double(x.count)
++        if Double(quiet) > fs * 0.004 {                 // 4 ms of silence
++            periods.removeAll()
++            lastCross = nil
++            if tone != 0 {
++                tone = 0
++                out.append((n - Double(quiet), 0))
++            }
++            return out
++        }
++        let span = fs * Self.plateauMs / 1000.0
++        while let first = periods.first, first.t < n - 8 * span { periods.removeFirst() }   // keep ~64 ms
++        let recent = periods.filter { $0.t >= n - span }.map(\.f)
++        if recent.count >= 4, let first = periods.first, first.t <= n - span,
++           let lo = recent.min(), let hi = recent.max(), hi - lo <= 2 * Self.plateauHz {
++            let f = recent.reduce(0, +) / Double(recent.count)
++            if abs(f - tone) >= Self.changeHz && f >= 50 && f <= 4000 {
++                // Report the change where the frequency crossed half way from the old
++                // tone to the new one - the symbol boundary. After silence: where it began.
++                var at = first.t
++                if tone != 0 {
++                    let mid = (tone + f) / 2
++                    let oldSide = tone > mid
++                    for p in periods.reversed() where (p.f > mid) == oldSide {
++                        at = p.t
++                        break
++                    }
++                }
++                tone = f
++                out.append((at, f))
++            }
++        }
++        return out
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/TCI/TciServer.swift b/tools/mac-bridge-app/QMXBridge/TCI/TciServer.swift
+new file mode 100644
+index 00000000..e43a7cc5
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/TCI/TciServer.swift
+@@ -0,0 +1,544 @@
++// TciServer.swift - a TCI server on the Mac for the QMX on the NAS, so WS,
++// WSJT-X 3, JTDX and other TCI programs get receive and transmit audio with no
++// serial port or virtual audio device. Port of qmx_tci.py.
++//
++//   QMX --USB--> NAS relay --TCP 7357 (copy of the I/Q, listen only)--> \
++//                          --TCP 7356 (QMX serial port 3, CAT)-------->  this app
++//                                                                       | TCI, ws://127.0.0.1:40001
++//                                                                       v
++//                                                                 WS / WSJT-X / JTDX
++//
++// Receive: the 48 kHz I/Q (dial at +12 kHz) becomes USB audio here.
++// Control: frequency, mode, TX on/off become the QMX's CAT (FA, MD, TX;/RX;).
++// Transmit: one tone at a time (FT8/FT4/JS8/WSPR/tune), measured from the
++//           program's audio and sent as TA<Hz>; - the same way the Tab5 does.
++
++import Foundation
++
++private let tciHeaderSize = 64              // 16 x u32: receiver, rate, format, codec, crc, length, type, reserved[9]
++private let tRxAudio: UInt32 = 1, tTxAudio: UInt32 = 2, tTxChrono: UInt32 = 3
++private let fmtFloat32: UInt32 = 3
++private let chronoMs = 10                   // ask the program for this much transmit audio at a time
++private let txDelay = 0.05                  // fixed delay on the chrono clock for tone changes
++
++private let modToMd = ["lsb": "1", "usb": "2", "cw": "3", "digu": "6", "digl": "6"]
++private let mdToMod = ["1": "lsb", "2": "usb", "3": "cw", "6": "digu", "7": "cw"]
++
++private func tciHeader(rate: Int, format: UInt32, length: Int, type: UInt32) -> Data {
++    var words = [UInt32](repeating: 0, count: 16)
++    words[0] = 0; words[1] = UInt32(rate); words[2] = format
++    words[5] = UInt32(length); words[6] = type
++    var d = Data(capacity: tciHeaderSize)
++    for w in words { withUnsafeBytes(of: w.littleEndian) { d.append(contentsOf: $0) } }
++    return d
++}
++
++private func monotonic() -> Double { ProcessInfo.processInfo.systemUptime }
++
++// MARK: - CAT on the relay's port 3
++
++final class RadioCat {
++    unowned let srv: TciServer
++    private var sock: TCPSocket?
++    private let lock = NSRecursiveLock()
++    private var buf = Data()
++    var freq = 14_074_000
++    var md = "6"
++    var iqMode: Bool?
++
++    init(_ s: TciServer) { srv = s }
++
++    var connected: Bool { lock.lock(); defer { lock.unlock() }; return sock != nil }
++
++    private func connect() -> Bool {
++        guard let host = srv.host() else { return false }
++        do {
++            let s = try TCPSocket.connect(host: host, port: srv.settings.port, timeout: 3)
++            sock = s
++            logI("CAT: connected to QMX serial port 3 at \(host):\(srv.settings.port)")
++            let t = Thread { [weak self] in self?.reader(s) }
++            t.name = "cat-rx"
++            t.start()
++            // The I/Q has to be I/Q: Q9 is session state on the radio; turning it on again is harmless.
++            _ = sendLocked("Q9;FA;MD;")
++            return true
++        } catch {
++            logW("CAT: can't reach the relay's port 3 at \(host):\(srv.settings.port): \(error)")
++            return false
++        }
++    }
++
++    func close() {
++        lock.lock()
++        let s = sock
++        sock = nil
++        lock.unlock()
++        s?.close()
++    }
++
++    private func sendLocked(_ cmd: String) -> Bool {
++        guard let s = sock else { return false }
++        do {
++            try s.sendAll(cmd)
++            logD("CAT -> \(cmd)")
++            return true
++        } catch {
++            logW("CAT: send failed: \(error)")
++            sock = nil
++            s.close()
++            return false
++        }
++    }
++
++    @discardableResult
++    func send(_ cmd: String) -> Bool {
++        lock.lock(); defer { lock.unlock() }
++        if sock == nil && !connect() { return false }
++        return sendLocked(cmd)
++    }
++
++    private func reader(_ s: TCPSocket) {
++        var local = Data()
++        while true {
++            guard let c = try? s.recv(max: 4096), !c.isEmpty else { break }
++            local.append(c)
++            while let i = local.firstIndex(of: UInt8(ascii: ";")) {
++                let r = String(decoding: local[local.startIndex..<i], as: UTF8.self).trimmingCharacters(in: .whitespaces)
++                local = Data(local[(i + 1)...])
++                reply(r)
++            }
++        }
++        lock.lock()
++        let mine = sock === s
++        lock.unlock()
++        if mine {
++            logI("CAT: the relay closed port 3 (QMX off, or 'USB serial ports' not 3?)")
++            close()
++        }
++    }
++
++    private func reply(_ r: String) {
++        logD("CAT <- \(r);")
++        if r.hasPrefix("FA"), let f = Int(r.dropFirst(2)), r.dropFirst(2).allSatisfy(\.isNumber) {
++            if f != freq { freq = f; srv.radioChanged() }
++        } else if r.hasPrefix("MD") && r.count == 3 {
++            let m = String(r.suffix(1))
++            if m != md { md = m; srv.radioChanged() }
++        } else if r.hasPrefix("Q9") {
++            let v = r.dropFirst(2).trimmingCharacters(in: .whitespaces).prefix(1)
++            if v == "0" || v == "1" {
++                let on = v == "1"
++                if !on {
++                    logI("CAT: the QMX is not in I/Q mode - turning it on (Q9 1;)")
++                    send("Q9 1;")
++                }
++                iqMode = on
++            }
++        }
++    }
++}
++
++// MARK: - the relay's listen-only I/Q copy (port 7357)
++
++final class IqClient {
++    unowned let srv: TciServer
++    private var sock: TCPSocket?
++    private var running = true
++    let demod = UsbDemod()
++
++    init(_ s: TciServer) {
++        srv = s
++        let t = Thread { [weak self] in self?.loop() }
++        t.name = "iq"
++        t.start()
++    }
++
++    func stop() { running = false; sock?.close() }
++
++    private func loop() {
++        while running {
++            if !srv.wantIQ() { Thread.sleep(forTimeInterval: 0.2); continue }
++            guard let host = srv.host() else { Thread.sleep(forTimeInterval: 3); continue }
++            do {
++                let s = try TCPSocket.connect(host: host, port: srv.settings.iqPort, timeout: 3)
++                defer { s.close(); sock = nil }
++                // tx=1: the relay keeps the Tab5 off the transmitter
++                try s.sendAll(QMXR.frame(QMXR.hello, Data("QMXR/1 tci-mac tx=1".utf8)))
++                s.setReadTimeout(5)
++                let (_, hello) = try QMXR.readFrame(s)
++                logI("I/Q: connected to \(host):\(srv.settings.iqPort) (\(String(decoding: hello, as: UTF8.self)))")
++                sock = s
++                while running && srv.wantIQ() {
++                    let (t, payload) = try QMXR.readFrame(s)
++                    if t == QMXR.iq && !payload.isEmpty { srv.rxAudio(demod.process(payload)) }
++                }
++                logI("I/Q: released (no TCI program is listening)")
++            } catch {
++                if running {
++                    logW("I/Q: \(host):\(srv.settings.iqPort): \(error) - retrying in 3 s")
++                    Thread.sleep(forTimeInterval: 3)
++                }
++            }
++        }
++    }
++}
++
++// MARK: - the TCI server
++
++final class TciServer {
++    let settings: BridgeSettings
++    let locator: RelayLocator
++    private var listener: TCPListener?
++    private let wsLock = NSLock()
++    private var _ws: WebSocket?
++    var ws: WebSocket? { wsLock.lock(); defer { wsLock.unlock() }; return _ws }
++    private var audioOn = false
++    private(set) var keyed = false
++    private var tune = false
++    private var vfoB: Int?
++    private(set) lazy var cat = RadioCat(self)
++    private let tracker = ToneTracker()
++    private var txLastAudio = 0.0
++    private var chronoRunning = false
++    private var txT0 = 0.0
++    private var txQ: [(due: Double, cmd: String)] = []
++    private let txCond = NSCondition()
++    private var iq: IqClient!
++    private var sentFreq: Int?
++    private var sentMod: String?
++    private var running = true
++    private let keyLock = NSRecursiveLock()
++
++    /// Called on the main queue: (client connected, keyed).
++    var onState: ((Bool, Bool) -> Void)?
++
++    init(settings: BridgeSettings) {
++        self.settings = settings
++        locator = RelayLocator(settings: settings)
++    }
++
++    func host() -> String? { locator.current() }
++    func wantIQ() -> Bool { ws?.alive ?? false }
++    private func mod() -> String { mdToMod[cat.md] ?? "usb" }
++
++    private func notify() {
++        let c = ws != nil, k = keyed
++        DispatchQueue.main.async { self.onState?(c, k) }
++    }
++
++    func start() throws {
++        let l = try TCPListener(address: settings.tciListen, port: settings.tciPort)
++        listener = l
++        iq = IqClient(self)
++        logI("TCI server on ws://\(settings.tciListen):\(settings.tciPort) - in WS/WSJT-X choose Rig 'TCI Client RX1', server \(settings.tciListen):\(settings.tciPort)")
++        spawn("tx-sender") { [weak self] in self?.txSender() }
++        spawn("poll") { [weak self] in
++            while let s = self, s.running {
++                Thread.sleep(forTimeInterval: 1)
++                if s.ws != nil && !s.keyed { s.cat.send("FA;MD;") }
++            }
++        }
++        spawn("tci-accept") { [weak self] in
++            while let s = self, s.running, let (c, peer) = l.accept() {
++                s.spawn("tci-client") { s.serve(c, peer) }
++            }
++        }
++    }
++
++    func stop() {
++        running = false
++        if keyed { key(false) }
++        listener?.close()
++        listener = nil
++        ws?.close()
++        iq?.stop()
++        cat.close()
++        txCond.lock(); txCond.broadcast(); txCond.unlock()
++    }
++
++    private func spawn(_ name: String, _ f: @escaping () -> Void) {
++        let t = Thread(block: f)
++        t.name = name
++        t.start()
++    }
++
++    private func send(_ cmds: String...) {
++        guard let w = ws else { return }
++        for c in cmds {
++            do { try w.sendText(c); logD("TCI -> \(c)") } catch { return }
++        }
++    }
++
++    /// The QMX's frequency or mode changed (from the Tab5, the knob, or us).
++    func radioChanged() {
++        if cat.freq != sentFreq {
++            sentFreq = cat.freq
++            send("vfo:0,0,\(cat.freq);", "dds:0,\(cat.freq);")
++        }
++        if mod() != sentMod {
++            sentMod = mod()
++            send("modulation:0,\(sentMod!);")
++        }
++    }
++
++    // MARK: receive audio
++
++    func rxAudio(_ mono: [Float]) {
++        guard let w = ws, audioOn else { return }
++        var st = [Float](repeating: 0, count: 2 * mono.count)
++        for (i, v) in mono.enumerated() { st[2 * i] = v; st[2 * i + 1] = v }
++        var d = tciHeader(rate: tciSampleRate, format: fmtFloat32, length: st.count, type: tRxAudio)
++        st.withUnsafeBytes { d.append(contentsOf: $0) }     // little-endian on Apple silicon and Intel
++        try? w.sendBinary(d)
++    }
++
++    // MARK: transmit
++
++    private func key(_ on: Bool) {
++        keyLock.lock(); defer { keyLock.unlock() }
++        if on == keyed { return }
++        keyed = on
++        if on {
++            tracker.reset()
++            txLastAudio = monotonic()
++            cat.send("TA0;TX;")
++            logI("TX: keyed (tones follow the program's transmit audio)")
++            txCond.lock(); txQ.removeAll(); txCond.unlock()
++            txT0 = monotonic()
++            chronoRunning = true
++            spawn("tx-chrono") { [weak self] in self?.chrono() }
++        } else {
++            chronoRunning = false
++            txCond.lock(); txQ.removeAll(); txCond.unlock()
++            cat.send("TA0;RX;")
++            logI("TX: unkeyed - QMX back in receive")
++            cat.send("FA;MD;")
++        }
++        notify()
++    }
++
++    /// Ask the program for transmit audio in real time, chronoMs at a time.
++    private func chrono() {
++        let n = tciSampleRate * chronoMs / 1000
++        let hdr = tciHeader(rate: tciSampleRate, format: fmtFloat32, length: 2 * n, type: tTxChrono)
++        var next = txT0
++        while chronoRunning {
++            guard let w = ws else { break }
++            do { try w.sendBinary(hdr) } catch { break }
++            // watchdog: keyed but no audio for 3 s -> key up, never leave the radio transmitting
++            if monotonic() - txLastAudio > 3 {
++                logW("TX: no transmit audio for 3 s - keying up")
++                keyLock.lock()
++                chronoRunning = false
++                keyed = false
++                keyLock.unlock()
++                cat.send("TA0;RX;")
++                send("trx:0,false;")
++                notify()
++                break
++            }
++            next += Double(chronoMs) / 1000
++            let wait = next - monotonic()
++            if wait > 0 { Thread.sleep(forTimeInterval: wait) }
++        }
++    }
++
++    private func txAudio(_ payload: Data) {
++        guard payload.count >= tciHeaderSize, keyed else { return }
++        func word(_ i: Int) -> UInt32 {
++            payload.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 4 * i, as: UInt32.self)) }
++        }
++        guard word(6) == tTxAudio else { return }
++        let n = Int(word(5)), fmt = word(2)
++        let bytesPer: Int
++        switch fmt { case 3: bytesPer = 4; case 0: bytesPer = 2; case 2: bytesPer = 4; default: return }
++        let avail = (payload.count - tciHeaderSize) / bytesPer
++        let count = min(n, avail)
++        var mono = [Double]()
++        mono.reserveCapacity(count / 2 + 1)
++        payload.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
++            var i = 0
++            while i < count {             // left channel of interleaved stereo
++                let off = tciHeaderSize + i * bytesPer
++                switch fmt {
++                case 3: mono.append(Double(Float(bitPattern: UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: UInt32.self)))))
++                case 0: mono.append(Double(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: Int16.self))) / 32768)
++                default: mono.append(Double(Int32(littleEndian: raw.loadUnaligned(fromByteOffset: off, as: Int32.self))) / 2147483648)
++                }
++                i += 2
++            }
++        }
++        txLastAudio = monotonic()
++        for (idx, f) in tracker.feed(mono) {
++            let due = txT0 + idx / Double(tciSampleRate) + txDelay
++            txCond.lock()
++            txQ.append((due, f != 0 ? String(format: "TA%.2f;", f) : "TA0;"))
++            txCond.signal()
++            txCond.unlock()
++        }
++    }
++
++    /// Send each tone change at its due time, in order.
++    private func txSender() {
++        while running {
++            txCond.lock()
++            while txQ.isEmpty && running { txCond.wait() }
++            if !running { txCond.unlock(); return }
++            let (due, cmd) = txQ[0]
++            let wait = due - monotonic()
++            if wait > 0 {
++                _ = txCond.wait(until: Date().addingTimeInterval(wait))
++                txCond.unlock()
++                continue
++            }
++            txQ.removeFirst()
++            txCond.unlock()
++            if keyed { cat.send(cmd) }
++        }
++    }
++
++    // MARK: TCI commands
++
++    private func hello() {
++        let f = cat.freq
++        sentFreq = f
++        sentMod = mod()
++        send("protocol:QMX-NAS,1.9;", "device:QMX;", "receive_only:false;", "trx_count:1;",
++             "channels_count:1;", "vfo_limits:500000,60000000;", "if_limits:-24000,24000;",
++             "modulations_list:LSB,USB,CW,DIGL,DIGU;", "audio_samplerate:\(tciSampleRate);",
++             "iq_samplerate:\(tciSampleRate);", "dds:0,\(f);", "if:0,0,0;",
++             "vfo:0,0,\(f);", "vfo:0,1,\(vfoB ?? f);",
++             "modulation:0,\(sentMod!);", "rx_enable:0,true;", "tx_enable:0,true;",
++             "trx:0,false;", "tune:0,false;", "split_enable:0,false;", "rit_enable:0,false;",
++             "xit_enable:0,false;", "drive:0,100;", "tune_drive:0,10;", "start;", "ready;")
++    }
++
++    private func command(_ text: String) {
++        for rawSub in text.split(separator: ";") {
++            let raw = rawSub.trimmingCharacters(in: .whitespacesAndNewlines)
++            if raw.isEmpty { continue }
++            logD("TCI <- \(raw);")
++            let parts = raw.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
++            let name = parts[0].lowercased()
++            let a = parts.count > 1 && !parts[1].isEmpty
++                ? parts[1].split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
++                : []
++            if !handle(name, a) { logI("TCI: ignored '\(raw);'") }
++        }
++    }
++
++    /// false = bad arguments.
++    private func handle(_ name: String, _ a: [String]) -> Bool {
++        func num(_ s: String) -> Int? { Int(s) ?? Double(s).map { Int($0) } }
++        switch name {
++        case "vfo":
++            let ch = a.count > 1 ? (Int(a[1]) ?? -1) : 0
++            if ch < 0 { return false }
++            if a.count > 2 {
++                guard let f = num(a[2]) else { return false }
++                if ch == 0 { cat.freq = f; cat.send(String(format: "FA%011ld;", f)) } else { vfoB = f }
++            }
++            let f = ch == 0 ? cat.freq : (vfoB ?? cat.freq)
++            if ch == 0 { sentFreq = f }
++            send("vfo:0,\(ch),\(f);")
++        case "dds":
++            if a.count > 1 {
++                guard let f = num(a[1]) else { return false }
++                cat.freq = f
++                cat.send(String(format: "FA%011ld;", f))
++            }
++            sentFreq = cat.freq
++            send("dds:0,\(cat.freq);")
++        case "modulation":
++            if a.count > 1 {
++                let m = a[1].lowercased()
++                if let md = modToMd[m] {
++                    cat.md = md
++                    cat.send("MD\(md);")
++                    sentMod = m
++                    send("modulation:0,\(m);")
++                    return true
++                }
++            }
++            send("modulation:0,\(mod());")
++        case "trx":
++            if a.count > 1 { key(a[1].lowercased() == "true") }
++            send("trx:0,\(keyed ? "true" : "false");")
++        case "tune":
++            if a.count > 1 {
++                tune = a[1].lowercased() == "true"
++                key(tune)
++            }
++            send("tune:0,\(tune ? "true" : "false");")
++        case "split_enable":
++            send("split_enable:0,false;")
++        case "audio_start":
++            audioOn = true
++            send("audio_start:0;")
++            logI("TCI: receive audio started")
++        case "audio_stop":
++            audioOn = false
++            send("audio_stop:0;")
++        case "audio_samplerate":
++            send("audio_samplerate:\(tciSampleRate);")
++        case "audio_stream_sample_type", "audio_stream_channels", "audio_stream_samples":
++            send("\(name):\(a.joined(separator: ","));")
++        case "rx_smeter":
++            send("rx_smeter:0,0,\(Int((iq.demod.levelDb - 50).rounded()));")
++        case "rx_enable":
++            let rx = a.first ?? "0"
++            send("rx_enable:\(rx),\(rx == "0" ? "true" : "false");")
++        case "start", "stop":
++            send("start;")            // the QMX is never powered off from here
++        case "drive", "tune_drive", "volume", "mute", "rx_mute", "rit_enable", "xit_enable",
++             "rit_offset", "xit_offset", "agc_mode", "agc_gain", "lock", "sql_enable", "sql_level",
++             "rx_sensors_enable", "tx_sensors_enable", "app_focus":
++            if !a.isEmpty { send("\(name):\(a.joined(separator: ","));") }
++        default:
++            break                     // iq_start, spot, cw_macros ... not supported
++        }
++        return true
++    }
++
++    // MARK: connections
++
++    private func serve(_ conn: TCPSocket, _ peer: String) {
++        let w = WebSocket(sock: conn)
++        guard w.handshake() else { conn.close(); return }
++        wsLock.lock()
++        let old = _ws
++        _ws = w
++        wsLock.unlock()
++        if let o = old {
++            logI("TCI: a new program connected - closing the previous one")
++            o.close()
++        }
++        logI("TCI: \(peer) connected")
++        notify()
++        cat.send("FA;MD;")
++        Thread.sleep(forTimeInterval: 0.15)     // let the radio's frequency and mode arrive first
++        hello()
++        do {
++            while w.alive {
++                switch try w.recv() {
++                case .text(let t): command(t)
++                case .binary(let d): txAudio(d)
++                }
++            }
++        } catch {
++            logI("TCI: \(peer) disconnected (\(error))")
++        }
++        wsLock.lock()
++        let mine = _ws === w
++        if mine { _ws = nil }
++        wsLock.unlock()
++        if mine {
++            audioOn = false
++            if keyed { key(false) }
++            cat.close()                // release port 3 while no program uses it
++            notify()
++        }
++        w.markDead()
++        conn.close()
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/TCI/WebSocket.swift b/tools/mac-bridge-app/QMXBridge/TCI/WebSocket.swift
+new file mode 100644
+index 00000000..954ac45f
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/TCI/WebSocket.swift
+@@ -0,0 +1,157 @@
++// WebSocket.swift - minimal server side of RFC 6455: text, binary, ping/pong, close.
++
++import Foundation
++import CommonCrypto
++
++final class WebSocket {
++    enum Message { case text(String), binary(Data) }
++    struct Closed: Error { let why: String }
++
++    private let sock: TCPSocket
++    private let sendLock = NSLock()
++    private(set) var alive = true
++    private var fragOp: UInt8?
++    private var frag = Data()
++    private var pending = Data()      // bytes read past the handshake
++
++    init(sock: TCPSocket) { self.sock = sock }
++
++    static let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
++
++    /// Read the HTTP upgrade request and answer it.
++    func handshake() -> Bool {
++        sock.setReadTimeout(5)
++        var req = Data()
++        let end = Data("\r\n\r\n".utf8)
++        while req.range(of: end) == nil {
++            guard let c = try? sock.recv(max: 4096), !c.isEmpty else { return false }
++            req.append(c)
++            if req.count > 16384 { return false }
++        }
++        let r = req.range(of: end)!
++        pending = req.subdata(in: r.upperBound..<req.endIndex)
++        let head = String(decoding: req[..<r.lowerBound], as: UTF8.self)
++        var key: String?
++        for line in head.components(separatedBy: "\r\n") {
++            let parts = line.split(separator: ":", maxSplits: 1)
++            if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "sec-websocket-key" {
++                key = parts[1].trimmingCharacters(in: .whitespaces)
++            }
++        }
++        guard let k = key else {
++            try? sock.sendAll("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
++            return false
++        }
++        let accept = Self.sha1Base64(k + Self.guid)
++        do {
++            try sock.sendAll("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n")
++        } catch { return false }
++        sock.setReadTimeout(0)
++        return true
++    }
++
++    static func sha1Base64(_ s: String) -> String {
++        let d = Data(s.utf8)
++        var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
++        d.withUnsafeBytes { _ = CC_SHA1($0.baseAddress, CC_LONG(d.count), &digest) }
++        return Data(digest).base64EncodedString()
++    }
++
++    private func recvExact(_ n: Int) throws -> Data {
++        var out = Data()
++        if !pending.isEmpty {
++            let take = min(n, pending.count)
++            out.append(pending.prefix(take))
++            pending = pending.dropFirst(take).subdataCopy()
++        }
++        do {
++            if out.count < n { out.append(try sock.recvExact(n - out.count)) }
++        } catch {
++            throw Closed(why: "\(error)")
++        }
++        return out
++    }
++
++    /// Next complete message.
++    func recv() throws -> Message {
++        while true {
++            let h = try recvExact(2)
++            let b0 = h[h.startIndex], b1 = h[h.startIndex + 1]
++            let fin = b0 & 0x80 != 0, op = b0 & 0x0F
++            var n = Int(b1 & 0x7F)
++            if n == 126 {
++                let e = try recvExact(2)
++                n = Int(e[e.startIndex]) << 8 | Int(e[e.startIndex + 1])
++            } else if n == 127 {
++                let e = try recvExact(8)
++                n = e.reduce(0) { $0 << 8 | Int($1) }
++            }
++            let mask: [UInt8]? = b1 & 0x80 != 0 ? Array(try recvExact(4)) : nil
++            var data = n > 0 ? try recvExact(n) : Data()
++            if let m = mask {
++                data.withUnsafeMutableBytes { (p: UnsafeMutableRawBufferPointer) in
++                    for i in 0..<p.count { p[i] ^= m[i & 3] }
++                }
++            }
++            switch op {
++            case 0x8:
++                close(1000)
++                throw Closed(why: "close frame")
++            case 0x9:
++                try send(0xA, data)
++            case 0xA:
++                continue
++            case 0x1, 0x2:
++                if fin { return op == 1 ? .text(String(decoding: data, as: UTF8.self)) : .binary(data) }
++                fragOp = op
++                frag = data
++            case 0x0:
++                guard let fo = fragOp else { continue }
++                frag.append(data)
++                if fin {
++                    fragOp = nil
++                    let d = frag
++                    frag = Data()
++                    return fo == 1 ? .text(String(decoding: d, as: UTF8.self)) : .binary(d)
++                }
++            default:
++                continue
++            }
++        }
++    }
++
++    private func send(_ op: UInt8, _ data: Data) throws {
++        var h = Data([0x80 | op])
++        let n = data.count
++        if n < 126 {
++            h.append(UInt8(n))
++        } else if n < 65536 {
++            h.append(contentsOf: [126, UInt8(n >> 8), UInt8(n & 0xFF)])
++        } else {
++            h.append(127)
++            for i in (0..<8).reversed() { h.append(UInt8((n >> (8 * i)) & 0xFF)) }
++        }
++        h.append(data)
++        sendLock.lock(); defer { sendLock.unlock() }
++        guard alive else { throw Closed(why: "closed") }
++        do { try sock.sendAll(h) } catch {
++            alive = false
++            throw Closed(why: "\(error)")
++        }
++    }
++
++    func sendText(_ s: String) throws { try send(0x1, Data(s.utf8)) }
++    func sendBinary(_ d: Data) throws { try send(0x2, d) }
++
++    func close(_ code: UInt16 = 1000) {
++        try? send(0x8, Data([UInt8(code >> 8), UInt8(code & 0xFF)]))
++        sendLock.lock(); alive = false; sendLock.unlock()
++        sock.close()
++    }
++
++    func markDead() { sendLock.lock(); alive = false; sendLock.unlock() }
++}
++
++private extension Data {
++    func subdataCopy() -> Data { Data(self) }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/UI/BridgeModel.swift b/tools/mac-bridge-app/QMXBridge/UI/BridgeModel.swift
+new file mode 100644
+index 00000000..3357b717
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/UI/BridgeModel.swift
+@@ -0,0 +1,165 @@
++// BridgeModel.swift - app state: settings, the running bridge or TCI server,
++// discovery and probe results.
++
++import Foundation
++import SwiftUI
++
++enum SerialMode: String, CaseIterable, Identifiable, Codable {
++    case driver = "Virtual USB serial port (driver)"
++    case pty = "Pseudo-terminal link (no driver)"
++    var id: String { rawValue }
++}
++
++@MainActor
++final class BridgeModel: ObservableObject {
++    @Published var settings = BridgeSettings.load() { didSet { settings.save(); AppLog.shared.verbose = settings.verbose } }
++    #if QMX_LITE
++    static let hasDriver = false
++    #else
++    static let hasDriver = true
++    #endif
++    @Published var serialMode: SerialMode = BridgeModel.hasDriver
++        ? (SerialMode(rawValue: UserDefaults.standard.string(forKey: "SerialMode") ?? "") ?? .driver) : .pty {
++        didSet { UserDefaults.standard.set(serialMode.rawValue, forKey: "SerialMode") }
++    }
++
++    // discovery / probe
++    @Published var relays: [Relay] = []
++    @Published var discovering = false
++    @Published var probeLines: [String] = []
++    @Published var probing = false
++    @Published var probePassed: Bool?
++
++    // serial
++    @Published private(set) var serialRunning = false
++    @Published private(set) var serialPath = ""
++    @Published private(set) var relayConnected = false
++    @Published private(set) var relayHost: String?
++    @Published private(set) var driverStatus = DriverEndpoint.Status()
++    @Published var ringMode = 0
++
++    // TCI
++    @Published private(set) var tciRunning = false
++    @Published private(set) var tciClient = false
++    @Published private(set) var tciKeyed = false
++
++    let installer = DriverInstaller()
++    private var bridge: SerialBridge?
++    private var driverEndpoint: DriverEndpoint?
++    private var tci: TciServer?
++    private var statusTimer: Timer?
++
++    init() {
++        AppLog.shared.verbose = settings.verbose
++        installer.refresh()
++        statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
++            Task { @MainActor in self?.pollStatus() }
++        }
++    }
++
++    private func pollStatus() {
++        if let d = driverEndpoint { driverStatus = d.status(); serialPath = d.displayPath }
++        if case .installed = installer.state {} else if installer.state != .installing && installer.state != .removing { installer.refresh() }
++    }
++
++    // MARK: discovery & probe
++
++    func discover() {
++        discovering = true
++        let port = settings.discoveryPort
++        DispatchQueue.global().async {
++            let found = Discovery.discover(udpPort: port)
++            DispatchQueue.main.async {
++                self.relays = found
++                self.discovering = false
++                if found.isEmpty { logW("no relay answered QMXR? on UDP \(port)") }
++                for r in found { logI("\(r)   -> serial port 3 at \(r.ip):\(self.settings.port)") }
++            }
++        }
++    }
++
++    func use(_ r: Relay) { settings.host = r.ip }
++
++    func probe() {
++        probing = true
++        probeLines = []
++        probePassed = nil
++        let s = settings
++        let tciOn = tciRunning
++        DispatchQueue.global().async {
++            let r = Probe.run(settings: s, requireIQ: tciOn)
++            DispatchQueue.main.async {
++                self.probeLines = r.lines
++                self.probePassed = r.passed
++                self.probing = false
++            }
++        }
++    }
++
++    // MARK: serial bridge
++
++    func startSerial() {
++        if tciRunning { stopTci() }
++        let ep: SerialEndpoint
++        switch serialMode {
++        case .driver:
++            let d = DriverEndpoint()
++            driverEndpoint = d
++            ep = d
++        case .pty:
++            ep = PtyEndpoint(linkPath: settings.linkPath)
++        }
++        let b = SerialBridge(settings: settings, endpoint: ep)
++        b.onState = { [weak self] c, h in self?.relayConnected = c; self?.relayHost = h }
++        do {
++            try b.start()
++            bridge = b
++            serialRunning = true
++            serialPath = ep.displayPath
++            if let d = driverEndpoint { d.setRingMode(ringMode); driverStatus = d.status() }
++        } catch {
++            logE("serial port: \(error)")
++            driverEndpoint = nil
++        }
++    }
++
++    func stopSerial() {
++        bridge?.stop()
++        bridge = nil
++        driverEndpoint = nil
++        serialRunning = false
++        relayConnected = false
++        logI("serial port stopped")
++    }
++
++    func applyRingMode() { driverEndpoint?.setRingMode(ringMode) }
++
++    // MARK: TCI
++
++    func startTci() {
++        if serialRunning { stopSerial() }
++        let t = TciServer(settings: settings)
++        t.onState = { [weak self] c, k in self?.tciClient = c; self?.tciKeyed = k }
++        do {
++            try t.start()
++            tci = t
++            tciRunning = true
++        } catch {
++            logE("TCI: \(error)")
++        }
++    }
++
++    func stopTci() {
++        tci?.stop()
++        tci = nil
++        tciRunning = false
++        tciClient = false
++        tciKeyed = false
++        logI("TCI server stopped")
++    }
++
++    func shutdown() {
++        stopSerial()
++        stopTci()
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/UI/ContentView.swift b/tools/mac-bridge-app/QMXBridge/UI/ContentView.swift
+new file mode 100644
+index 00000000..7038c1b6
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/UI/ContentView.swift
+@@ -0,0 +1,279 @@
++// ContentView.swift - the QMX Bridge window.
++
++import SwiftUI
++import AppKit
++
++struct ContentView: View {
++    @EnvironmentObject var model: BridgeModel
++
++    var body: some View {
++        VStack(spacing: 0) {
++            TabView {
++                RelayView().tabItem { Text("Relay") }
++                SerialView().tabItem { Text("Serial Port") }
++                TciView().tabItem { Text("TCI") }
++                if BridgeModel.hasDriver {
++                    DriverView(installer: model.installer).tabItem { Text("Driver") }
++                }
++                SettingsView().tabItem { Text("Settings") }
++            }
++            .padding()
++            Divider()
++            LogView().frame(minHeight: 160)
++        }
++        .frame(minWidth: 720, minHeight: 620)
++    }
++}
++
++// MARK: - Relay: discover + probe
++
++struct RelayView: View {
++    @EnvironmentObject var model: BridgeModel
++
++    var body: some View {
++        Form {
++            Section("Find the NAS relay (QMXR? on UDP \(String(model.settings.discoveryPort)))") {
++                HStack {
++                    Button(model.discovering ? "Searching…" : "Discover") { model.discover() }
++                        .disabled(model.discovering)
++                    Text(model.settings.fixedHost.map { "Using fixed address \($0)" } ?? "Address: found automatically")
++                        .foregroundStyle(.secondary)
++                }
++                ForEach(model.relays, id: \.self) { r in
++                    HStack {
++                        Text(r.description).font(.system(.body, design: .monospaced))
++                        Spacer()
++                        Button("Use this address") { model.use(r) }
++                    }
++                }
++            }
++            Section("Probe (read-only: ID; FA; MD; on port 3 and the I/Q copy's hello)") {
++                HStack {
++                    Button(model.probing ? "Probing…" : "Probe") { model.probe() }.disabled(model.probing)
++                    if let p = model.probePassed {
++                        Text(p ? "PASSED" : "FAILED").bold().foregroundStyle(p ? .green : .red)
++                    }
++                }
++                ForEach(Array(model.probeLines.enumerated()), id: \.offset) { _, l in
++                    Text(l).font(.system(.callout, design: .monospaced))
++                        .foregroundStyle(l.hasPrefix("FAIL") ? .red : .primary)
++                }
++            }
++        }
++        .formStyle(.grouped)
++    }
++}
++
++// MARK: - Serial port
++
++struct SerialView: View {
++    @EnvironmentObject var model: BridgeModel
++
++    var body: some View {
++        Form {
++            Section("QMX serial port 3 on this Mac") {
++                if BridgeModel.hasDriver {
++                    Picker("Port type", selection: $model.serialMode) {
++                        ForEach(SerialMode.allCases) { Text($0.rawValue).tag($0) }
++                    }
++                    .disabled(model.serialRunning)
++                }
++                if model.serialMode == .pty {
++                    TextField("Link path", text: $model.settings.linkPath).disabled(model.serialRunning)
++                }
++                HStack {
++                    if model.serialRunning {
++                        Button("Stop") { model.stopSerial() }
++                    } else {
++                        Button("Start") { model.startSerial() }
++                    }
++                    if model.tciRunning { Text("(starting stops the TCI server: both use port 3)").foregroundStyle(.secondary) }
++                }
++            }
++            if model.serialRunning {
++                Section("Status") {
++                    LabeledContent("Port") {
++                        HStack {
++                            Text(model.serialPath).font(.system(.body, design: .monospaced)).textSelection(.enabled)
++                            Button("Copy") {
++                                NSPasteboard.general.clearContents()
++                                NSPasteboard.general.setString(model.serialPath.components(separatedBy: "  ").first ?? model.serialPath, forType: .string)
++                            }
++                        }
++                    }
++                    LabeledContent("Relay", value: model.relayConnected ? "connected to \(model.relayHost ?? "?"):\(model.settings.port)"
++                                   : "not connected (connects when a program talks to the port)")
++                    if model.serialMode == .driver {
++                        LabeledContent("Program", value: model.driverStatus.open ? "has the port open" : "none")
++                        LabeledContent("Rings", value: model.driverStatus.queues ? "rx \(model.driverStatus.rxSize) / tx \(model.driverStatus.txSize) bytes" : "not connected")
++                        if model.driverStatus.rxDropped > 0 {
++                            LabeledContent("Dropped radio bytes", value: "\(model.driverStatus.rxDropped)")
++                        }
++                    }
++                }
++            }
++            Section("Using it") {
++                Text("Point WSJT-X, Hamlib/rigctld, fldigi, a logger or a terminal at the port above, as for a QMX on USB (rig: QRP Labs QMX or Kenwood TS-480; any baud rate). The relay is held only while a program talks to it and released after \(model.settings.idle) s idle.")
++                    .font(.callout).foregroundStyle(.secondary)
++            }
++        }
++        .formStyle(.grouped)
++    }
++}
++
++// MARK: - TCI
++
++struct TciView: View {
++    @EnvironmentObject var model: BridgeModel
++
++    var body: some View {
++        Form {
++            Section("TCI server for WS / WSJT-X 3 / JTDX (receive and transmit audio)") {
++                HStack {
++                    if model.tciRunning {
++                        Button("Stop") { model.stopTci() }
++                    } else {
++                        Button("Start") { model.startTci() }
++                    }
++                    Text("ws://\(model.settings.tciListen):\(String(model.settings.tciPort))").font(.system(.body, design: .monospaced))
++                    if model.serialRunning { Text("(starting stops the serial port: both use port 3)").foregroundStyle(.secondary) }
++                }
++            }
++            if model.tciRunning {
++                Section("Status") {
++                    LabeledContent("Program", value: model.tciClient ? "connected" : "waiting for a TCI program")
++                    LabeledContent("Transmit", value: model.tciKeyed ? "KEYED" : "receive")
++                }
++            }
++            Section("Setting up the program") {
++                Text("In WS/WSJT-X: Settings -> Radio -> Rig 'TCI Client RX1', Network Server \(model.settings.tciListen):\(String(model.settings.tciPort)); Audio comes over TCI. FT8, FT4, JS8, WSPR and Tune transmit one tone at a time (TA<Hz>;). Voice SSB is not supported.")
++                    .font(.callout).foregroundStyle(.secondary)
++            }
++        }
++        .formStyle(.grouped)
++    }
++}
++
++// MARK: - Driver
++
++struct DriverView: View {
++    @EnvironmentObject var model: BridgeModel
++    @ObservedObject var installer: DriverInstaller
++
++    var stateText: String {
++        switch installer.state {
++        case .unknown: return "checking…"
++        case .notInstalled: return "not installed"
++        case .waitingForApproval: return "waiting for your approval in System Settings"
++        case .installing: return "installing…"
++        case .installed: return DriverEndpoint.isDriverRunning ? "installed and running" : "installed (starting…)"
++        case .removing: return "removing…"
++        case .failed(let w): return "failed: \(w)"
++        }
++    }
++
++    var body: some View {
++        Form {
++            Section("QMX virtual USB serial port driver (DriverKit)") {
++                LabeledContent("State", value: stateText)
++                HStack {
++                    Button("Install / Update") { installer.install() }
++                    Button("Remove") { installer.uninstall() }
++                    Button("Check") { installer.refresh() }
++                }
++                Text("The driver makes /dev/cu.\(kQMXSerialTTYBaseName) appear like a USB serial adapter, so every program's port list shows it. macOS asks you to approve it once in System Settings. The app must be in /Applications.")
++                    .font(.callout).foregroundStyle(.secondary)
++            }
++            Section("Ring index mode (diagnostic)") {
++                Picker("Mode", selection: $model.ringMode) {
++                    Text("Free running (default)").tag(0)
++                    Text("Wrapped at ring size").tag(1)
++                }
++                .onChange(of: model.ringMode) { _, _ in model.applyRingMode() }
++                Text("Only change this if replies stop after about 16 KB of traffic; the driver also detects free-running indices by itself.")
++                    .font(.callout).foregroundStyle(.secondary)
++            }
++        }
++        .formStyle(.grouped)
++    }
++}
++
++// MARK: - Settings
++
++struct SettingsView: View {
++    @EnvironmentObject var model: BridgeModel
++
++    var body: some View {
++        Form {
++            Section("Relay") {
++                TextField("Fixed NAS address (empty = discover)", text: $model.settings.host)
++                TextField("Fallback address", text: $model.settings.fallbackHost)
++                Stepper("Discovery UDP port: \(String(model.settings.discoveryPort))", value: $model.settings.discoveryPort, in: 1...65535)
++                Stepper("Port 3 TCP port: \(String(model.settings.port))", value: $model.settings.port, in: 1...65535)
++                Stepper("I/Q copy TCP port: \(String(model.settings.iqPort))", value: $model.settings.iqPort, in: 1...65535)
++            }
++            Section("Serial port") {
++                Stepper("Release the relay after \(model.settings.idle) s idle (0 = never)", value: $model.settings.idle, in: 0...3600, step: 10)
++                Toggle("Keep connected all the time", isOn: $model.settings.keepConnected)
++            }
++            Section("TCI") {
++                TextField("Listen address", text: $model.settings.tciListen)
++                Stepper("Port: \(String(model.settings.tciPort))", value: $model.settings.tciPort, in: 1...65535)
++            }
++            Section("Log") {
++                Toggle("Log every byte (verbose)", isOn: $model.settings.verbose)
++            }
++            Text("Changes apply the next time the serial port or TCI server is started.").font(.callout).foregroundStyle(.secondary)
++        }
++        .formStyle(.grouped)
++    }
++}
++
++// MARK: - Log
++
++struct LogView: View {
++    @ObservedObject var log = AppLog.shared
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 4) {
++            HStack {
++                Text("Log").font(.headline)
++                Spacer()
++                Button("Copy") {
++                    NSPasteboard.general.clearContents()
++                    NSPasteboard.general.setString(log.text, forType: .string)
++                }
++                Button("Clear") { log.clear() }
++            }
++            ScrollViewReader { proxy in
++                List(log.lines) { l in
++                    LogLineView(line: l).id(l.id)
++                }
++                .onChange(of: log.lines.count) { _, _ in
++                    if let last = log.lines.last { proxy.scrollTo(last.id, anchor: .bottom) }
++                }
++            }
++        }
++        .padding(8)
++    }
++}
++
++struct LogLineView: View {
++    let line: AppLog.Line
++
++    private var color: Color {
++        switch line.level {
++        case .error: return .red
++        case .warning: return .orange
++        default: return .primary
++        }
++    }
++
++    var body: some View {
++        let stamp = line.time.formatted(date: .omitted, time: .standard)
++        Text(stamp + " " + line.text)
++            .font(.system(.caption, design: .monospaced))
++            .foregroundColor(color)
++            .textSelection(.enabled)
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXBridge/UI/QMXBridgeApp.swift b/tools/mac-bridge-app/QMXBridge/UI/QMXBridgeApp.swift
+new file mode 100644
+index 00000000..569cbd2f
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXBridge/UI/QMXBridgeApp.swift
+@@ -0,0 +1,27 @@
++// QMXBridgeApp.swift - QMX Bridge: the QMX on the NAS as a serial port or a
++// TCI radio on this Mac.
++
++import SwiftUI
++import AppKit
++
++final class AppDelegate: NSObject, NSApplicationDelegate {
++    var model: BridgeModel?
++    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
++    func applicationWillTerminate(_ notification: Notification) {
++        MainActor.assumeIsolated { model?.shutdown() }
++    }
++}
++
++@main
++struct QMXBridgeApp: App {
++    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
++    @StateObject private var model = BridgeModel()
++
++    var body: some Scene {
++        WindowGroup("QMX Bridge") {
++            ContentView()
++                .environmentObject(model)
++                .onAppear { delegate.model = model }
++        }
++    }
++}
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/Info.plist b/tools/mac-bridge-app/QMXSerialDriver/Info.plist
+new file mode 100644
+index 00000000..56203ef5
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/Info.plist
+@@ -0,0 +1,76 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>CFBundleDevelopmentRegion</key>
++	<string>$(DEVELOPMENT_LANGUAGE)</string>
++	<key>CFBundleExecutable</key>
++	<string>$(EXECUTABLE_NAME)</string>
++	<key>CFBundleIdentifier</key>
++	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
++	<key>CFBundleInfoDictionaryVersion</key>
++	<string>6.0</string>
++	<key>CFBundleName</key>
++	<string>$(PRODUCT_NAME)</string>
++	<key>CFBundlePackageType</key>
++	<string>DEXT</string>
++	<key>CFBundleShortVersionString</key>
++	<string>$(MARKETING_VERSION)</string>
++	<key>CFBundleVersion</key>
++	<string>$(CURRENT_PROJECT_VERSION)</string>
++	<key>OSBundleUsageDescription</key>
++	<string>Makes the QMX on the NAS appear as a serial port on this Mac.</string>
++	<key>IOKitPersonalities</key>
++	<dict>
++		<key>QMXSerialDriver</key>
++		<dict>
++			<key>CFBundleIdentifier</key>
++			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
++			<key>CFBundleIdentifierKernel</key>
++			<string>com.apple.kpi.iokit</string>
++			<key>IOClass</key>
++			<string>IOUserSerial</string>
++			<key>IOUserClass</key>
++			<string>QMXSerialDriver</string>
++			<key>IOUserServerName</key>
++			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
++			<key>IOProviderClass</key>
++			<string>IOUserResources</string>
++			<key>IOResourceMatch</key>
++			<string>IOKit</string>
++			<key>IOMatchCategory</key>
++			<string>QMXSerialDriver</string>
++			<key>IOTTYBaseName</key>
++			<string>QMX-NAS</string>
++			<key>IOTTYSuffix</key>
++			<string></string>
++		</dict>
++		<key>QMXBridgeControl</key>
++		<dict>
++			<key>CFBundleIdentifier</key>
++			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
++			<key>CFBundleIdentifierKernel</key>
++			<string>com.apple.kpi.iokit</string>
++			<key>IOClass</key>
++			<string>IOUserService</string>
++			<key>IOUserClass</key>
++			<string>QMXBridgeControl</string>
++			<key>IOUserServerName</key>
++			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
++			<key>IOProviderClass</key>
++			<string>IOUserResources</string>
++			<key>IOResourceMatch</key>
++			<string>IOKit</string>
++			<key>IOMatchCategory</key>
++			<string>QMXBridgeControl</string>
++			<key>UserClientProperties</key>
++			<dict>
++				<key>IOClass</key>
++				<string>IOUserUserClient</string>
++				<key>IOUserClass</key>
++				<string>QMXBridgeUserClient</string>
++			</dict>
++		</dict>
++	</dict>
++</dict>
++</plist>
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.cpp b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.cpp
+new file mode 100644
+index 00000000..06a136ff
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.cpp
+@@ -0,0 +1,46 @@
++// QMXBridgeControl.cpp - the service the app opens; it hands out
++// QMXBridgeUserClient connections (one per app).
++
++#include <os/log.h>
++#include <DriverKit/DriverKit.h>
++#include <DriverKit/IOUserClient.h>
++
++#include "QMXBridgeControl.h"
++#include "../Shared/QMXBridgeShared.h"
++
++#define LOG(fmt, ...) os_log(OS_LOG_DEFAULT, "QMXBridgeControl: " fmt, ##__VA_ARGS__)
++
++kern_return_t IMPL(QMXBridgeControl, Start)
++{
++    kern_return_t ret = Start(provider, SUPERDISPATCH);
++    if (ret != kIOReturnSuccess) return ret;
++    ret = RegisterService();
++    LOG("started (RegisterService 0x%x)", ret);
++    return ret;
++}
++
++kern_return_t IMPL(QMXBridgeControl, Stop)
++{
++    LOG("stopped");
++    return Stop(provider, SUPERDISPATCH);
++}
++
++kern_return_t IMPL(QMXBridgeControl, NewUserClient)
++{
++    if (type != kQMXBridgeUserClientType) {
++        LOG("refused user client type 0x%x", type);
++        return kIOReturnBadArgument;
++    }
++    IOService * client = nullptr;
++    kern_return_t ret = Create(this, "UserClientProperties", &client);
++    if (ret != kIOReturnSuccess || !client) {
++        LOG("Create user client failed 0x%x", ret);
++        return ret != kIOReturnSuccess ? ret : kIOReturnNoMemory;
++    }
++    *userClient = OSDynamicCast(IOUserClient, client);
++    if (!*userClient) {
++        client->release();
++        return kIOReturnError;
++    }
++    return kIOReturnSuccess;
++}
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.iig b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.iig
+new file mode 100644
+index 00000000..de2d5a05
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeControl.iig
+@@ -0,0 +1,18 @@
++// QMXBridgeControl.iig - a small service the app opens to reach the serial
++// driver (kept separate so the serial family's own user clients are untouched).
++
++#ifndef QMXBridgeControl_h
++#define QMXBridgeControl_h
++
++#include <Availability.h>
++#include <DriverKit/IOService.iig>
++
++class QMXBridgeControl : public IOService
++{
++public:
++    virtual kern_return_t Start(IOService * provider) override;
++    virtual kern_return_t Stop(IOService * provider) override;
++    virtual kern_return_t NewUserClient(uint32_t type, IOUserClient ** userClient) override;
++};
++
++#endif /* QMXBridgeControl_h */
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.cpp b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.cpp
+new file mode 100644
+index 00000000..7fb98919
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.cpp
+@@ -0,0 +1,166 @@
++// QMXBridgeUserClient.cpp - methods the QMX Bridge app calls on the virtual
++// serial port (see Shared/QMXBridgeShared.h).
++
++#include <os/log.h>
++#include <DriverKit/DriverKit.h>
++#include <DriverKit/IOLib.h>
++#include <DriverKit/IOUserClient.h>
++#include <DriverKit/OSAction.h>
++#include <DriverKit/OSData.h>
++
++#include "QMXBridgeUserClient.h"
++#include "QMXSerialDriver.h"
++#include "../Shared/QMXBridgeShared.h"
++
++#define LOG(fmt, ...) os_log(OS_LOG_DEFAULT, "QMXBridgeUserClient: " fmt, ##__VA_ARGS__)
++
++extern IOLock *          gQMXLock;
++extern QMXSerialDriver * gQMXSerial;
++
++struct QMXBridgeUserClient_IVars {
++    IOLock *   lock;
++    OSAction * notify;      // the app's async callback, retained
++};
++
++// The serial port instance, retained; nullptr if the driver hasn't started.
++static QMXSerialDriver * CopySerial()
++{
++    if (!gQMXLock) return nullptr;
++    IOLockLock(gQMXLock);
++    QMXSerialDriver * s = gQMXSerial;
++    if (s) s->retain();
++    IOLockUnlock(gQMXLock);
++    return s;
++}
++
++bool QMXBridgeUserClient::init()
++{
++    if (!super::init()) return false;
++    ivars = IONewZero(QMXBridgeUserClient_IVars, 1);
++    if (!ivars) return false;
++    ivars->lock = IOLockAlloc();
++    return ivars->lock != nullptr;
++}
++
++void QMXBridgeUserClient::free()
++{
++    if (ivars) {
++        OSSafeReleaseNULL(ivars->notify);
++        if (ivars->lock) IOLockFree(ivars->lock);
++    }
++    IOSafeDeleteNULL(ivars, QMXBridgeUserClient_IVars, 1);
++    super::free();
++}
++
++kern_return_t IMPL(QMXBridgeUserClient, Start)
++{
++    kern_return_t ret = Start(provider, SUPERDISPATCH);
++    if (ret != kIOReturnSuccess) return ret;
++    if (QMXSerialDriver * s = CopySerial()) {
++        s->SetListener(this);
++        s->release();
++    }
++    LOG("app connected");
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXBridgeUserClient, Stop)
++{
++    if (QMXSerialDriver * s = CopySerial()) {
++        s->SetListener(nullptr);
++        s->release();
++    }
++    IOLockLock(ivars->lock);
++    OSAction * a = ivars->notify;
++    ivars->notify = nullptr;
++    IOLockUnlock(ivars->lock);
++    OSSafeReleaseNULL(a);
++    LOG("app disconnected");
++    return Stop(provider, SUPERDISPATCH);
++}
++
++void QMXBridgeUserClient::Event(uint64_t event, uint64_t value)
++{
++    IOLockLock(ivars->lock);
++    OSAction * a = ivars->notify;
++    if (a) a->retain();
++    IOLockUnlock(ivars->lock);
++    if (!a) return;
++    uint64_t args[2] = { event, value };
++    AsyncCompletion(a, kIOReturnSuccess, args, 2);
++    a->release();
++}
++
++kern_return_t QMXBridgeUserClient::ExternalMethod(uint64_t selector,
++                                                  IOUserClientMethodArguments * args,
++                                                  const IOUserClientMethodDispatch * dispatch,
++                                                  OSObject * target,
++                                                  void * reference)
++{
++    (void)dispatch; (void)target; (void)reference;
++    QMXSerialDriver * s = CopySerial();
++    kern_return_t ret = kIOReturnSuccess;
++
++    switch (selector) {
++    case kQMXMethodWrite: {
++        if (!s) { ret = kIOReturnNotReady; break; }
++        OSData * in = args->structureInput;
++        uint32_t accepted = 0;
++        if (in && in->getLength()) {
++            accepted = s->PushRx(static_cast<const uint8_t *>(in->getBytesNoCopy()),
++                                 static_cast<uint32_t>(in->getLength()));
++        }
++        if (args->scalarOutput && args->scalarOutputCount >= 1) {
++            args->scalarOutput[0] = accepted;
++            args->scalarOutputCount = 1;
++        }
++        break;
++    }
++    case kQMXMethodRead: {
++        if (!s) { ret = kIOReturnNotReady; break; }
++        uint8_t buf[4096];
++        uint32_t max = sizeof(buf);
++        if (args->structureOutputMaximumSize && args->structureOutputMaximumSize < max)
++            max = static_cast<uint32_t>(args->structureOutputMaximumSize);
++        uint32_t n = s->PullTx(buf, max);
++        args->structureOutput = OSData::withBytes(buf, n);
++        break;
++    }
++    case kQMXMethodNotify: {
++        if (!args->completion) { ret = kIOReturnBadArgument; break; }
++        args->completion->retain();
++        IOLockLock(ivars->lock);
++        OSAction * old = ivars->notify;
++        ivars->notify = args->completion;
++        IOLockUnlock(ivars->lock);
++        OSSafeReleaseNULL(old);
++        if (s) s->SetListener(this);
++        break;
++    }
++    case kQMXMethodStatus: {
++        uint64_t st[kQMXStatCount] = {};
++        if (s) s->GetStatus(st, kQMXStatCount);
++        if (args->scalarOutput) {
++            uint32_t n = args->scalarOutputCount < kQMXStatCount ? args->scalarOutputCount : kQMXStatCount;
++            for (uint32_t i = 0; i < n; i++) args->scalarOutput[i] = st[i];
++            args->scalarOutputCount = n;
++        }
++        break;
++    }
++    case kQMXMethodSetRingMode: {
++        if (!s) { ret = kIOReturnNotReady; break; }
++        if (!args->scalarInput || args->scalarInputCount < 1) { ret = kIOReturnBadArgument; break; }
++        s->SetRingMode(static_cast<uint32_t>(args->scalarInput[0]));
++        break;
++    }
++    case kQMXMethodFlushRx: {
++        if (s) s->FlushRx();
++        break;
++    }
++    default:
++        ret = kIOReturnBadArgument;
++        break;
++    }
++    if (s) s->release();
++    return ret;
++}
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.iig b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.iig
+new file mode 100644
+index 00000000..7a773535
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXBridgeUserClient.iig
+@@ -0,0 +1,26 @@
++// QMXBridgeUserClient.iig - the app's connection to the virtual serial port.
++
++#ifndef QMXBridgeUserClient_h
++#define QMXBridgeUserClient_h
++
++#include <Availability.h>
++#include <DriverKit/IOUserClient.iig>
++
++class QMXBridgeUserClient : public IOUserClient
++{
++public:
++    virtual bool init() override;
++    virtual void free() override;
++    virtual kern_return_t Start(IOService * provider) override;
++    virtual kern_return_t Stop(IOService * provider) override;
++    virtual kern_return_t ExternalMethod(uint64_t selector,
++                                         IOUserClientMethodArguments * arguments,
++                                         const IOUserClientMethodDispatch * dispatch,
++                                         OSObject * target,
++                                         void * reference) override;
++
++    // Called by QMXSerialDriver (same process) to tell the app something happened.
++    void Event(uint64_t event, uint64_t value) LOCALONLY;
++};
++
++#endif /* QMXBridgeUserClient_h */
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.cpp b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.cpp
+new file mode 100644
+index 00000000..d143f2b8
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.cpp
+@@ -0,0 +1,392 @@
++// QMXSerialDriver.cpp - virtual serial port for the QMX Bridge app.
++//
++// The serial family (kernel) owns two rings shared with this driver:
++//   rx ring: this driver produces (rxPI), the kernel consumes (rxCI) -> what programs read
++//   tx ring: the kernel produces (txPI), this driver consumes (txCI) -> what programs wrote
++// The indices live in the SerialPortInterface block at the start of ifmd.
++//
++// Index arithmetic: Apple does not document whether the indices run free (used =
++// PI - CI, position = PI & mask) or wrap at the ring size. Mode 0 (default) is free
++// running; mode 1 wraps. Seeing any kernel-owned index >= ring size proves mode 0, and
++// the driver switches to it by itself. The app can force a mode (kQMXMethodSetRingMode).
++
++#include <os/log.h>
++#include <DriverKit/DriverKit.h>
++#include <DriverKit/IOLib.h>
++#include <DriverKit/IOBufferMemoryDescriptor.h>
++#include <DriverKit/IOMemoryMap.h>
++#include <DriverKit/OSData.h>
++#include <SerialDriverKit/SerialDriverKit.h>
++#include <SerialDriverKit/SerialPortInterface.h>
++
++#include "QMXSerialDriver.h"
++#include "QMXBridgeUserClient.h"
++#include "../Shared/QMXBridgeShared.h"
++
++#define LOG(fmt, ...) os_log(OS_LOG_DEFAULT, "QMXSerialDriver: " fmt, ##__VA_ARGS__)
++
++using driverkit::serial::SerialPortInterface;
++
++// The one serial port instance, for the control service's user clients.
++IOLock *          gQMXLock   = nullptr;
++QMXSerialDriver * gQMXSerial = nullptr;
++
++struct QMXSerialDriver_IVars {
++    IOLock *                lock;
++    SerialPortInterface *   spi;
++    IOMemoryMap *           rxMap;
++    IOMemoryMap *           txMap;
++    uint8_t *               rxBase;     // ring start (offset applied)
++    uint8_t *               txBase;
++    uint32_t                rxSize;
++    uint32_t                txSize;
++    uint32_t                ringMode;   // 0 free running, 1 wrapped
++    bool                    modeForced;
++    bool                    open;
++    uint64_t                rxDropped;
++    uint32_t                baud;
++    OSObject *              listener;   // QMXBridgeUserClient, retained
++};
++
++// ---------------------------------------------------------------------------
++
++bool QMXSerialDriver::init()
++{
++    if (!super::init()) return false;
++    ivars = IONewZero(QMXSerialDriver_IVars, 1);
++    if (!ivars) return false;
++    ivars->lock = IOLockAlloc();
++    ivars->baud = 115200;
++    return ivars->lock != nullptr;
++}
++
++void QMXSerialDriver::free()
++{
++    if (ivars) {
++        OSSafeReleaseNULL(ivars->rxMap);
++        OSSafeReleaseNULL(ivars->txMap);
++        OSSafeReleaseNULL(ivars->listener);
++        if (ivars->lock) IOLockFree(ivars->lock);
++    }
++    IOSafeDeleteNULL(ivars, QMXSerialDriver_IVars, 1);
++    super::free();
++}
++
++kern_return_t IMPL(QMXSerialDriver, Start)
++{
++    kern_return_t ret = Start(provider, SUPERDISPATCH);
++    if (ret != kIOReturnSuccess) {
++        LOG("super Start failed 0x%x", ret);
++        return ret;
++    }
++    if (!gQMXLock) gQMXLock = IOLockAlloc();
++    IOLockLock(gQMXLock);
++    if (!gQMXSerial) { gQMXSerial = this; retain(); }
++    IOLockUnlock(gQMXLock);
++
++    ret = RegisterService();
++    LOG("started (RegisterService 0x%x)", ret);
++    return ret;
++}
++
++kern_return_t IMPL(QMXSerialDriver, Stop)
++{
++    if (gQMXLock) {
++        IOLockLock(gQMXLock);
++        if (gQMXSerial == this) { gQMXSerial = nullptr; release(); }
++        IOLockUnlock(gQMXLock);
++    }
++    SetListener(nullptr);
++    LOG("stopped");
++    return Stop(provider, SUPERDISPATCH);
++}
++
++// ---------------------------------------------------------------------------
++// rings
++
++static uint8_t * MapDescriptor(IOMemoryDescriptor * md, IOMemoryMap ** mapOut)
++{
++    if (!md) return nullptr;
++    IOMemoryMap * map = nullptr;
++    if (md->CreateMapping(0, 0, 0, 0, 0, &map) != kIOReturnSuccess || !map) return nullptr;
++    *mapOut = map;
++    return reinterpret_cast<uint8_t *>(map->GetAddress());
++}
++
++kern_return_t IMPL(QMXSerialDriver, ConnectQueues)
++{
++    kern_return_t ret = ConnectQueues(ifmd, rxqmd, txqmd, in_rxqmd, in_txqmd,
++                                      in_rxqoffset, in_txqoffset, in_rxqlogsz, in_txqlogsz,
++                                      SUPERDISPATCH);
++    if (ret != kIOReturnSuccess) {
++        LOG("super ConnectQueues failed 0x%x", ret);
++        return ret;
++    }
++    IOAddressSegment seg = {};
++    if (!ifmd || !*ifmd || (*ifmd)->GetAddressRange(&seg) != kIOReturnSuccess || !seg.address) {
++        LOG("no interface block");
++        return kIOReturnNoMemory;
++    }
++    IOLockLock(ivars->lock);
++    OSSafeReleaseNULL(ivars->rxMap);
++    OSSafeReleaseNULL(ivars->txMap);
++    ivars->spi = reinterpret_cast<SerialPortInterface *>(seg.address);
++    uint8_t * rx = MapDescriptor(rxqmd ? *rxqmd : nullptr, &ivars->rxMap);
++    uint8_t * tx = MapDescriptor(txqmd ? *txqmd : nullptr, &ivars->txMap);
++    SerialPortInterface * spi = ivars->spi;
++    uint8_t rxlog = spi->rxqlogsz ? spi->rxqlogsz : in_rxqlogsz;
++    uint8_t txlog = spi->txqlogsz ? spi->txqlogsz : in_txqlogsz;
++    if (!rx || !tx || rxlog > driverkit::serial::kSerialQueueLogSizeMax ||
++        txlog > driverkit::serial::kSerialQueueLogSizeMax) {
++        LOG("ring mapping failed (rx %p tx %p log %u/%u)", rx, tx, rxlog, txlog);
++        ivars->spi = nullptr;
++        IOLockUnlock(ivars->lock);
++        return kIOReturnNoMemory;
++    }
++    ivars->rxBase = rx + spi->rxqoffset;
++    ivars->txBase = tx + spi->txqoffset;
++    ivars->rxSize = 1u << rxlog;
++    ivars->txSize = 1u << txlog;
++    LOG("queues connected: rx %u bytes at +%u, tx %u bytes at +%u, PI/CI rx %u/%u tx %u/%u",
++        ivars->rxSize, spi->rxqoffset, ivars->txSize, spi->txqoffset,
++        spi->rxPI, spi->rxCI, spi->txPI, spi->txCI);
++    IOLockUnlock(ivars->lock);
++    SendEvent(kQMXEventQueues, 1);
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, DisconnectQueues)
++{
++    IOLockLock(ivars->lock);
++    ivars->spi = nullptr;
++    ivars->rxBase = ivars->txBase = nullptr;
++    OSSafeReleaseNULL(ivars->rxMap);
++    OSSafeReleaseNULL(ivars->txMap);
++    IOLockUnlock(ivars->lock);
++    LOG("queues disconnected");
++    SendEvent(kQMXEventQueues, 0);
++    return DisconnectQueues(SUPERDISPATCH);
++}
++
++static inline uint32_t LoadIdx(const uint32_t * p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
++static inline void StoreIdx(uint32_t * p, uint32_t v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
++
++// Seeing a kernel-owned index at or past the ring size means indices run free.
++static void NoteIndex(QMXSerialDriver_IVars * iv, uint32_t idx, uint32_t size)
++{
++    if (idx >= size && iv->ringMode != 0 && !iv->modeForced) {
++        iv->ringMode = 0;
++        LOG("ring indices run free (saw %u with ring size %u): using free-running mode", idx, size);
++    }
++}
++
++static inline uint32_t Used(uint32_t pi, uint32_t ci, uint32_t size, uint32_t mode)
++{
++    return mode == 0 ? (pi - ci) : ((pi - ci) & (size - 1));
++}
++
++static inline uint32_t Capacity(uint32_t size, uint32_t mode) { return mode == 0 ? size : size - 1; }
++
++uint32_t QMXSerialDriver::PushRx(const uint8_t * data, uint32_t len)
++{
++    uint32_t done = 0;
++    IOLockLock(ivars->lock);
++    SerialPortInterface * spi = ivars->spi;
++    if (spi && ivars->rxBase && ivars->open) {
++        const uint32_t size = ivars->rxSize, mask = size - 1;
++        uint32_t pi = spi->rxPI;                       // ours
++        uint32_t ci = LoadIdx(&spi->rxCI);             // the kernel's
++        NoteIndex(ivars, ci, size);
++        const uint32_t mode = ivars->ringMode;
++        uint32_t used = Used(pi, ci, size, mode);
++        uint32_t room = used >= Capacity(size, mode) ? 0 : Capacity(size, mode) - used;
++        uint32_t n = len < room ? len : room;
++        while (done < n) {
++            uint32_t pos = (pi + done) & mask;
++            uint32_t chunk = size - pos;
++            if (chunk > n - done) chunk = n - done;
++            memcpy(ivars->rxBase + pos, data + done, chunk);
++            done += chunk;
++        }
++        uint32_t npi = pi + done;
++        if (mode == 1) npi &= mask;
++        StoreIdx(&spi->rxPI, npi);
++    }
++    if (done < len) ivars->rxDropped += (len - done);
++    IOLockUnlock(ivars->lock);
++    if (done) RxDataAvailable();
++    return done;
++}
++
++uint32_t QMXSerialDriver::PullTx(uint8_t * out, uint32_t max)
++{
++    uint32_t done = 0;
++    IOLockLock(ivars->lock);
++    SerialPortInterface * spi = ivars->spi;
++    if (spi && ivars->txBase) {
++        const uint32_t size = ivars->txSize, mask = size - 1;
++        uint32_t pi = LoadIdx(&spi->txPI);             // the kernel's
++        uint32_t ci = spi->txCI;                       // ours
++        NoteIndex(ivars, pi, size);
++        NoteIndex(ivars, ci, size);
++        const uint32_t mode = ivars->ringMode;
++        uint32_t avail = Used(pi, ci, size, mode);
++        if (avail > size) avail = 0;                   // inconsistent: treat as empty
++        uint32_t n = avail < max ? avail : max;
++        while (done < n) {
++            uint32_t pos = (ci + done) & mask;
++            uint32_t chunk = size - pos;
++            if (chunk > n - done) chunk = n - done;
++            memcpy(out + done, ivars->txBase + pos, chunk);
++            done += chunk;
++        }
++        uint32_t nci = ci + done;
++        if (mode == 1) nci &= mask;
++        StoreIdx(&spi->txCI, nci);
++    }
++    IOLockUnlock(ivars->lock);
++    if (done) TxFreeSpaceAvailable();
++    return done;
++}
++
++void QMXSerialDriver::FlushRx()
++{
++    // Radio bytes the program has not read stay in the kernel's buffer; nothing to
++    // do on our side beyond counting. The serial family flushes on close.
++}
++
++void QMXSerialDriver::SetRingMode(uint32_t mode)
++{
++    IOLockLock(ivars->lock);
++    ivars->ringMode = mode ? 1 : 0;
++    ivars->modeForced = true;
++    IOLockUnlock(ivars->lock);
++    LOG("ring mode set to %u by the app", mode ? 1 : 0);
++}
++
++void QMXSerialDriver::GetStatus(uint64_t * out, uint32_t count)
++{
++    uint64_t s[kQMXStatCount] = {};
++    IOLockLock(ivars->lock);
++    s[kQMXStatPortReady] = 1;
++    s[kQMXStatOpen] = ivars->open;
++    s[kQMXStatQueues] = ivars->spi != nullptr;
++    s[kQMXStatRxSize] = ivars->rxSize;
++    s[kQMXStatTxSize] = ivars->txSize;
++    s[kQMXStatRxDropped] = ivars->rxDropped;
++    s[kQMXStatBaud] = ivars->baud;
++    s[kQMXStatRingMode] = ivars->ringMode;
++    IOLockUnlock(ivars->lock);
++    for (uint32_t i = 0; i < count && i < kQMXStatCount; i++) out[i] = s[i];
++}
++
++void QMXSerialDriver::SetListener(OSObject * client)
++{
++    IOLockLock(ivars->lock);
++    OSObject * old = ivars->listener;
++    ivars->listener = client;
++    if (client) client->retain();
++    IOLockUnlock(ivars->lock);
++    OSSafeReleaseNULL(old);
++}
++
++void QMXSerialDriver::SendEvent(uint64_t event, uint64_t value)
++{
++    IOLockLock(ivars->lock);
++    OSObject * l = ivars->listener;
++    if (l) l->retain();
++    IOLockUnlock(ivars->lock);
++    if (!l) return;
++    QMXBridgeUserClient * uc = OSDynamicCast(QMXBridgeUserClient, l);
++    if (uc) uc->Event(event, value);
++    l->release();
++}
++
++// ---------------------------------------------------------------------------
++// events from the serial family
++
++void IMPL(QMXSerialDriver, TxDataAvailable)
++{
++    // The program wrote something: the app pulls it with kQMXMethodRead.
++    SendEvent(kQMXEventTxData, 0);
++}
++
++void IMPL(QMXSerialDriver, RxFreeSpaceAvailable)
++{
++    // The program read some radio bytes. Nothing is queued here (the app's own
++    // buffering decides what to drop), so there is nothing to resume.
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwActivate)
++{
++    kern_return_t ret = HwActivate(SUPERDISPATCH);
++    IOLockLock(ivars->lock);
++    ivars->open = true;
++    IOLockUnlock(ivars->lock);
++    // A cable that is always plugged in: CTS, DSR and carrier on.
++    SetModemStatus(true, true, false, true);
++    LOG("port opened");
++    SendEvent(kQMXEventOpen, 1);
++    return ret;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwDeactivate)
++{
++    IOLockLock(ivars->lock);
++    ivars->open = false;
++    IOLockUnlock(ivars->lock);
++    LOG("port closed");
++    SendEvent(kQMXEventClose, 0);
++    return HwDeactivate(SUPERDISPATCH);
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwResetFIFO)
++{
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwSendBreak)
++{
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwProgramUART)
++{
++    IOLockLock(ivars->lock);
++    ivars->baud = baudRate;               // any baud rate works; the setting is ignored
++    IOLockUnlock(ivars->lock);
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwProgramBaudRate)
++{
++    IOLockLock(ivars->lock);
++    ivars->baud = baudRate;
++    IOLockUnlock(ivars->lock);
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwProgramMCR)
++{
++    SendEvent(kQMXEventMCR, (dtr ? 1 : 0) | (rts ? 2 : 0));
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwGetModemStatus)
++{
++    if (cts) *cts = true;
++    if (dsr) *dsr = true;
++    if (ri)  *ri  = false;
++    if (dcd) *dcd = true;
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwProgramLatencyTimer)
++{
++    return kIOReturnSuccess;
++}
++
++kern_return_t IMPL(QMXSerialDriver, HwProgramFlowControl)
++{
++    return kIOReturnSuccess;
++}
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.entitlements b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.entitlements
+new file mode 100644
+index 00000000..c2a00510
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.entitlements
+@@ -0,0 +1,12 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.developer.driverkit</key>
++	<true/>
++	<key>com.apple.developer.driverkit.family.serial</key>
++	<true/>
++	<key>com.apple.developer.driverkit.allow-third-party-userclients</key>
++	<true/>
++</dict>
++</plist>
+diff --git a/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.iig b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.iig
+new file mode 100644
+index 00000000..beb313b2
+--- /dev/null
++++ b/tools/mac-bridge-app/QMXSerialDriver/QMXSerialDriver.iig
+@@ -0,0 +1,58 @@
++// QMXSerialDriver.iig - a virtual serial port (no hardware): what programs
++// write goes to the QMX Bridge app, what the app hands in is what programs read.
++
++#ifndef QMXSerialDriver_h
++#define QMXSerialDriver_h
++
++#include <Availability.h>
++#include <DriverKit/IOService.iig>
++#include <SerialDriverKit/IOUserSerial.iig>
++
++class QMXSerialDriver : public IOUserSerial
++{
++public:
++    virtual bool init() override;
++    virtual void free() override;
++
++    virtual kern_return_t Start(IOService * provider) override;
++    virtual kern_return_t Stop(IOService * provider) override;
++
++    virtual kern_return_t ConnectQueues(IOBufferMemoryDescriptor ** ifmd,
++                                        IOMemoryDescriptor ** rxqmd,
++                                        IOMemoryDescriptor ** txqmd,
++                                        IOMemoryDescriptor * in_rxqmd,
++                                        IOMemoryDescriptor * in_txqmd,
++                                        uint32_t in_rxqoffset,
++                                        uint32_t in_txqoffset,
++                                        uint8_t in_rxqlogsz,
++                                        uint8_t in_txqlogsz) override;
++    virtual kern_return_t DisconnectQueues() override;
++
++    virtual void RxFreeSpaceAvailable() override;
++    virtual void TxDataAvailable() override;
++
++    virtual kern_return_t HwActivate() override;
++    virtual kern_return_t HwDeactivate() override;
++    virtual kern_return_t HwResetFIFO(bool tx, bool rx) override;
++    virtual kern_return_t HwSendBreak(bool sendBreak) override;
++    virtual kern_return_t HwProgramUART(uint32_t baudRate, uint8_t nDataBits,
++                                        uint8_t nHalfStopBits, uint8_t parity) override;
++    virtual kern_return_t HwProgramBaudRate(uint32_t baudRate) override;
++    virtual kern_return_t HwProgramMCR(bool dtr, bool rts) override;
++    virtual kern_return_t HwGetModemStatus(bool * cts, bool * dsr, bool * ri, bool * dcd) override;
++    virtual kern_return_t HwProgramLatencyTimer(uint32_t latency) override;
++    virtual kern_return_t HwProgramFlowControl(uint32_t arg, uint8_t xon, uint8_t xoff) override;
++
++    // ---- used by QMXBridgeUserClient (same process) ----
++    // Radio bytes for the program; returns how many were accepted.
++    uint32_t PushRx(const uint8_t * data, uint32_t len) LOCALONLY;
++    // Bytes the program wrote; returns how many were copied out.
++    uint32_t PullTx(uint8_t * out, uint32_t max) LOCALONLY;
++    void FlushRx() LOCALONLY;
++    void SetRingMode(uint32_t mode) LOCALONLY;
++    void GetStatus(uint64_t * out, uint32_t count) LOCALONLY;
++    void SetListener(OSObject * client) LOCALONLY;
++    void SendEvent(uint64_t event, uint64_t value) LOCALONLY;
++};
++
++#endif /* QMXSerialDriver_h */
+diff --git a/tools/mac-bridge-app/README.md b/tools/mac-bridge-app/README.md
+new file mode 100644
+index 00000000..eff5a513
+--- /dev/null
++++ b/tools/mac-bridge-app/README.md
+@@ -0,0 +1,120 @@
++# QMX Bridge for macOS
++
++A native Mac app (Swift/SwiftUI) that replaces `tools/mac-serial-bridge` (Python). It
++does everything the Python bridge did, in one window:
++
++| Tab | What it does |
++|---|---|
++| **Relay** | **Discover** sends `QMXR?` on UDP 7355 and lists the relays that answer. **Probe** runs read-only checks: `ID;` `FA;` `MD;` on port 3, plus the I/Q copy's hello on TCP 7357. |
++| **Serial Port** | Makes QMX serial port 3 (relay TCP 7356) a serial port on this Mac. It connects only while a program talks to the port and releases the port after 120 s idle. |
++| **TCI** | A TCI server at `ws://127.0.0.1:40001` for WS, WSJT-X 3 and JTDX. Receive audio is demodulated from the I/Q copy; transmit sends one tone at a time as `TA<Hz>;`. |
++| **Driver** | Installs or removes the virtual USB serial port driver. |
++| **Settings** | Fixed or fallback NAS address, ports, idle time, TCI address, verbose log. |
++
++The serial port and the TCI server both use the radio's port 3, so only one runs at a time.
++
++## Two kinds of serial port
++
++1. **Virtual USB serial port (driver).** `QMXSerialDriver.dext` is a DriverKit
++   `IOUserSerial` driver. With it, the QMX appears as **`/dev/cu.QMX-NAS`**, exactly like a
++   USB serial adapter, so it shows up in every program's port list (WSJT-X, fldigi, CHIRP,
++   loggers, `screen`). The driver has no hardware: what programs write goes to the app, which
++   forwards it to the relay, and the radio's replies come back the same way.
++2. **Pseudo-terminal link (no driver).** This works the same way as the Python bridge: a pty
++   linked at `~/cu.QMX-NAS`. It needs no driver or special signing, but programs that only
++   list `/dev/cu.*` won't show it, so you type the path instead. **QMX Bridge Lite.app** is the
++   build that has only this mode.
++
++## Building
++
++You need Xcode with the DriverKit SDK; Xcode 15 or later includes it.
++[XcodeGen](https://github.com/yonaskolb/XcodeGen) is downloaded automatically if it is
++missing.
++
++```bash
++cd ~/src/QMX-Panadapter-NAS/tools/mac-bridge-app
++./build.sh                    # both apps, signed to run locally
++./build.sh --lite             # only QMX Bridge Lite.app
++./build.sh --team ABCDE12345  # sign with your Apple developer team
++./build.sh --install          # also copy to /Applications
++```
++
++The apps go to `build/out/`. The log goes to `build/build.log` and, if `~/Claude` exists,
++also to `~/Claude/mac-bridge-build.log`.
++
++To work in Xcode instead, run `xcodegen` in this folder and open `QMXBridge.xcodeproj`.
++
++## Running the driver: signing and approval
++
++macOS loads a driver extension only when it is signed with the DriverKit entitlements the
++driver uses:
++
++- `com.apple.developer.driverkit`
++- `com.apple.developer.driverkit.family.serial`
++- `com.apple.developer.driverkit.allow-third-party-userclients`
++
++The app needs two more:
++
++- `com.apple.developer.system-extension.install`
++- `com.apple.developer.driverkit.userclient-access`
++
++Apple grants the DriverKit ones per developer team, on request. Until Apple grants them, run
++the driver in **development mode**:
++
++1. Restart into Recovery: hold the power button on Apple silicon, or Cmd-R on Intel. Open
++   Terminal there and run `csrutil disable`, then restart.
++2. In Terminal, run `systemextensionsctl developer on`.
++3. Build with `./build.sh --install`, open **/Applications/QMX Bridge.app**, go to
++   **Driver**, then click **Install / Update**.
++4. Approve the extension. On macOS 15 or later: System Settings → General → Login Items &
++   Extensions → Driver Extensions. On older macOS: Privacy & Security → Allow.
++5. Check the driver is loaded: `systemextensionsctl list` shows
++   `com.qmx.panadapter.bridge.serialdriver [activated enabled]`. Then start **Serial Port**,
++   and `ls /dev/cu.*` shows `cu.QMX-NAS`.
++
++If macOS still rejects an ad-hoc-signed driver ("invalid signature" or "missing
++entitlement" in the Driver tab or in Console), also run
++`sudo nvram boot-args="amfi_get_out_of_my_way=0x1"` and restart. To undo it, run
++`sudo nvram -d boot-args`. Turn SIP back on with `csrutil enable` from Recovery when you are
++done.
++
++### Asking Apple for the entitlements
++
++At developer.apple.com → Account → **Request DriverKit entitlements**:
++
++> **Driver:** QMX Bridge virtual serial port (`com.qmx.panadapter.bridge.serialdriver`), an
++> `IOUserSerial` driver matching `IOUserResources`.
++>
++> **Purpose:** Amateur radio. A QRP Labs QMX transceiver is plugged into a NAS on the home
++> network. The companion app connects to the NAS over TCP and presents the radio's CAT
++> serial port on the Mac as a normal serial device, so that existing ham-radio software
++> (WSJT-X, fldigi, Hamlib, loggers) can use it unchanged.
++>
++> **Entitlements:**
++> - `com.apple.developer.driverkit`
++> - `com.apple.developer.driverkit.family.serial`
++> - `com.apple.developer.driverkit.allow-third-party-userclients` (for the dext)
++> - `com.apple.developer.driverkit.userclient-access` (for the app, `com.qmx.panadapter.bridge`)
++> - `com.apple.developer.system-extension.install` (for the app)
++
++Once Apple grants them, build with `./build.sh --team <your team ID> --install`. SIP can stay
++on.
++
++## Using it
++
++- **Serial Port:** in WSJT-X, Rig is QRP Labs QMX (or Kenwood TS-480), and Serial Port is
++  `/dev/cu.QMX-NAS` (driver) or `~/cu.QMX-NAS` (pty). Any baud rate works.
++- **TCI:** in WS or WSJT-X, Settings → Radio → Rig is **TCI Client RX1** and Network Server is
++  `127.0.0.1:40001`. Audio comes over TCI.
++- Allow **Local Network** access when macOS asks, or later in System Settings → Privacy &
++  Security → Local Network → QMX Bridge.
++
++## How the driver works
++
++| Piece | Role |
++|---|---|
++| `QMXSerialDriver` (`IOUserSerial`) | Implements the serial family's hardware calls with no hardware. The kernel shares two rings with it, through the `SerialPortInterface` indices. The **tx ring** holds what programs wrote: on `TxDataAvailable` the driver signals the app, the app pulls the bytes (`kQMXMethodRead`), and the driver advances `txCI` and calls `TxFreeSpaceAvailable`. The **rx ring** carries the radio's bytes: the app pushes them (`kQMXMethodWrite`), the driver copies them in, advances `rxPI` and calls `RxDataAvailable`. CTS, DSR and DCD always read as on. |
++| `QMXBridgeControl` and `QMXBridgeUserClient` | A separate service the app opens, user client type `'QMX'`. It carries the read and write methods, a status method, and an async notification for "data written", "port opened", "port closed" and DTR/RTS changes. See `Shared/QMXBridgeShared.h`. |
++| Ring index mode | Apple doesn't document whether the ring indices run free or wrap at the ring size. The driver assumes free-running and switches to it by itself when it sees an index larger than the ring. If replies stop after about 16 KB of traffic, try **Wrapped** in the Driver tab. |
++
++Driver log: `log stream --predicate 'eventMessage CONTAINS "QMXSerialDriver" OR eventMessage CONTAINS "QMXBridge"'`.
+diff --git a/tools/mac-bridge-app/Shared/QMXBridgeShared.h b/tools/mac-bridge-app/Shared/QMXBridgeShared.h
+new file mode 100644
+index 00000000..7edb78cc
+--- /dev/null
++++ b/tools/mac-bridge-app/Shared/QMXBridgeShared.h
+@@ -0,0 +1,56 @@
++// QMXBridgeShared.h - the contract between the QMX Bridge app and its driver
++// (QMXSerialDriver.dext). Included by the dext (C++) and the app (Swift, via
++// the bridging header).
++
++#ifndef QMXBridgeShared_h
++#define QMXBridgeShared_h
++
++#include <stdint.h>
++
++// IOService class name the app looks up, and the user client type it opens.
++#define kQMXBridgeControlClass   "QMXBridgeControl"
++#define kQMXBridgeUserClientType 0x514D58u            // 'QMX'
++
++// The BSD name programs see: /dev/cu.<IOTTYBaseName><IOTTYSuffix>
++#define kQMXSerialTTYBaseName    "QMX-NAS"
++
++// External methods on the user client.
++enum {
++    // structure input: bytes from the radio, delivered to the program reading the port (<= 4096)
++    kQMXMethodWrite      = 0,
++    // structure output: bytes the program wrote to the port (<= 4096); empty = none waiting
++    kQMXMethodRead       = 1,
++    // async: register for notifications (completion args below); no input
++    kQMXMethodNotify     = 2,
++    // scalar output[0..7]: state, see kQMXStat*
++    kQMXMethodStatus     = 3,
++    // scalar input[0]: ring index mode (0 = free running, 1 = wrapped at ring size)
++    kQMXMethodSetRingMode = 4,
++    // no input: throw away radio bytes not yet read by the program
++    kQMXMethodFlushRx    = 5,
++    kQMXMethodCount
++};
++
++// Async completion argument 0: what happened. Argument 1: a value.
++enum {
++    kQMXEventTxData  = 1,   // the program wrote bytes: call kQMXMethodRead until it returns none
++    kQMXEventOpen    = 2,   // a program opened the port (HwActivate)
++    kQMXEventClose   = 3,   // the port was closed (HwDeactivate)
++    kQMXEventMCR     = 4,   // DTR/RTS changed: value bit0 = DTR, bit1 = RTS
++    kQMXEventQueues  = 5,   // ring buffers connected (value 1) or disconnected (value 0)
++};
++
++// kQMXMethodStatus outputs
++enum {
++    kQMXStatPortReady = 0,  // 1 = the serial driver instance exists
++    kQMXStatOpen      = 1,  // 1 = a program has the port open
++    kQMXStatQueues    = 2,  // 1 = rings connected
++    kQMXStatRxSize    = 3,  // rx ring size (bytes)
++    kQMXStatTxSize    = 4,
++    kQMXStatRxDropped = 5,  // radio bytes dropped because the program did not read them
++    kQMXStatBaud      = 6,  // last baud rate the program set (ignored)
++    kQMXStatRingMode  = 7,
++    kQMXStatCount     = 8
++};
++
++#endif /* QMXBridgeShared_h */
+diff --git a/tools/mac-bridge-app/build.sh b/tools/mac-bridge-app/build.sh
+new file mode 100755
+index 00000000..a9d72b15
+--- /dev/null
++++ b/tools/mac-bridge-app/build.sh
+@@ -0,0 +1,118 @@
++#!/bin/bash
++# build.sh - build QMX Bridge.app (with its virtual serial port driver) and/or
++# QMX Bridge Lite.app (no driver) from this folder.
++#
++#   ./build.sh                       # both apps, signed to run locally (ad-hoc)
++#   ./build.sh --team ABCDE12345     # both apps, signed with your Apple developer team
++#   ./build.sh --lite                # only QMX Bridge Lite.app (no driver, no special signing)
++#   ./build.sh --xcode /Applications/Xcode-27.app
++#   ./build.sh --install             # also copy the app(s) to /Applications
++#
++# Needs Xcode (with the DriverKit SDK) and XcodeGen; XcodeGen is downloaded from
++# its GitHub release into .tools/ if it isn't installed.
++# The full log goes to build/build.log and, if ~/Claude exists, ~/Claude/mac-bridge-build.log.
++
++set -u
++cd "$(dirname "$0")"
++HERE=$(pwd)
++
++TEAM=""
++LITE_ONLY=0
++INSTALL=0
++XCODE=""
++while [ $# -gt 0 ]; do
++    case "$1" in
++        --team) TEAM="$2"; shift ;;
++        --lite) LITE_ONLY=1 ;;
++        --install) INSTALL=1 ;;
++        --xcode) XCODE="$2"; shift ;;
++        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
++        *) echo "unknown option $1"; exit 2 ;;
++    esac
++    shift
++done
++
++mkdir -p build
++LOG="$HERE/build/build.log"
++: > "$LOG"
++exec > >(tee -a "$LOG") 2>&1
++
++echo "== QMX Bridge build  $(date)"
++echo "   macOS $(sw_vers -productVersion) $(uname -m)"
++if [ -n "$XCODE" ]; then export DEVELOPER_DIR="$XCODE/Contents/Developer"; fi
++echo "   Xcode: $(xcode-select -p 2>/dev/null) ${DEVELOPER_DIR:+(using $DEVELOPER_DIR)}"
++xcodebuild -version || { echo "FAIL: xcodebuild not found"; exit 1; }
++xcodebuild -showsdks 2>/dev/null | grep -i driverkit || echo "note: no DriverKit SDK listed"
++
++# ---- XcodeGen
++XG=$(command -v xcodegen || true)
++if [ -z "$XG" ] && [ -x .tools/xcodegen/bin/xcodegen ]; then XG="$HERE/.tools/xcodegen/bin/xcodegen"; fi
++if [ -z "$XG" ]; then
++    echo "== downloading XcodeGen"
++    mkdir -p .tools
++    curl -fsSL -o .tools/xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip \
++        && (cd .tools && unzip -oq xcodegen.zip) && XG="$HERE/.tools/xcodegen/bin/xcodegen"
++    [ -x "$XG" ] || { echo "FAIL: couldn't get XcodeGen (brew install xcodegen)"; exit 1; }
++fi
++echo "== $("$XG" --version 2>/dev/null)"
++"$XG" generate --spec project.yml || { echo "FAIL: xcodegen"; exit 1; }
++
++# ---- signing
++if [ -n "$TEAM" ]; then
++    SIGN=(DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates)
++    echo "== signing with team $TEAM"
++else
++    # Xcode won't sign DriverKit/system-extension entitlements without a provisioning
++    # profile, so build unsigned and sign ad-hoc with the entitlements afterwards.
++    SIGN=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM=)
++    echo "== building unsigned, then signing to run locally (ad-hoc)"
++fi
++
++OK=1
++build() {   # scheme
++    echo "== xcodebuild $1"
++    xcodebuild -project QMXBridge.xcodeproj -scheme "$1" -configuration Release \
++        -derivedDataPath build/dd "${SIGN[@]}" build
++    local rc=$?
++    if [ $rc -ne 0 ]; then echo "FAIL: $1 (exit $rc)"; OK=0; else echo "ok  : $1"; fi
++}
++
++build QMXBridgeLite
++[ $LITE_ONLY -eq 1 ] || build QMXBridge
++
++PROD=build/dd/Build/Products/Release
++adhoc() {   # bundle entitlements
++    codesign --force --sign - --timestamp=none ${2:+--entitlements "$2"} "$1" && echo "signed (ad-hoc): $1"
++}
++if [ -z "$TEAM" ]; then
++    for d in "$PROD/QMX Bridge.app/Contents/Library/SystemExtensions"/*.dext; do
++        [ -d "$d" ] && adhoc "$d" QMXSerialDriver/QMXSerialDriver.entitlements
++    done
++    [ -d "$PROD/QMX Bridge.app" ] && adhoc "$PROD/QMX Bridge.app" QMXBridge/QMXBridge.entitlements
++    [ -d "$PROD/QMX Bridge Lite.app" ] && adhoc "$PROD/QMX Bridge Lite.app"
++fi
++mkdir -p build/out
++rm -rf build/out/*.app
++for app in "QMX Bridge Lite.app" "QMX Bridge.app"; do
++    if [ -d "$PROD/$app" ] && [ -x "$PROD/$app/Contents/MacOS/${app%.app}" ]; then
++        rm -rf "build/out/$app"; cp -R "$PROD/$app" build/out/
++        echo "built: build/out/$app"
++        codesign -dv --entitlements - "build/out/$app" 2>&1 | sed 's/^/      /' | head -30
++        if [ -d "build/out/$app/Contents/Library/SystemExtensions" ]; then
++            ls "build/out/$app/Contents/Library/SystemExtensions"
++            for d in "build/out/$app/Contents/Library/SystemExtensions"/*.dext; do
++                codesign -dv --entitlements - "$d" 2>&1 | sed 's/^/      /' | head -30
++            done
++        fi
++        if [ $INSTALL -eq 1 ]; then
++            rm -rf "/Applications/$app" && cp -R "build/out/$app" /Applications/ && echo "installed: /Applications/$app"
++        fi
++    fi
++done
++
++echo
++echo "== errors:"
++grep -E "error:|\*\* BUILD FAILED" "$LOG" | sort -u | head -60 || true
++echo "== RESULT: $([ $OK -eq 1 ] && echo BUILD OK || echo BUILD FAILED)"
++if [ -d "$HOME/Claude" ]; then cp "$LOG" "$HOME/Claude/mac-bridge-build.log"; fi
++[ $OK -eq 1 ]
+diff --git a/tools/mac-bridge-app/project.yml b/tools/mac-bridge-app/project.yml
+new file mode 100644
+index 00000000..1168c981
+--- /dev/null
++++ b/tools/mac-bridge-app/project.yml
+@@ -0,0 +1,108 @@
++# XcodeGen spec for QMX Bridge (run ./build.sh, or `xcodegen` then open QMXBridge.xcodeproj).
++#
++#   QMX Bridge.app       - the app, with the virtual USB serial port driver embedded
++#   QMXSerialDriver.dext - DriverKit IOUserSerial driver (Contents/Library/SystemExtensions)
++#   QMX Bridge Lite.app  - the same app without the driver (pseudo-terminal serial port only;
++#                          no special entitlements, builds and runs anywhere)
++
++name: QMXBridge
++options:
++  bundleIdPrefix: com.qmx.panadapter
++  deploymentTarget:
++    macOS: "14.0"
++  createIntermediateGroups: true
++
++settings:
++  base:
++    SWIFT_VERSION: "5.0"
++    MARKETING_VERSION: "1.0"
++    CURRENT_PROJECT_VERSION: "1"
++    CODE_SIGN_STYLE: Automatic
++    DEAD_CODE_STRIPPING: YES
++
++targetTemplates:
++  BridgeApp:
++    type: application
++    platform: macOS
++    sources:
++      - path: QMXBridge
++        excludes: ["*.entitlements"]
++      - path: Shared
++    settings:
++      base:
++        SWIFT_OBJC_BRIDGING_HEADER: QMXBridge/QMXBridge-Bridging-Header.h
++        ENABLE_HARDENED_RUNTIME: YES
++        GENERATE_INFOPLIST_FILE: YES
++        INFOPLIST_KEY_CFBundleDisplayName: QMX Bridge
++        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
++        INFOPLIST_KEY_NSHumanReadableCopyright: QMX-Panadapter-NAS
++        INFOPLIST_KEY_NSLocalNetworkUsageDescription: QMX Bridge finds the QMX relay on your NAS and connects to it over the local network.
++        COMBINE_HIDPI_IMAGES: YES
++
++targets:
++  QMXBridge:
++    templates: [BridgeApp]
++    settings:
++      base:
++        PRODUCT_NAME: QMX Bridge
++        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge
++        CODE_SIGN_ENTITLEMENTS: QMXBridge/QMXBridge.entitlements
++    dependencies:
++      - target: QMXSerialDriver
++        embed: true
++        codeSign: true
++        copy:
++          destination: wrapper
++          subpath: Contents/Library/SystemExtensions
++
++  QMXBridgeLite:
++    templates: [BridgeApp]
++    settings:
++      base:
++        PRODUCT_NAME: QMX Bridge Lite
++        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge.lite
++        CODE_SIGN_ENTITLEMENTS: QMXBridge/QMXBridgeLite.entitlements
++        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) QMX_LITE"
++
++  QMXSerialDriver:
++    type: driver-extension
++    platform: macOS
++    sources:
++      - path: QMXSerialDriver/QMXSerialDriver.iig
++        buildPhase: sources
++      - path: QMXSerialDriver/QMXBridgeControl.iig
++        buildPhase: sources
++      - path: QMXSerialDriver/QMXBridgeUserClient.iig
++        buildPhase: sources
++      - path: QMXSerialDriver/QMXSerialDriver.cpp
++      - path: QMXSerialDriver/QMXBridgeControl.cpp
++      - path: QMXSerialDriver/QMXBridgeUserClient.cpp
++      - path: QMXSerialDriver/Info.plist
++        buildPhase: none
++      - path: Shared/QMXBridgeShared.h
++        buildPhase: none
++    settings:
++      base:
++        SDKROOT: driverkit
++        SUPPORTED_PLATFORMS: driverkit
++        DRIVERKIT_DEPLOYMENT_TARGET: "23.0"
++        PRODUCT_NAME: QMXSerialDriver
++        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge.serialdriver
++        INFOPLIST_FILE: QMXSerialDriver/Info.plist
++        GENERATE_INFOPLIST_FILE: NO
++        CODE_SIGN_ENTITLEMENTS: QMXSerialDriver/QMXSerialDriver.entitlements
++        OTHER_LDFLAGS: "-framework DriverKit -framework SerialDriverKit"
++        CLANG_CXX_LANGUAGE_STANDARD: "gnu++17"
++        ENABLE_HARDENED_RUNTIME: NO
++        INSTALL_PATH: /Library/DriverExtensions
++
++schemes:
++  QMXBridge:
++    build:
++      targets:
++        QMXBridge: all
++        QMXSerialDriver: all
++  QMXBridgeLite:
++    build:
++      targets:
++        QMXBridgeLite: all
+-- 
+2.43.0
+

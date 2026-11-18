@@ -1,7 +1,7 @@
-From 1562982a9a34f5c0cd851084629ec1af7334fd2f Mon Sep 17 00:00:00 2001
+From 4b62e8374f7834bc400fdd0a531c180a327f2a05 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
-Subject: [PATCH 40/45] Ethernet through the M5Stack W5500 PoE base, alongside
+Subject: [PATCH 40/46] Ethernet through the M5Stack W5500 PoE base, alongside
  Wi-Fi
 
 net/eth_w5500.c looks for a W5500 on the Tab5's M5-Bus at boot (MOSI G18,
@@ -62,7 +62,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index 0465c7b7..218dcbd6 100644
+index b661f89b..0e34ba67 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -113,10 +113,10 @@ index 0465c7b7..218dcbd6 100644
  * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
  * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 557056a9..f0ea4684 100644
+index f257c7d0..4fa84e24 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -131,6 +131,7 @@ idf_component_register(
+@@ -136,6 +136,7 @@ idf_component_register(
          "usb_hid_mouse.c"
          "net/rigctld_server.c"
          "net/radio_relay.c"
@@ -124,7 +124,7 @@ index 557056a9..f0ea4684 100644
          "net/reader_net.c"
          "net/manual_embed.c"
          "net/update_check.c"
-@@ -227,6 +228,7 @@ idf_component_register(
+@@ -236,6 +237,7 @@ idf_component_register(
          nvs_flash
          esp_wifi
          esp_netif
@@ -133,7 +133,7 @@ index 557056a9..f0ea4684 100644
          lwip
          esp_http_server
 diff --git a/main/main.c b/main/main.c
-index 33010522..9cb6222f 100644
+index 9c52851e..046b2438 100644
 --- a/main/main.c
 +++ b/main/main.c
 @@ -84,6 +84,7 @@ static const char *TAG = "main";
@@ -144,7 +144,7 @@ index 33010522..9cb6222f 100644
  
  /* SETTLING MARKS (2026-10-04).
   *
-@@ -711,6 +712,10 @@ void app_main(void)
+@@ -728,6 +729,10 @@ void app_main(void)
      #if BENCH_WIFI_ENABLED != 0
      panadapter_wifi_start();
      MEM_LEDGER("wifi_start (hosted/SDIO)");
@@ -465,18 +465,18 @@ index 00000000..62b8858f
 +/* The address to show / announce: Ethernet's while it has one, else Wi-Fi's. */
 +const char *net_get_ip(void);
 diff --git a/main/net/ota_update.c b/main/net/ota_update.c
-index da00fd9e..55e27598 100644
+index 19720a2b..e612170f 100644
 --- a/main/net/ota_update.c
 +++ b/main/net/ota_update.c
-@@ -27,6 +27,7 @@
- #include "net/net_quiet.h"
+@@ -28,6 +28,7 @@
  #include "util/net_guard.h"
+ #include "util/net_ifaddr.h"   // net_own_ipv4 - our own address, host order
  #include "esp_netif.h"
 +#include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
  
  // Pause between image chunks. 1 ms was enough to stop the hardware watchdog
  // reset this loop used to cause (esp_https_ota sizes each chunk as
-@@ -444,7 +445,7 @@ bool ota_update_start(const char *url, char *err, size_t err_len)
+@@ -443,7 +444,7 @@ bool ota_update_start(const char *url, char *err, size_t err_len)
          if (err) snprintf(err, err_len, "No download address");
          return false;
      }
@@ -630,10 +630,10 @@ index 0a6b51dd..0bee174e 100644
  
          /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 8153f67e..73849e42 100644
+index 6348b2f5..c9505616 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -107,6 +107,7 @@
+@@ -111,6 +111,7 @@
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
  #include "radio_relay.h"       // network radio source (QMX on a NAS)
@@ -641,7 +641,7 @@ index 8153f67e..73849e42 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -742,6 +743,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -798,6 +799,18 @@ static esp_err_t status_handler(httpd_req_t *req)
      // checking from another room as it is looking at the Tab5 itself.
      cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
  
@@ -691,10 +691,10 @@ index 8d4be507..1bfee73a 100644
      }
  }
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 53486204..82d7fb7e 100644
+index 34516cdd..5ff6b652 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -9596,13 +9596,21 @@ async function tick() {
+@@ -9749,13 +9749,21 @@ async function tick() {
        }
      }
  

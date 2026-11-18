@@ -1,7 +1,7 @@
-From ce6c6d870510ce15cb5d199c083e45281a68a731 Mon Sep 17 00:00:00 2001
+From 808411d027153758c4c0a57c01c593a3746818c9 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Sun, 25 Oct 2026 15:00:00 -0500
-Subject: [PATCH 37/45] README: build steps for a new upstream release
+Subject: [PATCH 37/46] README: build steps for a new upstream release
  (download and patch, build and flash, mark tested and publish)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/README.md b/README.md
-index 51ebc9ff..6d1b34d4 100644
+index c028a1f0..5a6cd4cc 100644
 --- a/README.md
 +++ b/README.md
 @@ -61,20 +61,37 @@ The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-chec

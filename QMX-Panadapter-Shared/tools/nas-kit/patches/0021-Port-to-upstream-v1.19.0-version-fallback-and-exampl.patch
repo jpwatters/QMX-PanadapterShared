@@ -1,7 +1,7 @@
-From a822d72fd4ed414fd3a7c28f741d62ea427d3a10 Mon Sep 17 00:00:00 2001
+From 30c6c8f7876b2f6bc0fb2f6098fbf87816f45805 Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 23:36:08 -0500
-Subject: [PATCH 21/45] Port to upstream v1.19.0: version fallback and examples
+Subject: [PATCH 21/46] Port to upstream v1.19.0: version fallback and examples
 
 The NAS series applied to v1.19.0 with three hand-resolved conflicts:
 - settings.c: upstream took dirty bits 140 (JS8_SUBMODE) and 141 (RXA_AMBW),
@@ -44,7 +44,7 @@ index 2da15b80..9298857a 100644
  set(PROJECT_VER "${QMX_BASE_TAG}-NAS")
  
 diff --git a/README.md b/README.md
-index 7689bb72..413c3bdb 100644
+index c24bcd38..d239843e 100644
 --- a/README.md
 +++ b/README.md
 @@ -34,7 +34,7 @@ Mac tools
@@ -57,7 +57,7 @@ index 7689bb72..413c3bdb 100644
  * The relay README: setup, troubleshooting, and the power-off cure for a stuck touch chip.
  * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf: covers all of this, including the Synology and Raspberry Pi relay scripts, why the data goes through a relay, and the FT8 burst timing comparisons, with sources and full code listings.
 diff --git a/main/idf_component.yml b/main/idf_component.yml
-index 051460a4..23c93ce6 100644
+index 252a8e24..3f9fbaf4 100644
 --- a/main/idf_component.yml
 +++ b/main/idf_component.yml
 @@ -1,5 +1,5 @@

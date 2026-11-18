@@ -1997,6 +1997,45 @@ const char *adif_log_band_for_freq(uint32_t hz)
     return freq_to_band(hz);
 }
 
+/* R030 - see the header. One pass, no lock: the same read pattern as
+ * adif_log_count_activation(). A record written while this runs is either
+ * seen or not; the caller adds its own new QSOs to its list anyway. */
+int adif_log_scan_contest(const char *contest, const char *mode,
+                          void (*cb)(const char *call, const char *band, void *ctx), void *ctx)
+{
+    if (!s_mounted) return 0;
+    return adif_log_scan_contest_file(FILE_PATH, contest, mode, cb, ctx);
+}
+
+/* Any file of one-record-per-line ADIF: the device log, or the card archive
+ * (rotation moves records into it byte for byte). The line buffer is on the
+ * heap: the LVGL task and the SD task can both be in here at once. */
+int adif_log_scan_contest_file(const char *path, const char *contest, const char *mode,
+                               void (*cb)(const char *call, const char *band, void *ctx), void *ctx)
+{
+    if (!path || !contest || !contest[0] || !cb) return 0;
+    char *line = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!line) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) { free(line); return 0; }
+    char needle[48];
+    snprintf(needle, sizeof needle, "<CONTEST_ID:%u>%s", (unsigned)strlen(contest), contest);
+    int n = 0;
+    while (fgets(line, 1024, f)) {
+        if (!strstr(line, needle)) continue;
+        char call[16] = "", band[8] = "", md[12] = "";
+        adif_log_extract_field(line, "CALL", call, sizeof call);
+        adif_log_extract_field(line, "BAND", band, sizeof band);
+        adif_log_extract_field(line, "MODE", md, sizeof md);
+        if (!call[0] || (mode && mode[0] && strcasecmp(md, mode) != 0)) continue;
+        cb(call, band, ctx);
+        n++;
+    }
+    fclose(f);
+    free(line);
+    return n;
+}
+
 /* ⭐ ONE FILE PER ACTIVATION (Brian KB9WFS, 2026-10-27: "I activate more than
  * one park in a day"). The whole-log export already on the card cannot be
  * handed to POTA as one activation, and splitting it afterwards by hand is

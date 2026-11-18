@@ -1,0 +1,108 @@
+# XcodeGen spec for QMX Bridge (run ./build.sh, or `xcodegen` then open QMXBridge.xcodeproj).
+#
+#   QMX Bridge.app       - the app, with the virtual USB serial port driver embedded
+#   QMXSerialDriver.dext - DriverKit IOUserSerial driver (Contents/Library/SystemExtensions)
+#   QMX Bridge Lite.app  - the same app without the driver (pseudo-terminal serial port only;
+#                          no special entitlements, builds and runs anywhere)
+
+name: QMXBridge
+options:
+  bundleIdPrefix: com.qmx.panadapter
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEAD_CODE_STRIPPING: YES
+
+targetTemplates:
+  BridgeApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: QMXBridge
+        excludes: ["*.entitlements"]
+      - path: Shared
+    settings:
+      base:
+        SWIFT_OBJC_BRIDGING_HEADER: QMXBridge/QMXBridge-Bridging-Header.h
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: QMX Bridge
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
+        INFOPLIST_KEY_NSHumanReadableCopyright: QMX-Panadapter-NAS
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: QMX Bridge finds the QMX relay on your NAS and connects to it over the local network.
+        COMBINE_HIDPI_IMAGES: YES
+
+targets:
+  QMXBridge:
+    templates: [BridgeApp]
+    settings:
+      base:
+        PRODUCT_NAME: QMX Bridge
+        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge
+        CODE_SIGN_ENTITLEMENTS: QMXBridge/QMXBridge.entitlements
+    dependencies:
+      - target: QMXSerialDriver
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/SystemExtensions
+
+  QMXBridgeLite:
+    templates: [BridgeApp]
+    settings:
+      base:
+        PRODUCT_NAME: QMX Bridge Lite
+        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge.lite
+        CODE_SIGN_ENTITLEMENTS: QMXBridge/QMXBridgeLite.entitlements
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) QMX_LITE"
+
+  QMXSerialDriver:
+    type: driver-extension
+    platform: macOS
+    sources:
+      - path: QMXSerialDriver/QMXSerialDriver.iig
+        buildPhase: sources
+      - path: QMXSerialDriver/QMXBridgeControl.iig
+        buildPhase: sources
+      - path: QMXSerialDriver/QMXBridgeUserClient.iig
+        buildPhase: sources
+      - path: QMXSerialDriver/QMXSerialDriver.cpp
+      - path: QMXSerialDriver/QMXBridgeControl.cpp
+      - path: QMXSerialDriver/QMXBridgeUserClient.cpp
+      - path: QMXSerialDriver/Info.plist
+        buildPhase: none
+      - path: Shared/QMXBridgeShared.h
+        buildPhase: none
+    settings:
+      base:
+        SDKROOT: driverkit
+        SUPPORTED_PLATFORMS: driverkit
+        DRIVERKIT_DEPLOYMENT_TARGET: "23.0"
+        PRODUCT_NAME: QMXSerialDriver
+        PRODUCT_BUNDLE_IDENTIFIER: com.qmx.panadapter.bridge.serialdriver
+        INFOPLIST_FILE: QMXSerialDriver/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: QMXSerialDriver/QMXSerialDriver.entitlements
+        OTHER_LDFLAGS: "-framework DriverKit -framework SerialDriverKit"
+        CLANG_CXX_LANGUAGE_STANDARD: "gnu++17"
+        ENABLE_HARDENED_RUNTIME: NO
+        INSTALL_PATH: /Library/DriverExtensions
+
+schemes:
+  QMXBridge:
+    build:
+      targets:
+        QMXBridge: all
+        QMXSerialDriver: all
+  QMXBridgeLite:
+    build:
+      targets:
+        QMXBridgeLite: all

@@ -26,6 +26,7 @@
 #include "webserver_ws.h"
 #include "net/net_quiet.h"
 #include "util/net_guard.h"
+#include "util/net_ifaddr.h"   // net_own_ipv4 - our own address, host order
 #include "esp_netif.h"
 #include "eth_w5500.h"      // net_is_up(): Ethernet (W5500 PoE base) or Wi-Fi
 
@@ -124,21 +125,6 @@ void ota_update_mark_valid(void)
 }
 
 
-// Our IPv4 and netmask in HOST order. esp_netif stores NETWORK order, and
-// getting that wrong is not theoretical - it shipped in v1.8.7 and made every
-// LAN address fail the subnet test (Mark G4MEM). net_ipv4_from_network_order()
-// is the one place that conversion lives.
-static bool own_ipv4(uint32_t *ip_out, uint32_t *mask_out)
-{
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!netif) return false;
-    esp_netif_ip_info_t info;
-    if (esp_netif_get_ip_info(netif, &info) != ESP_OK) return false;
-    *ip_out   = net_ipv4_from_network_order(info.ip.addr);
-    *mask_out = net_ipv4_from_network_order(info.netmask.addr);
-    return true;
-}
-
 // Firmware may come from GitHub over https, or from a server on the operator's
 // OWN network over plain http - the identical rule Cloudlog uses, and the same
 // host-tested net_guard that backs it. A firmware image is the most
@@ -159,7 +145,7 @@ static bool source_allowed(const char *url, char *why, size_t why_sz)
     if (scheme == NET_SCHEME_HTTPS) return true;
 
     uint32_t target = 0, ours = 0, mask = 0;
-    if (!own_ipv4(&ours, &mask)) {
+    if (!net_own_ipv4(&ours, &mask)) {
         snprintf(why, why_sz, "no network address yet - connect to WiFi first");
         return false;
     }
@@ -296,10 +282,23 @@ static void ota_task(void *arg)
 
     /* ⛔ REFUSE AN IMAGE THAT CANNOT FIT, BEFORE WRITING A BYTE.
      *
-     * The Tab5's app slots are 4 MB. A release built against the larger
-     * partition layout - the one that claims the 2.81 MB at the end of the
-     * flash, which needs a partition table rewrite and therefore a USB cable -
-     * is bigger than that and can never install here. Without this check the
+     * ⛔ THE SIZE COMES FROM THE PARTITION TABLE, NOT FROM THIS COMMENT, and
+     * this comment was wrong: it said "the Tab5's app slots are 4 MB" until
+     * 2026-11-17. partitions.csv has ota_0 at 0x800000 (8,388,608 B) and
+     * ota_1 at 0x6D0000 (7,143,424 B), and an OTA writes the slot it is not
+     * running from - so 7,143,424 is the real ceiling. The guard below reads
+     * slot->size, so no device was ever affected; what the wrong figure cost
+     * was a reader who believed it (the simulator's own copy refused the
+     * published v2.0.1 asset, which every user has installed).
+     *
+     * For scale, since the point of the guard is the margin: v2.0.1 is
+     * 6,072,544 B, 85 % of ota_1, leaving about 1.02 MiB. It grew 89,040 B
+     * from v1.26.3 to v2.0.1.
+     *
+     * A release built against the larger partition layout - the one that
+     * claims the 2.81 MB at the end of the flash, which needs a partition
+     * table rewrite and therefore a USB cable - is bigger than the slot it
+     * would have to fit, and can never install here. Without this check the
      * operator watches a multi-megabyte download run to the end and fail on
      * the verify, with no way to tell why, and the same thing happens again
      * the next time they press the button.

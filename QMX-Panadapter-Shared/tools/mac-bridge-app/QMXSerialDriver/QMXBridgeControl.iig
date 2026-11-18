@@ -1,0 +1,18 @@
+// QMXBridgeControl.iig - a small service the app opens to reach the serial
+// driver (kept separate so the serial family's own user clients are untouched).
+
+#ifndef QMXBridgeControl_h
+#define QMXBridgeControl_h
+
+#include <Availability.h>
+#include <DriverKit/IOService.iig>
+
+class QMXBridgeControl : public IOService
+{
+public:
+    virtual kern_return_t Start(IOService * provider) override;
+    virtual kern_return_t Stop(IOService * provider) override;
+    virtual kern_return_t NewUserClient(uint32_t type, IOUserClient ** userClient) override;
+};
+
+#endif /* QMXBridgeControl_h */

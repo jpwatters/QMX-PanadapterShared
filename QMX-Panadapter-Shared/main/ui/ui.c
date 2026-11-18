@@ -2847,6 +2847,9 @@ bool ui_pan_view_current(pan_view_cfg_t *c, pan_view_t *v, int n_bins)
 }
 static int      s_last_band_idx = -1;    // track band changes for decode list clearing
 static char s_current_mode[8] = "USB";  // Phase 5.10F: latest CAT mode for snap-aware tuning
+/* The radio's mode when the RTTY page forced DiGi; handed back to the
+ * panadapter on leaving the page. "" = nothing to give back. */
+static char s_rtty_prev_mode[8] = "";
 static char s_current_band[8] = "---";  // Phase 9 (v0.9.5): cached band string for web JSON
 // Set when a top-bar label write had to be abandoned because the display lock
 // timed out. topbar_reconcile_cb() picks it up; without it the label stays wrong
@@ -4422,6 +4425,7 @@ static lv_obj_t *s_lbl_charge_limit_pct = NULL; // "Stop charging at: NN%" label
 static lv_obj_t *s_slider_charge_limit_pct = NULL;
 static lv_obj_t *s_check_distance_miles = NULL;
 static lv_obj_t *s_check_wspr_miles     = NULL;   /* DRAWER_SEC_WSPRDIST */
+static lv_obj_t *s_check_tx_subnet = NULL;   /* T206 TX interlock, drawer row */
 static lv_obj_t *s_check_rit_pill = NULL;  // "Show RIT button" checkbox (panadapter only)
 static lv_obj_t *s_check_ft8_early = NULL;       // FT8 fast-pounce early-decode checkbox
 static lv_obj_t *s_check_sim_mode = NULL;        // FT8 simulation mode checkbox
@@ -4722,6 +4726,7 @@ static void drawer_check_flip_cb(lv_event_t *e);
 static void drawer_check_charge_limit_cb(lv_event_t *e);
 static void drawer_slider_charge_limit_pct_cb(lv_event_t *e);
 static void drawer_switch_flat_cb(lv_event_t *e);
+static void drawer_check_tx_subnet_cb(lv_event_t *e);
 static void drawer_check_still_cb(lv_event_t *e);
 static void drawer_check_server_cb(lv_event_t *e);
 static void drawer_still_refresh_label(void);
@@ -4886,6 +4891,10 @@ static bool      s_rit_armed     = false;
 static int       s_rit_stash_hz  = 0;
 static lv_obj_t *s_rit_pill      = NULL;
 static lv_obj_t *s_rit_pill_lbl  = NULL;
+/* The Panadapter page's own Log button (operator, 2026-11-17: the CW page has
+ * had one since T185 and he wanted the same one tap here). Top-right of the
+ * WATERFALL, not the spectrum - his placement. */
+static lv_obj_t *s_log_btn       = NULL;
 static lv_obj_t *s_rit_wf_marker = NULL;  // RIT position over the waterfall, same overlay
                                           // reasoning (and same colour) as the spectrum line
 static lv_obj_t *s_rit_wf_lbl    = NULL;  // the offset as a number, beside that marker
@@ -6174,7 +6183,48 @@ static void rit_pill_sync(void)
     }
 }
 
-static void rit_pill_tick_cb(lv_timer_t *t) { (void)t; rit_pill_sync(); }
+/* Show the Log button only where it belongs, and only when nothing covers it.
+ *
+ * Same stand-down set as the pill above and for the same reason: this button is
+ * created LAST (it has to out-rank the waterfall, which owns every press in that
+ * area for tap-to-tune), which puts it above every window built during ui_init -
+ * so a drawer, the Reader or a modal would otherwise have a live Log button
+ * floating on top of it. See CLAUDE.md on LVGL hit-testing children in reverse
+ * creation order.
+ *
+ * PANADAPTER ONLY. The CW page has its own Log button (T185) which opens the
+ * window with that page's target station already filled in, so showing a second
+ * one there would be two buttons doing almost-but-not-quite the same thing. The
+ * FT8/JS8 pages log from their own QSO flow, and on WSPR there is no QSO to log. */
+static void log_btn_sync(void)
+{
+    if (!s_log_btn) return;
+    bool want_hidden = ui_mode_get() != UI_MODE_PANADAPTER || s_drawer_open ||
+                       reader_view_is_active() || help_triage_is_open() ||
+                       any_modal_open();
+    bool hidden = lv_obj_has_flag(s_log_btn, LV_OBJ_FLAG_HIDDEN);
+    if (want_hidden == hidden) return;                  /* change-detected: this runs on a timer */
+    if (want_hidden) lv_obj_add_flag(s_log_btn, LV_OBJ_FLAG_HIDDEN);
+    else             lv_obj_clear_flag(s_log_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* One timer for both: the two controls stand down on the same conditions, and a
+ * second 250 ms timer to ask the same questions would be pure cost. */
+static void rit_pill_tick_cb(lv_timer_t *t) { (void)t; rit_pill_sync(); log_btn_sync(); }
+
+/* ⭐ NO TARGET STATION, DELIBERATELY. manual_log_modal_show() already fills the
+ * callsign from spots_last_pick() when the operator got here by tapping a spot,
+ * guarded by the dial still being within 500 Hz of where that tap put it - which
+ * is exactly the Panadapter page's own way of arriving at a station. The CW page
+ * passes its decoder's target instead because it HAS one; this page does not,
+ * and inventing one from the dial frequency would be a guess.
+ *
+ * The MODE needs nothing from here either. The window reads the radio
+ * (cat_get_mode_str()) and derives the report form from it - 599 for CW and
+ * RTTY, 59 for USB/LSB/AM/DiGi - with the received report's S digit measured off
+ * the S-meter. So this one button logs a QSO in whatever mode the panadapter is
+ * being run in, with no mode knowledge in ui.c at all. */
+static void log_btn_clicked_cb(lv_event_t *e) { (void)e; manual_log_modal_show(); }
 
 // The pill is the arm/clear control. Three-way, and the order of the tests is
 // the behaviour: if RIT is engaged, the operator wants OUT (back to the run
@@ -6543,7 +6593,7 @@ static void build_top_bar(lv_obj_t *parent)
     // LVGL skips non-clickable objects during hit-testing, so touches here
     // fall through to that strip underneath.
     s_burger_btn = lv_obj_create(parent);  /* parent = screen; reused as the grip handle */
-    lv_obj_set_size(s_burger_btn, 4, 120);
+    lv_obj_set_size(s_burger_btn, UI_EDGE_GRIP_PX, UI_EDGE_GRIP_LEN_PX);
     lv_obj_align(s_burger_btn, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(s_burger_btn, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_bg_opa(s_burger_btn, LV_OPA_30, 0);
@@ -8253,7 +8303,7 @@ static void build_edge_swipe_strips(lv_obj_t *scr)
         // Tiny grip handle indicator, vertically centered, flush with the
         // screen's left edge.
         lv_obj_t *grip = lv_obj_create(strip);
-        lv_obj_set_size(grip, 4, 120);
+        lv_obj_set_size(grip, UI_EDGE_GRIP_PX, UI_EDGE_GRIP_LEN_PX);
         lv_obj_align(grip, LV_ALIGN_LEFT_MID, 0, 0);
         lv_obj_set_style_bg_color(grip, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
         lv_obj_set_style_bg_opa(grip, LV_OPA_30, 0);
@@ -8285,7 +8335,7 @@ static void build_edge_swipe_strips(lv_obj_t *scr)
         // Tiny grip handle indicator, horizontally centered, flush with the
         // screen's bottom edge.
         lv_obj_t *grip = lv_obj_create(strip);
-        lv_obj_set_size(grip, 120, 4);
+        lv_obj_set_size(grip, UI_EDGE_GRIP_LEN_PX, UI_EDGE_GRIP_PX);
         lv_obj_align(grip, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_color(grip, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
         lv_obj_set_style_bg_opa(grip, LV_OPA_30, 0);
@@ -8541,8 +8591,9 @@ static bool grip_mouse_click(lv_event_t *e, lv_obj_t *grip)
  * The event is already on the 30 px strip, so x needs no test; y must be on the
  * grip (a fingertip is wider than the mouse's 10 px slop), and the touch must
  * not have travelled - a short swipe is not a tap.
- * ⛔ NOT the bottom grip: a tap there must keep doing nothing, see
- * grip_mouse_click(). */
+ * The bottom grip has its own test below - its strip is the full width of the
+ * screen and shares that strip with the clock, so it cannot borrow this
+ * one's "x needs no test". */
 #define GRIP_TAP_SLOP_Y_PX  24
 #define GRIP_TAP_MAX_DX_PX  15
 static bool grip_touch_tap(lv_event_t *e, lv_obj_t *grip, int start_x)
@@ -8558,6 +8609,84 @@ static bool grip_touch_tap(lv_event_t *e, lv_obj_t *grip, int start_x)
     lv_obj_get_coords(grip, &a);
     return dx <= GRIP_TAP_MAX_DX_PX &&
            p.y >= a.y1 - GRIP_TAP_SLOP_Y_PX && p.y <= a.y2 + GRIP_TAP_SLOP_Y_PX;
+}
+
+/* The BOTTOM grip: a tap or a click opens Memory Channels (operator,
+ * 2026-11-16: "should be clickable to open by mouse or finger ... but it
+ * might conflict with the GPS status").
+ *
+ * ⛔ THE MOUSE WAS BROKEN HERE TOO, AND THE FIRST FIX MISSED IT. There was a
+ * grip_mouse_click() branch for the pointer below, and it had not worked
+ * since the UTC field became a tap target: clock_field_hit() tests an X RANGE
+ * AND NO Y, the clock is centred, the grip is centred, and the clock is
+ * tested first - so every click on the handle opened the GPS page's check
+ * instead and the memories never came. Measured in the simulator 2026-11-16:
+ * a click at (640,714) logs "UTC field tapped". Adding the finger and leaving
+ * the pointer's own branch where it was fixed half of it; the operator found
+ * the other half in one minute. ONE test now serves both devices, and the old
+ * branch is gone rather than left to fire in some third case.
+ *
+ * ⛔ IT DOES CONFLICT, AND THE BAR IS TOO SHORT FOR BOTH TO BE COMFORTABLE.
+ * Measured: the bar is 36 px tall - about 3 mm on the glass - the clock is
+ * CENTRED in it and its tap target is an x range only (clock_field_hit), and
+ * the grip is 120x8 px centred at the very bottom. They sit on top of each
+ * other. So the bar is split by HEIGHT (operator's choice, 2026-11-16): the
+ * grip owns the bottom 20 px, the clock the 16 px above it. Neither is near
+ * the 8 mm a fingertip wants; a 3 mm bar cannot give it.
+ *
+ * The x test is this function's own, unlike the left/right grips above: that
+ * strip IS the grip's column, while this one runs the full 1280 px, so
+ * without it a tap anywhere along the bottom edge would open the memories.
+ * The x slop is generous (half a grip either side) because the grip is a
+ * 120 px line and a finger is not a stylus. */
+#define BOTTOM_GRIP_TAP_SLOP_Y_PX  12
+#define BOTTOM_GRIP_TAP_SLOP_X_PX  60
+static bool bottom_grip_tap(lv_event_t *e, int start_x)
+{
+    lv_obj_t *grip = s_bottom_edge_grip;
+    lv_indev_t *indev = lv_event_get_indev(e);
+    if (!indev) return false;
+    if (!grip || lv_obj_has_flag(grip, LV_OBJ_FLAG_HIDDEN)) return false;
+
+    /* ⛔ NOT WHILE THE SETTINGS DRAWER IS OPEN, AND THE ADJACENCY BELOW IS NOT
+     * A SUBSTITUTE FOR THIS TEST.
+     *
+     * The drawer occupies x 760..1279 and s_drawer_scrim x 0..759. This
+     * function's window is x 520..759 (grip 580..699 plus 60 px of slop), so
+     * the two happen to abut with ONE pixel to spare. That is arithmetic, not
+     * design: DRAWER_W is 520 because the WiFi button and the smoothing slider
+     * have to fit, and the slop is 60 because the grip is a 120 px line and a
+     * finger is not a stylus. Neither number knows about the other. Change
+     * either and the drawer's bottom-left corner silently starts losing taps.
+     *
+     * The scrim cannot defend itself here. It is built during ui_init and
+     * ui_raise_edge_strips() puts s_bottom_edge_strip back on top of it (see
+     * the call near the end of ui_init, whose comment names the drawer), so in
+     * the bottom 36 px the strip takes the press and the scrim never sees it.
+     * Before the grip tap existed that cost nothing - the tap did nothing at
+     * all down there. With the tap it meant tap-outside-to-dismiss ALSO opened
+     * Memory Channels, because ui_show_memories() does drawer_close() first.
+     * Operator, 2026-11-17, asked what should happen: "No, suppress it".
+     *
+     * s_drawer_open goes false at the START of the 250 ms close animation, at
+     * the same moment the scrim is hidden, so the window reopens while the
+     * drawer is still sliding out. That is deliberate: by then the bottom edge
+     * belongs to the page again. */
+    if (s_drawer_open) return false;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    /* A short swipe is not a tap. A pointer does not travel between press and
+     * release at all, so this only ever rejects a finger - but it is tested
+     * for both, because a start_x of -1 means nothing was pressed here. */
+    if (start_x < 0) return false;
+    int dx = (int)p.x - start_x;
+    if (dx < 0) dx = -dx;
+    if (dx > GRIP_TAP_MAX_DX_PX) return false;
+    lv_area_t a;
+    lv_obj_get_coords(grip, &a);
+    return p.x >= a.x1 - BOTTOM_GRIP_TAP_SLOP_X_PX &&
+           p.x <= a.x2 + BOTTOM_GRIP_TAP_SLOP_X_PX &&
+           p.y >= a.y1 - BOTTOM_GRIP_TAP_SLOP_Y_PX;
 }
 
 // One wheel click moves this many pixels. A touch UI has large rows, so a
@@ -9320,6 +9449,52 @@ void ui_init(lv_display_t *disp)
         // in the common case.
         rit_pill_sync();
         lv_timer_create(rit_pill_tick_cb, 250, NULL);
+    }
+
+    /* The Panadapter page's Log button. Operator's placement, 2026-11-17: top
+     * right of the WATERFALL. Same 140x52 and the same column as the RIT pill
+     * above it, so the two read as one stack of corner controls.
+     *
+     * ⛔ y IS NOT THE WATERFALL'S TOP EDGE, AND THE 30 PX IS MEASURED.
+     * s_rit_wf_lbl - the "+250 Hz" RIT offset readout - is a child of the
+     * waterfall pinned at its y=2 (see ui_push_spectrum), and
+     * lv_font_montserrat_18.line_height is 21, so that readout owns the
+     * waterfall's top 23 px wherever the marker happens to sit: its x tracks the
+     * marker line and flips to rx-84 near the right edge, so it lands in this
+     * corner whenever RIT is engaged with the marker to the right. This button
+     * is created last and therefore DRAWS OVER it, which would hide the number.
+     * Dropping 30 px clears it by 7. The alternative - teaching the readout to
+     * dodge a second x range - was rejected with the operator: a number that
+     * jumps sideways while being read is worse than a button sitting lower.
+     *
+     * Clear of the right-edge swipe strip too (x >= 1250), so the settings
+     * drawer's gesture still works along this edge. */
+    {
+        const int log_y = TOP_BAR_H + SPECTRUM_H + LABEL_BAR_H + 30;   /* 322 */
+        s_log_btn = lv_obj_create(scr);
+        lv_obj_set_size(s_log_btn, 140, 52);
+        lv_obj_set_pos(s_log_btn, 1088, log_y);
+        lv_obj_set_style_bg_color(s_log_btn, lv_color_hex(0x101820), 0);
+        lv_obj_set_style_bg_opa(s_log_btn, LV_OPA_80, 0);   /* over the waterfall, same as the pill */
+        lv_obj_set_style_border_color(s_log_btn, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_set_style_border_width(s_log_btn, 2, 0);
+        lv_obj_set_style_radius(s_log_btn, 8, 0);
+        lv_obj_set_style_pad_all(s_log_btn, 0, 0);
+        lv_obj_clear_flag(s_log_btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(s_log_btn, LV_OBJ_FLAG_CLICKABLE);
+        /* SHORT_CLICKED, not CLICKED, for the same reason as the pill and the
+         * top-bar hit zones: CLICKED also arrives after a long press. There is
+         * no long-press action here, and this keeps it that way on purpose -
+         * a drag that starts on this button is a missed tap, not a gesture. */
+        lv_obj_add_event_cb(s_log_btn, log_btn_clicked_cb, LV_EVENT_SHORT_CLICKED, NULL);
+
+        lv_obj_t *log_lbl = lv_label_create(s_log_btn);
+        lv_label_set_text(log_lbl, "Log");
+        lv_obj_set_style_text_font(log_lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(log_lbl, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
+        lv_obj_center(log_lbl);
+
+        log_btn_sync();
     }
 
     // Edge-swipe gesture strips are built first (see build_edge_swipe_strips,
@@ -14959,6 +15134,18 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             // pack_manual.py fails the build if that heading is ever renamed.
             ESP_LOGI("ui", "SD indicator tapped (x=%d)", (int)be_start_x);
             help_open(HELP_SD_BENEFITS);
+        } else if (be_decided == 0 && bottom_grip_tap(e, be_start_x)) {
+            /* Ahead of the clock AND of the update line on purpose, and this
+             * ORDER IS THE WHOLE FIX: both of those targets are an x range
+             * over the whole 36 px bar, so whichever is tested first wins the
+             * overlap - the clock won it for every click and every tap, and
+             * the update line won the grip's left slop whenever its wording
+             * ran long. The grip's test is the bottom 20 px of its own 240 px
+             * window, so it can only ever take from inside that - see
+             * bottom_grip_tap(), and the measured widths at the update line
+             * below. */
+            ESP_LOGI("ui", "bottom grip tapped");
+            ui_show_memories();
         } else if (be_decided == 0 && s_update_press_ms && s_update_tap_cb &&
                    update_line_hit(s_update_press_x)) {
             // #239: a SHORT TAP now acts, and that is the whole point of the
@@ -14968,6 +15155,32 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
             // a download or restarting a radio) costs a dismissible window
             // instead. The label can finally say "tap" and mean it.
             //
+            /* ⛔ BELOW THE GRIP, AND THAT ORDER IS LOAD-BEARING. This label is
+             * centred at x=390 (LV_ALIGN_CENTER, -250) and its hit range is its
+             * OWN DRAWN BOX plus 20 px, so it grows with the wording. Measured
+             * from lv_font_montserrat_24's adv_w table:
+             *
+             *   "v2.0.1"                    63 px -> hit 339..442
+             *   "v2.0.1 -> v2.1.0  tap?"   229 px -> hit 255..525
+             *   "v2.0.1-19-gc1469992"      233 px -> hit 253..527   (bench build)
+             *   "Server busy - tap retries" 289 px -> hit 226..554
+             *
+             * The bottom grip's tap window starts at x=520 (grip 580..699 plus
+             * 60 px of slop), so the three long wordings reached INTO it and,
+             * being tested first, took the tap. Aiming at the grip and missing
+             * left by 30 px opened ota_modal instead of Memory Channels.
+             * Operator, 2026-11-17: "Fix it".
+             *
+             * Swapping the two tests is the whole fix and its blast radius is
+             * exactly this pair: bottom_grip_tap() is the only test here with
+             * a y-bound of its own (y >= 700) AND an x-bound, so it fires only
+             * inside its own 240x20 window. Outside that window this label
+             * keeps everything it had, including the 16 px above the grip.
+             * The clock stays below both and is unaffected.
+             *
+             * ⚠ Do NOT "fix" this by trimming the 20 px margin instead. The
+             * overlap is real glyphs: "Server busy - tap retries" DRAWS to
+             * x=534, past the 520 boundary, with no margin at all. */
             ESP_LOGI("ui", "update line tapped (x=%d)", (int)p.x);
             s_update_tap_cb();
         } else if (be_decided == 0 && be_start_x >= 0 && clock_field_hit(be_start_x)) {
@@ -14978,11 +15191,15 @@ static void bottom_edge_swipe_cb(lv_event_t *e)
              * decision itself, so there is one place it lives. */
             ESP_LOGI("ui", "UTC field tapped (x=%d)", (int)be_start_x);
             gps_status_view_open();
-        } else if (be_decided == 0 && grip_mouse_click(e, s_bottom_edge_grip)) {
-            ui_show_memories();         // a pointer cannot swipe: see grip_mouse_click()
         }
-        // A pure tap (be_decided==0) from a FINGER still does nothing - so
-        // reaching for the swipe grip can't accidentally retune.
+        /* The pointer's own branch used to sit here, after the clock, and so
+         * never fired - bottom_grip_tap() above now serves the mouse and the
+         * finger from one test. Deleted rather than left behind: a duplicate
+         * that only misbehaves in a third case outlives everyone's memory of
+         * why it existed. */
+        // A pure tap (be_decided==0) from a FINGER anywhere ELSE along this
+        // strip still does nothing - so reaching for the swipe grip can't
+        // accidentally retune. Only the grip's own 20 px acts (2026-11-16).
         update_hold_clear();        // #218: drop any hold feedback, whatever happened
         s_touch_on_bandplan = false;
         s_bottom_edge_swipe_start_y = -1;
@@ -17666,7 +17883,11 @@ static void drawer_build(void)
     /* Server mode (T19). Measured: core 0 idle 10-13 % -> 67 %, core 1
      * 42-56 % -> 72 %, with a browser on the page the whole time. */
     {
-        lv_obj_t *sec = drawer_section(DRAWER_SEC_SERVER, y, 124);
+        /* 124 -> 260: the TX interlock shares this section rather than taking
+         * one of its own. It belongs with Server mode because both are about
+         * what the browser may do, and a new DRAWER_SEC_* would also have to
+         * be threaded through drawer_set_ft8_mode()'s keep[] lists. */
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_SERVER, y, 260);
         lv_obj_t *lbl = lv_label_create(sec);
         lv_label_set_text(lbl, "Server mode");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
@@ -17685,7 +17906,37 @@ static void drawer_build(void)
         lv_obj_set_style_text_color(note, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
         lv_obj_set_style_text_font(note, &lv_font_montserrat_20, 0);
         lv_obj_align(note, LV_ALIGN_TOP_LEFT, 0, 52);
-        y += 124;
+
+        /* T206 TX INTERLOCK. Read at build like Server mode above; the web
+         * settings page is the other way in and the two write the same stored
+         * flag, so they cannot disagree about the value - only about when each
+         * last looked at it, which is why this row is rebuilt from settings
+         * every time the drawer is built.
+         *
+         * The label says what it refuses, NOT "secure" or "login". It is not
+         * authentication: see tx_subnet.h. */
+        lv_obj_t *il_lbl = lv_label_create(sec);
+        lv_label_set_text(il_lbl, "Refuse TX from off-network");
+        lv_obj_set_style_text_color(il_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(il_lbl, &lv_font_montserrat_28, 0);
+        lv_obj_align(il_lbl, LV_ALIGN_TOP_LEFT, 0, 128);
+        qmx_settings_t ilcfg;
+        settings_load_all(&ilcfg);
+        s_check_tx_subnet = make_drawer_checkbox(sec, ilcfg.tx_subnet_interlock,
+                                                 drawer_check_tx_subnet_cb, NULL);
+        lv_obj_align(s_check_tx_subnet, LV_ALIGN_TOP_RIGHT, 0, 124);
+
+        lv_obj_t *il_note = lv_label_create(sec);
+        lv_label_set_long_mode(il_note, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(il_note, DRAWER_W - 80);
+        lv_label_set_text(il_note,
+            "The web API can key the radio and has no password. On, a transmit "
+            "request from outside this network is refused. Not a login - "
+            "anyone on this WiFi still passes.");
+        lv_obj_set_style_text_color(il_note, lv_color_hex(UI_COLOR_TEXT_MUTED), 0);
+        lv_obj_set_style_text_font(il_note, &lv_font_montserrat_20, 0);
+        lv_obj_align(il_note, LV_ALIGN_TOP_LEFT, 0, 170);
+        y += 260;
     }
 
     /* Power off, directly under Restart. They are the same control with
@@ -19798,6 +20049,17 @@ static void drawer_check_still_cb(lv_event_t *e)
     drawer_still_refresh_label();
 }
 
+/* T206. Writes the stored flag and nothing else: the interlock reads the
+ * setting on every request, so there is no live state to poke and no reason to
+ * touch the radio. */
+static void drawer_check_tx_subnet_cb(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    settings_set_tx_subnet_interlock(on);
+    ui_toast(on ? "Transmit requests from outside this network will be refused"
+                : "Transmit requests from any network are allowed again");
+}
+
 static void drawer_switch_flat_cb(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -21649,6 +21911,14 @@ void ui_apply_saved_mode_start(void)
         ESP_LOGI(TAG, "restore: CW mode requested from the radio");
         return;
     }
+    /* RTTY: the same DiGi rule as on entry (operator, 2026-11-15). A boot
+     * straight into the page used to leave the radio in whatever mode it was
+     * powered up in. */
+    if (s_saved_ui_mode == UI_MODE_RTTY) {
+        cat_request_mode("DIGI");
+        ESP_LOGI(TAG, "restore: RTTY - DiGi requested from the radio");
+        return;
+    }
     if (s_saved_ui_mode == UI_MODE_FT8) {
         // FT8 is a digital mode - force the radio into DiGi regardless of
         // whatever mode (e.g. CW) was active in Panadapter mode. Via the poll
@@ -21813,6 +22083,13 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
         rtty_screen_view_hide();
         rtty_band_dial_store(s_last_qmx_freq_hz);   /* leaving the page = going away */
         ui_save_snapshot(&s_pan_snapshot);
+        /* The page forced DiGi on entry; the panadapter gets back the mode it
+         * had, as FT8's own snapshot gives it back on leaving FT8. Empty when
+         * the page was restored at boot - the snapshot's mode then stands. */
+        if (s_rtty_prev_mode[0]) {
+            snprintf(s_pan_snapshot.mode, sizeof(s_pan_snapshot.mode), "%s", s_rtty_prev_mode);
+            s_rtty_prev_mode[0] = '\0';
+        }
     } else if (cur == UI_MODE_WSPR) {
         wspr_rx_stop();               /* frees 8.6 MB and releases the capture */
         wspr_screen_view_hide();
@@ -21946,9 +22223,9 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
 
     if (next == UI_MODE_RTTY) {
         /* R006. The panadapter's widgets are the backdrop, as on the CW page,
-         * and so is its state: mode and zoom are not changed on entry (the
-         * dial is - see R021 below). From another overlay page the panadapter
-         * comes back first. */
+         * and so is its state: zoom is not changed on entry. The dial is (R021
+         * below) and, since 2026-11-15, the radio mode is: always DiGi (below).
+         * From another overlay page the panadapter comes back first. */
         if (cur == UI_MODE_FT8) {
             ft8_screen_view_hide();
             if (ft8) lv_obj_set_x(ft8, 0);
@@ -21974,6 +22251,17 @@ static void ui_set_base_mode(ui_mode_t next, bool animate)
                 ui_update_frequency(f);
             }
         }
+        /* ⛔ THE RADIO GOES TO DiGi ON EVERY ENTRY (operator, 2026-11-15:
+         * "radio should ALWAYS be in digi mode when you enter the rtty page").
+         * R006 left the mode alone, and with the radio in CW the QMX's own
+         * audio sat ~1.5 kHz below the mark/space lines - the operator heard
+         * a different signal from the one between the lines. The mode it had
+         * is given back to the panadapter on leaving (see the exit branch).
+         * Through the poll task, retried, exactly as FT8 forces it. */
+        if (strstr(s_current_mode, "DiGi") == NULL)
+            snprintf(s_rtty_prev_mode, sizeof(s_rtty_prev_mode), "%s", s_current_mode);
+        cat_request_mode("DIGI");
+        ui_update_mode("DiGi");   /* optimistic: no MD until the poll answers */
         if (s_last_qmx_freq_hz) update_bandplan_strip(s_last_qmx_freq_hz);
         recompute_zoom_pan();
         draw_label_ticks();

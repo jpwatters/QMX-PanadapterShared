@@ -81,6 +81,7 @@ static const char *TAG = "settings";
 #define KEY_CW_SIM     "cw_sim"
 #define KEY_CW_PAGE_EN "cw_page_en"
 #define KEY_RTTY       "rtty_cfg"
+#define KEY_RTTY_CONTEST "rtty_contest"
 #define KEY_HOUND_MODE "hound_md"
 #define KEY_ONBOARDED  "onboarded"
 #define KEY_FT8_FILT   "ft8_filt"
@@ -151,6 +152,7 @@ static const char *TAG = "settings";
 #define KEY_FT8_EARLY_DEC  "ft8_earlydec"
 #define KEY_GREYLIST_EN    "greylist_en"
 #define KEY_TXBAND_OFF     "txband_off"
+#define KEY_TXSUBNET       "txsubnet"   /* T206 TX interlock, POSITIVE */
 #define KEY_PSKREP_EN      "pskrep_en"
 #define KEY_PSK_RX_EN      "pskrx_en"
 #define KEY_BT_MOUSE_EN    "btmouse_en"
@@ -282,7 +284,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      6                        /* 192 bits; highest used 161, 30 spare */
+#define DIRTY_WORDS      6                        /* 192 bits; highest used 163, 28 spare */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -500,6 +502,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
    the comments above had gone stale - the checker is the authority. */
 #define DIRTY_CW_ROWS         142  /* rows of decoded CW drawn */
 #define DIRTY_TXBAND_OFF      143  /* TX band guard disabled (T48) */
+#define DIRTY_TXSUBNET        162  /* TX subnet interlock (T206) */
 #define DIRTY_MY_STATE        144  /* US state, for the directed-CQ filter */
 #define DIRTY_SPEC_PEAK       145  /* spectrum peak-hold window (A4) */
 #define DIRTY_CW_PEAK         146  /* CW audio peak filter width (A4) */
@@ -522,7 +525,8 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_SERIAL        158  /* {SERIAL} macro - next contest serial to send */
 #define DIRTY_CW_CONTEST       159  /* contest name/ID */
 #define DIRTY_RTTY             160  /* R019 RTTY receive settings blob - first bit of word 6 */
-#define DIRTY_RELAY           161  /* network radio: relay_host + relay_port (142-160 are upstream's) */
+#define DIRTY_RTTY_CONTEST     161  /* R030 RTTY contest blob */
+#define DIRTY_RELAY           163  /* network radio: relay_host + relay_port (142-162 are upstream's) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -560,6 +564,7 @@ static const uint8_t s_config_export_bits[] = {
     DIRTY_WSPR_EN,   /* joins because config_io_export() now prints wspr_enabled */
     DIRTY_CW_PAGE_EN,   /* same - config_io_export() prints cw_page_enabled */
     DIRTY_RTTY,         /* config_io_export() prints the rtty_* lines */
+    DIRTY_RTTY_CONTEST, /* ...and the rtty_contest_* lines */
     DIRTY_STILL_VIEW,   /* #298 - config_io_export() carries still_spectrum */
     /* RX audio: a level the operator set by ear belongs in a config backup for
      * the same reason the power calibration does - nobody can recreate it from
@@ -754,6 +759,8 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_CW_SIM))  nvs_set_u8(s_nvs, KEY_CW_SIM, snap->cw_sim_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_CW_PAGE_EN)) nvs_set_u8(s_nvs, KEY_CW_PAGE_EN, snap->cw_page_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_RTTY))       nvs_set_blob(s_nvs, KEY_RTTY, &snap->rtty, sizeof(snap->rtty));
+        if (dirty_test(&dirty_local, DIRTY_RTTY_CONTEST))
+            nvs_set_blob(s_nvs, KEY_RTTY_CONTEST, &snap->rtty_contest, sizeof(snap->rtty_contest));
         if (dirty_test(&dirty_local, DIRTY_HOUND_MODE))   nvs_set_u8(s_nvs, KEY_HOUND_MODE, snap->hound_mode);
         if (dirty_test(&dirty_local, DIRTY_CQ_LISTEN))    nvs_set_u8(s_nvs, KEY_CQ_LISTEN, snap->cq_listen_every);
         if (dirty_test(&dirty_local, DIRTY_ONBOARDED))  nvs_set_u8(s_nvs, KEY_ONBOARDED, snap->onboarded ? 1 : 0);
@@ -832,6 +839,7 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_FT8_EARLY_DEC)) nvs_set_u8(s_nvs, KEY_FT8_EARLY_DEC, snap->ft8_early_decode ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_GREYLIST_EN))   nvs_set_u8(s_nvs, KEY_GREYLIST_EN,   snap->greylist_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_TXBAND_OFF))    nvs_set_u8(s_nvs, KEY_TXBAND_OFF,    snap->tx_band_guard_off ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_TXSUBNET))      nvs_set_u8(s_nvs, KEY_TXSUBNET,      snap->tx_subnet_interlock ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_PSKREP_EN))     nvs_set_u8(s_nvs, KEY_PSKREP_EN,     snap->pskreporter_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_PSK_RX_EN))     nvs_set_u8(s_nvs, KEY_PSK_RX_EN,     snap->psk_rx_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_BT_MOUSE_EN))   nvs_set_u8(s_nvs, KEY_BT_MOUSE_EN,   snap->bt_mouse_en ? 1 : 0);
@@ -1158,6 +1166,7 @@ static void load_from_nvs(qmx_settings_t *out)
     out->ft8_early_decode = true; // on by default (WSJT-X-style fast pounce timing)
     out->greylist_en = false;     // opt-in ("Allow grey-listing", Filter modal)
     out->tx_band_guard_off = false;   // guard ON by default - see settings.h
+    out->tx_subnet_interlock = false; // interlock OFF by default - see tx_subnet.h
     // ON by default: contributing reception reports is the norm for FT8
     // software (WSJT-X ships PSK Reporter spotting enabled) and the data is
     // inherently public ham activity. Disclosed in the release notes + manual;
@@ -1349,6 +1358,11 @@ static void load_from_nvs(qmx_settings_t *out)
      * rtty_rx keeps its defaults. */
     { settings_rtty_t r; size_t rsz = sizeof(r);
       if (nvs_get_blob(s_nvs, KEY_RTTY, &r, &rsz) == ESP_OK && rsz == sizeof(r)) out->rtty = r; }
+    { settings_rtty_contest_t r; size_t rsz = sizeof(r);
+      if (nvs_get_blob(s_nvs, KEY_RTTY_CONTEST, &r, &rsz) == ESP_OK && rsz == sizeof(r)) {
+          r.name[sizeof r.name - 1] = 0; r.exch[sizeof r.exch - 1] = 0;
+          out->rtty_contest = r;
+      } }
     nvs_get_u8(s_nvs, KEY_HOUND_MODE, &out->hound_mode);
     nvs_get_u8(s_nvs, KEY_CQ_LISTEN, &out->cq_listen_every);
     nvs_get_u8(s_nvs, KEY_SWR_LIMIT, &out->swr_limit_x10);
@@ -1481,6 +1495,7 @@ static void load_from_nvs(qmx_settings_t *out)
     if (nvs_get_u8(s_nvs, KEY_FT8_EARLY_DEC, &u8v) == ESP_OK) out->ft8_early_decode = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_GREYLIST_EN, &u8v) == ESP_OK) out->greylist_en = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_TXBAND_OFF, &u8v) == ESP_OK) out->tx_band_guard_off = (u8v != 0);
+    if (nvs_get_u8(s_nvs, KEY_TXSUBNET, &u8v) == ESP_OK) out->tx_subnet_interlock = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_PSKREP_EN, &u8v) == ESP_OK) out->pskreporter_en = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_PSK_RX_EN, &u8v) == ESP_OK) out->psk_rx_en = (u8v != 0);
     if (nvs_get_u8(s_nvs, KEY_BT_MOUSE_EN, &u8v) == ESP_OK) out->bt_mouse_en = (u8v != 0);
@@ -2218,6 +2233,31 @@ void settings_set_rtty(const settings_rtty_t *r)
     if (!same) s_pending.rtty = *r;
     xSemaphoreGive(s_mutex);
     if (!same) mark_dirty(DIRTY_RTTY);
+}
+
+void settings_set_rtty_contest(const settings_rtty_contest_t *c)
+{
+    if (!s_ready || !c) return;
+    settings_rtty_contest_t v = *c;
+    v.name[sizeof v.name - 1] = 0;
+    v.exch[sizeof v.exch - 1] = 0;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool same = memcmp(&s_pending.rtty_contest, &v, sizeof v) == 0;
+    if (!same) s_pending.rtty_contest = v;
+    xSemaphoreGive(s_mutex);
+    if (!same) mark_dirty(DIRTY_RTTY_CONTEST);
+}
+
+void settings_get_rtty_contest(settings_rtty_contest_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (s_ready) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        *out = s_pending.rtty_contest;
+        xSemaphoreGive(s_mutex);
+    }
+    if (out->serial_next == 0) out->serial_next = 1;
 }
 
 void settings_get_rtty(settings_rtty_t *out)
@@ -3931,6 +3971,16 @@ void settings_set_tx_band_guard_off(bool v)
     mark_dirty(DIRTY_TXBAND_OFF);
 }
 
+void settings_set_tx_subnet_interlock(bool v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.tx_subnet_interlock == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.tx_subnet_interlock = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_TXSUBNET);
+}
+
 // Narrow accessor: row_activate_ex() (ft8_screen_view.c) reads this on the
 // CQ-row touch callback, on taskLVGL's small stack. qmx_settings_t is 3888
 // bytes (see the note above settings_load_all()) - a local that size there
@@ -3953,6 +4003,23 @@ bool settings_get_tx_band_guard_off(void)
     if (!s_ready) return false;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     bool v = s_pending.tx_band_guard_off;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+/* The band guard above fails SAFE on !s_ready (returning false = guard ON).
+ * This one returns false too, which here means the interlock is OFF - and
+ * that is deliberate, not the same reasoning copied across. The interlock's
+ * safe direction is NOT "refuse": refusing while settings are loading would
+ * block transmission for the operator standing in front of the Tab5 on every
+ * boot, to stop a remote request that cannot have arrived yet - the web
+ * server is not up before settings are. Default off is also what the setting
+ * itself means when unset. See tx_subnet.h. */
+bool settings_get_tx_subnet_interlock(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.tx_subnet_interlock;
     xSemaphoreGive(s_mutex);
     return v;
 }

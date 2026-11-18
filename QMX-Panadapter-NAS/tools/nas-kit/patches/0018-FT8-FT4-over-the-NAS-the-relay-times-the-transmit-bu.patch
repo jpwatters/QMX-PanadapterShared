@@ -1,7 +1,7 @@
-From a9397e6d421c1bad2ab4d1afb18aaec6520e097e Mon Sep 17 00:00:00 2001
+From 7055e9bc375d96bd4bd6e43c4895c80535594d3f Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 19:11:26 -0500
-Subject: [PATCH 18/45] FT8/FT4 over the NAS: the relay times the transmit
+Subject: [PATCH 18/46] FT8/FT4 over the NAS: the relay times the transmit
  burst itself
 
 Over the network every tone change crossed Wi-Fi on its own, 160 ms apart.

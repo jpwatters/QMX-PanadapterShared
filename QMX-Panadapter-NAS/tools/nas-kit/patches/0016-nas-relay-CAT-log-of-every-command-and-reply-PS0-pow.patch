@@ -1,7 +1,7 @@
-From 5375892bdeb287c06801f6cf3977a2a1aa1bb846 Mon Sep 17 00:00:00 2001
+From a5ba9e6a1a885edcf31e377880a8b71c0116289e Mon Sep 17 00:00:00 2001
 From: J P <jpwatters@mac.com>
 Date: Wed, 14 Oct 2026 15:53:55 -0500
-Subject: [PATCH 16/45] nas-relay: CAT log of every command and reply; PS0
+Subject: [PATCH 16/46] nas-relay: CAT log of every command and reply; PS0
  (power off) blocked unless flag file allow-ps0
 
 catlog/catlog-<date>.log, labelled T5 / PC / T5 menu, 40 MB a day, paused by

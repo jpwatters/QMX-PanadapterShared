@@ -94,6 +94,9 @@ action names its own parameter key (there is no generic `value`).
 | `rtty` | any of `baud`, `shift`, `reverse`, `afc`, `squelch`, `auto`, `offset_hz`, `tune_hz`, `mark_hz`, `clear`, `call`; `rx_cur`/`tx_cur` | **RTTY page.** Changes the given settings and returns the decoder status, the last 512 decoded characters (`text`), the station being worked (`call`, shared with the Tab5) and the send state (`tx`: `keyed`, `seconds`, `echo`, `error`). With `rx_cur`/`tx_cur` (the counts from the previous reply) it also returns what was received (`rx_new`) and sent (`tx_new`) since. A fixed `baud` or `shift` turns Auto off. Receive only |
 | `rtty_send` | `text` and `end` (default true), or `macro: "cq"/"answer"/"exch"/"73"` | **Send RTTY. Keys the radio** when idle; adds to the over that runs otherwise. Switches the radio to DiGi if needed and passes the band guard right before key-down. `{"ok":false,"error":...}` says why it refused (no callsign, page not open, WSPR running, band guard, ...). The over ends 3 s after the queue empties with `end`, or at 180 s |
 | `rtty_stop` | *(none)* | Tone off and back to receive at once; the queue is dropped |
+| `rtty_log` | `call`, `rst_sent`, `rst_rcvd`, `stx`, `srx` | Log an RTTY QSO: mode RTTY, the dial frequency and the time from the device; `stx`/`srx` and `CONTEST_ID` only in contest mode. Clears the station. `{"ok":false,"error":...}` when not logged (no CAT, log full) |
+| `rtty_contest` | any of `on`, `name`, `next` (1-9999), `exch` | RTTY contest mode: on/off, contest name (`CONTEST_ID`), next serial, fixed sent exchange (`""` = the serial) |
+| `rtty_word` | `word` | Which RTTY log field a word belongs in: `{"kind":"rst"\|"call"\|"exch"\|"none","value":...}` - letter-shift forms read as digits |
 | `cw_cancel` | *(none)* | Drop the CW text that the radio has not been given yet. Answers `{"ok":true,"dropped":N}`. It cannot stop what the radio already holds (80 characters at most) *(v1.26.0)* |
 | `cw_macro_edit` | `idx` (0-5), `text` | Write one of the six macros of the active set |
 | `log_qso` | `call`, optional `rst_sent`, `rst_rcvd`, `name`, `qth`, `comment` | **Log a CW or SSB contact worked by hand**, as the Tab5's own Log window does. `name`, `qth` and `comment` are what the other operator told you (ADIF `NAME`, `QTH`, `COMMENT`; 24, 24 and 60 bytes, longer text is cut). Nothing else is accepted: the frequency, mode, band, date, time, your callsign, your grid and the running activation are read from the device, so a page holding a stale frequency cannot write a record on the wrong band. An empty report logs no report rather than a wrong one. Refused with HTTP 400 and a reason when the callsign is empty or there is no CAT. Answers `{"ok":true,"call":"...","act_qsos":N,"act_need":N,"total":N}`, so the count needs no second request |
@@ -321,6 +324,33 @@ Send CAT-level changes through `POST /api/cmd` (`set_freq`, `set_mode`,
 writer to the radio's serial port. For one raw CAT string there is the developer
 action `cat_raw` with a `cmd` field; its reply appears in the diagnostic log,
 and a command that would transmit passes the band guard first.
+
+## Transmitting from off your network
+
+This API has **no password**, and it can key the radio. The **TX interlock**
+(Settings > Station > *Refuse transmit from outside this network*) refuses any
+request that transmits unless it arrived from the Tab5's own subnet. The refusal
+is **HTTP 403** with `{"ok":false,"tx_interlock":true,"error":"..."}`, so a
+client can tell it apart from a band-guard refusal. Receive, the display and
+every read-only call are untouched.
+
+It is **off by default**, because driving this radio across a network is a
+legitimate thing to do - a shared-radio front end, or your own station behind a
+tunnel.
+
+The actions that **stop** something are never interlocked: `tune_stop`,
+`rtty_stop`, `cw_cancel`, `js8_text_cancel`, and `qso_override` with `cancel`,
+`pause` or `skip`. Refusing a stop would leave a transmitter on the air.
+
+!!! warning "It is not a login"
+    It stops the internet. It does not stop anyone else on your WiFi - they are
+    on the same subnet and they pass. The peer address is read from the TCP
+    connection, so `X-Forwarded-For` and friends cannot fake it, and that also
+    means a reverse proxy on your LAN passes as a local caller. For real remote
+    access put the Tab5 behind a VPN, a tunnel or a proxy that does the
+    authentication, and leave this on as the second lock. Over plain HTTP a
+    password would cross in clear and the token could be replayed to key your
+    transmitter.
 
 ## FT8 Endpoints
 
