@@ -211,14 +211,20 @@ changes.
   everything passes through as usual. Other commands get no reply while the
   radio is off, just as from a radio that is switched off. A second `PS1;`
   within 20 s does not press again, so it cannot switch the radio back off.
-* **From the Tab5 or a scheduled task:** the Tab5 cannot reach a radio that is
-  off, so create an empty file named `power-on.request` in the relay folder (File
+* **From the Tab5:** **Power on the radio** in the drawer (under Radio source)
+  sends `QMXR-PWR1` over UDP to the relay's port (7355, the same as `QMXR?`).
+  The relay presses the button and answers `QMXR-PWR pressing`, or `on` (the
+  QMX is already on), `nocable` or `busy` (pressed in the last 20 s), and the
+  Tab5 shows that as a message. Anyone on the LAN can already send `PS1;` to
+  port 3, so this opens nothing new.
+* **From a scheduled task:** create an empty file named `power-on.request` in the relay folder (File
   Station, or a Task Scheduler task). The relay presses the button within 2 s and
   deletes the file where DSM allows it (on the DS416j a Synology ACL may not let
   even root delete it; then touch or re-create the file for the next press). A
   file already there when the relay starts is ignored.
 * **Power off** is still `PS0;`, subject to the power-off guard (`allow-ps0`,
-  see Behaviour). The radio shuts down cleanly and saves its state.
+  see Behaviour). The radio shuts down cleanly and saves its state. On the Tab5
+  it is **Power off the radio** in the drawer (Advanced).
 * **No glitch on the button:** opening a serial port such as `/dev/ttyUSB0`
   makes Linux assert DTR and RTS for a moment, which would close the
   optocoupler. The relay never opens the cable as a serial port. It sends the

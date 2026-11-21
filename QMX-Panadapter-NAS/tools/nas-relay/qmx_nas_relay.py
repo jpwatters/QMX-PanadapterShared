@@ -2502,7 +2502,25 @@ def _arrived_on(ancdata):
     return "", 0
 
 
-def discovery_responder(listen: str, udp_port: int, tcp_port: int):
+POWER_QUERY = b"QMXR-PWR1"      # the Tab5's "Power on the radio": press the power button
+POWER_REPLY = b"QMXR-PWR"       # + " pressing" | " on" | " nocable" | " busy"
+
+
+def power_query_answer(mgr, peer_ip: str) -> bytes:
+    """What the Tab5's Power on the radio gets back. Presses at most once per
+    POWER_BOOT_S, so the Tab5 asking three times (UDP) is one press."""
+    if mgr is None or mgr.radio_present():
+        return POWER_REPLY + b" on"
+    if not mgr.power:
+        log.info("power button: the Tab5 at %s asked to power on - no FTDI cable", peer_ip)
+        return POWER_REPLY + b" nocable"
+    if time.monotonic() < mgr.power.busy_until:
+        return POWER_REPLY + b" busy"
+    mgr.power_on("Tab5 at %s" % peer_ip)
+    return POWER_REPLY + b" pressing"
+
+
+def discovery_responder(listen: str, udp_port: int, tcp_port: int, mgr=None):
     """Answer "QMXR?" with the address the question ARRIVED ON, sent from that
     address.
 
@@ -2537,6 +2555,9 @@ def discovery_responder(listen: str, udp_port: int, tcp_port: int):
             else:
                 data, peer = s.recvfrom(256)
                 ip, ifindex = "", 0
+            if data.startswith(POWER_QUERY):
+                s.sendto(power_query_answer(mgr, peer[0]), peer)
+                continue
             if not data.startswith(DISCOVERY_QUERY):
                 continue
             how = "arrived on"
@@ -2832,7 +2853,7 @@ def main():
     disc = args.port if args.discovery_port is None else args.discovery_port
     if disc:
         threading.Thread(target=discovery_responder, daemon=True, name="discovery",
-                         args=(args.listen, disc, args.port)).start()
+                         args=(args.listen, disc, args.port, mgr)).start()
     serve(args.listen, args.port, lambda s, p: Session(s, p, args, mgr), "QMXR/1 for the Tab5")
 
 

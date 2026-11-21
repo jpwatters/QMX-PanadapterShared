@@ -1,0 +1,380 @@
+From ec9c603f3a1c51fb5b01ee8c90dfbfba6f998560 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sat, 21 Nov 2026 19:35:15 +0000
+Subject: [PATCH] Tab5 + relay: "Power on the radio" in the drawer (Remote
+ Power-ON)
+
+A QMX that is off has no USB device, so the Tab5 cannot reach it. The new
+drawer row (Basic, under Radio source, section 59, N_DRAWER_SECTIONS 60)
+asks the NAS relay to press the radio's power button through its FTDI cable
+and opto board: "QMXR-PWR1" over UDP to the relay's port (7355, the same as
+QMXR?), asked up to 3 times in 1.5 s on a short-lived task like Find NAS.
+
+The relay answers "QMXR-PWR pressing", "on" (the QMX is on the USB bus),
+"nocable" or "busy" (pressed in the last 20 s - asking again never becomes a
+second press), and the Tab5 shows that as a toast. With the radio on USB the
+row says only the NAS can switch it on. When the radio's USB device comes
+back the relay opens it and the stream resumes on its own.
+
+Firmware builds; check_drawer_sections, check_tx_guard and
+check_unattended_tx are clean. Relay: nettest passes against the fake
+radio, and the answers were checked with a stub power button. Not yet tested
+with the cable.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md                        |   4 +-
+ main/net/radio_relay.c           |  51 ++++++++++++++++
+ main/net/radio_relay.h           |  17 ++++++
+ main/ui/ui.c                     | 100 ++++++++++++++++++++++++++++++-
+ tools/nas-relay/README.md        |  12 +++-
+ tools/nas-relay/qmx_nas_relay.py |  25 +++++++-
+ 6 files changed, 201 insertions(+), 8 deletions(-)
+
+diff --git a/README.md b/README.md
+index 59cbc85..0c27c9b 100644
+--- a/README.md
++++ b/README.md
+@@ -57,6 +57,7 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
+ * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
+ * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
+ * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
++* Power on the radio in the drawer (under Radio source): asks the NAS relay to press the QMX's power button through its FTDI cable (Remote Power-ON). Built and compile-checked; the relay side tested against its fake radio; not yet tested with the cable.
+ * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
+ * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
+ 
+@@ -114,7 +115,8 @@ Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com
+ Check on the QMX schematic which pin of the VOL switch is ground before wiring.
+ 
+ * PS1; from PC software on port 3 (TCP 7356): while the radio is off, the relay keeps the client connected, answers PS; with PS0;, and answers PS1; with PS1; while it holds the button. When the radio's USB device comes back, port 3 reopens and everything passes through as before. A second PS1; within 20 s doesn't press again, so it can't switch a booting radio back off.
+-* From the Tab5 or a scheduled task: the Tab5 can't reach a radio that's off, so create an empty file named power-on.request in the relay folder. The relay presses the button within 2 s and deletes the file where DSM allows it; if DSM won't let it, touch or re-create the file for the next press.
++* From the Tab5: **Power on the radio** in the drawer (under Radio source) asks the relay over UDP (QMXR-PWR1 to port 7355), and the relay presses the button and says so; the Tab5 shows "pressing", "already on", "no FTDI cable" or "still starting". The stream resumes by itself when the radio is up.
++* From a scheduled task: create an empty file named power-on.request in the relay folder. The relay presses the button within 2 s and deletes the file where DSM allows it; if DSM won't let it, touch or re-create the file for the next press.
+ * Power off is still PS0;, subject to the allow-ps0 guard. On the Tab5 it is **Power off the radio** in the drawer (Advanced, under Radio source): two taps, the radio is put back into receive first, and it is refused while another device has the transmitter.
+ * No glitch on the button: opening a serial port such as /dev/ttyUSB0 makes Linux assert DTR and RTS for a moment, which would close the optocoupler. The relay never opens the cable as a serial port. It sets RTS with the FT232R's own USB request (SIO_SET_MODEM_CTRL) through usbfs, the same way it already talks to the QMX, and detaches ftdi_sio from the cable so there's no /dev/ttyUSB0 for anything else to open. No DSM driver is needed. RTS is released at start-up, after every press and when the relay stops.
+ * Setup: plug the cable into the NAS and restart the relay (restart.request); qmx-relay.log says `power button: ready`. Without the cable it says `no FTDI cable` and the relay works as before. Bench test before wiring to the radio, with the relay stopped: `python3 qmx_nas_relay.py --power-press` lights the board's LED for 1.8 s. Options: --power-hold, --power-line rts|dtr, --power-button off. Details are in tools/nas-relay/README.md, section 4.
+diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
+index 58c50c2..3aff98a 100644
+--- a/main/net/radio_relay.c
++++ b/main/net/radio_relay.c
+@@ -548,6 +548,57 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
+     return n;
+ }
+ 
++// ---- Remote Power-ON ---------------------------------------------------------
++
++radio_power_result_t radio_relay_power_on(uint32_t timeout_ms)
++{
++    char host[RADIO_RELAY_HOST_LEN] = "";
++    uint16_t port = 0;
++    radio_relay_get_target(host, sizeof(host), &port);
++    if (!host[0] || !net_is_up()) return RADIO_POWER_NO_NAS;
++    if (!port) port = RADIO_RELAY_DEFAULT_PORT;
++
++    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM };
++    struct addrinfo *res = NULL;
++    char ps[8];
++    snprintf(ps, sizeof(ps), "%u", (unsigned)port);
++    if (getaddrinfo(host, ps, &hints, &res) != 0 || !res) return RADIO_POWER_NO_NAS;
++    int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (s < 0) { freeaddrinfo(res); return RADIO_POWER_NO_NAS; }
++    struct timeval tv = { .tv_sec = 0, .tv_usec = 200 * 1000 };
++    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
++
++    radio_power_result_t rc = RADIO_POWER_NO_ANSWER;
++    int sent = 0;
++    const int64_t start = esp_timer_get_time();
++    const int64_t total = (int64_t)timeout_ms * 1000;
++    while (esp_timer_get_time() - start < total) {
++        /* Ask up to 3 times: UDP can be lost. The relay presses at most once per
++         * 20 s, so a repeated question can never become a second press. */
++        if (sent < 3 && esp_timer_get_time() - start >= sent * total / 3) {
++            if (sendto(s, "QMXR-PWR1", 9, 0, res->ai_addr, res->ai_addrlen) < 0)
++                ESP_LOGW(TAG, "power on: send to %s failed (errno %d)", host, errno);
++            sent++;
++        }
++        char buf[64];
++        int r = recv(s, buf, sizeof(buf) - 1, 0);
++        if (r <= 0) continue;
++        buf[r] = '\0';
++        if (strncmp(buf, "QMXR-PWR ", 9) != 0) continue;
++        const char *st = buf + 9;
++        if      (strncmp(st, "pressing", 8) == 0) rc = RADIO_POWER_PRESSING;
++        else if (strncmp(st, "on", 2) == 0)       rc = RADIO_POWER_ALREADY;
++        else if (strncmp(st, "nocable", 7) == 0)  rc = RADIO_POWER_NO_CABLE;
++        else if (strncmp(st, "busy", 4) == 0)     rc = RADIO_POWER_BUSY;
++        else continue;
++        break;
++    }
++    close(s);
++    freeaddrinfo(res);
++    ESP_LOGI(TAG, "power on: asked %s:%u -> %d", host, (unsigned)port, (int)rc);
++    return rc;
++}
++
+ // ---- relay-timed transmit bursts --------------------------------------------
+ 
+ bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }
+diff --git a/main/net/radio_relay.h b/main/net/radio_relay.h
+index 90cdd46..b5ba322 100644
+--- a/main/net/radio_relay.h
++++ b/main/net/radio_relay.h
+@@ -88,6 +88,23 @@ typedef struct {
+ } radio_relay_found_t;
+ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms);
+ 
++/* ---- Remote Power-ON ---------------------------------------------------------
++ * A QMX that is off has no USB device, so nothing sent over QMXR/1 can reach
++ * it. The relay can press the radio's power button through an FTDI cable and
++ * an opto board (tools/nas-relay, "Remote Power-ON"); this asks it to, with
++ * "QMXR-PWR1" to the NAS address on the relay's UDP port (the same port as
++ * QMXR? and QMXR/1). The relay answers "QMXR-PWR <state>". BLOCKS for up to
++ * timeout_ms - never call it on the LVGL task. */
++typedef enum {
++    RADIO_POWER_PRESSING  = 1,   /* the relay is pressing the button (1.8 s); the radio boots */
++    RADIO_POWER_ALREADY   = 0,   /* the QMX is already on */
++    RADIO_POWER_NO_ANSWER = -1,  /* no answer: relay not running or older than Remote Power-ON */
++    RADIO_POWER_NO_CABLE  = -2,  /* the relay has no FTDI cable */
++    RADIO_POWER_BUSY      = -3,  /* pressed in the last 20 s: the radio is still booting */
++    RADIO_POWER_NO_NAS    = -4,  /* no NAS address set, or the network is down */
++} radio_power_result_t;
++radio_power_result_t radio_relay_power_on(uint32_t timeout_ms);
++
+ /* ---- Relay-timed transmit bursts (QMXR/1 "txsched=1") ----------------------
+  * Over the network every tone change used to cross WiFi on its own, 160 ms
+  * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)
+diff --git a/main/ui/ui.c b/main/ui/ui.c
+index a5f10e7..ad53bee 100644
+--- a/main/ui/ui.c
++++ b/main/ui/ui.c
+@@ -3868,7 +3868,7 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
+  * its own group and is visible everywhere. */
+ #define DRAWER_SEC_WEBRADIO   54
+ #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
+-#define N_DRAWER_SECTIONS     59   /* ids 0..58; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR */
++#define N_DRAWER_SECTIONS     60   /* ids 0..59; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR, 59 RADIOON */
+ // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
+ // or one plugged into a NAS running tools/nas-relay. Same effect as the web
+ // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
+@@ -3878,7 +3878,10 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
+ // "Power off the radio" - sends PS0; to the QMX after putting it back in
+ // receive. Over the NAS the relay passes PS0; only with its allow-ps0 flag.
+ #define DRAWER_SEC_RADIOPWR   58
+-// ⛔ IDs are 0..58 now. The next one raises N_DRAWER_SECTIONS AND gets an
++// "Power on the radio" - asks the NAS relay to press the QMX's power button
++// (Remote Power-ON: FTDI cable + opto board on the NAS).
++#define DRAWER_SEC_RADIOON    59
++// ⛔ IDs are 0..59 now. The next one raises N_DRAWER_SECTIONS AND gets an
+ // assert below - see the 2026-10-03 note above.
+ 
+ /* Catches the mistake above at COMPILE time instead of as a crash minutes into
+@@ -3897,6 +3900,7 @@ _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS")
+ _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(DRAWER_SEC_RADIOPWR < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
++_Static_assert(DRAWER_SEC_RADIOON  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
+ static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
+ static int       s_drawer_section_y[N_DRAWER_SECTIONS];
+@@ -3940,6 +3944,9 @@ static const drawer_item_t GRP_RADIO[] = {
+     { DRAWER_SEC_RADIOSRC, "Radio source (USB / NAS)", true },
+     // Advanced, like "Power off the Tab5": the radio does not come back on by
+     // itself (only the relay's Remote Power-ON or a hand on the knob).
++    // Basic: switching the radio on is the first thing a remote operator does,
++    // it cannot interrupt anything, and it does nothing without the relay's cable.
++    { DRAWER_SEC_RADIOON, "Power on the radio (NAS)", true },
+     { DRAWER_SEC_RADIOPWR, "Power off the radio (QMX)", false },
+     { DRAWER_SEC_QMXVOL, "QMX volume", true },
+     { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
+@@ -4124,6 +4131,7 @@ static void drawer_set_mode(ui_mode_t mode);
+ // build - see drawer_usedhcp_btn_cb for why that button has to exist (#307).
+ static void drawer_poweroff_btn_cb(lv_event_t *e);
+ static void drawer_radiopwr_btn_cb(lv_event_t *e);
++static void drawer_radioon_btn_cb(lv_event_t *e);
+ static void drawer_usedhcp_btn_cb(lv_event_t *e);
+ static void drawer_sdeject_btn_cb(lv_event_t *e);
+ static void drawer_reboot_btn_cb(lv_event_t *e);
+@@ -17473,6 +17481,23 @@ static void drawer_build(void)
+         y += 72;
+     }
+ 
++    /* "Power on the radio" - under Radio source, above Power off. One tap:
++     * turning a radio on interrupts nothing. */
++    {
++        lv_obj_t *sec = drawer_section(DRAWER_SEC_RADIOON, y, 72);
++        lv_obj_t *btn = lv_btn_create(sec);
++        lv_obj_set_size(btn, DRAWER_W - 32, 56);
++        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 0);
++        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2F6B3A), 0);
++        lv_obj_add_event_cb(btn, drawer_radioon_btn_cb, LV_EVENT_CLICKED, NULL);
++        lv_obj_t *lbl = lv_label_create(btn);
++        lv_label_set_text(lbl, LV_SYMBOL_POWER "  Power on the radio");
++        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
++        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
++        lv_obj_center(lbl);
++        y += 72;
++    }
++
+     /* "Power off the radio" - directly under Radio source, the row that says
+      * which QMX this is. Same red and two-tap arming as "Power off the Tab5". */
+     {
+@@ -21544,6 +21569,77 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
+     ui_power_off_safely();
+ }
+ 
++/* Power the QMX ON from the glass. A radio that is off has no USB device, so
++ * the Tab5 cannot reach it at all - only the NAS relay can, by pressing the
++ * power button through its FTDI cable and opto board (Remote Power-ON). This
++ * asks it to over UDP (radio_relay_power_on(), which blocks ~1.5 s, so it runs
++ * on a short-lived task like Find NAS). When the radio's USB device comes back
++ * the relay opens it and the Tab5's stream resumes on its own. */
++static volatile bool s_radioon_busy;
++
++static void radioon_task(void *arg)
++{
++    (void)arg;
++    radio_power_result_t rc = radio_relay_power_on(1500);
++    const char *msg;
++    uint32_t ms = 4000;
++    switch (rc) {
++    case RADIO_POWER_PRESSING:
++        msg = "The NAS is pressing the QMX's power button - the radio starts in a few seconds.";
++        break;
++    case RADIO_POWER_ALREADY:
++        msg = "The QMX is already on.";
++        ms = 3000;
++        break;
++    case RADIO_POWER_NO_CABLE:
++        msg = "The NAS relay has no FTDI cable, so it cannot press the power button. "
++              "See Remote Power-ON in the README.";
++        ms = 6000;
++        break;
++    case RADIO_POWER_BUSY:
++        msg = "Already pressed - the QMX is still starting. Give it 20 seconds.";
++        break;
++    case RADIO_POWER_NO_NAS:
++        msg = "The radio is on USB, not the NAS (or the network is down). "
++              "Only the NAS relay can switch the QMX on.";
++        ms = 5000;
++        break;
++    default:
++        msg = "The NAS relay did not answer. Is it running, and updated for Remote Power-ON?";
++        ms = 5000;
++        break;
++    }
++    if (display_lock(2000)) {
++        ui_toast_ms(msg, ms);
++        display_unlock();
++    }
++    s_radioon_busy = false;
++    vTaskDelete(NULL);
++}
++
++static void drawer_radioon_btn_cb(lv_event_t *e)
++{
++    (void)e;
++    if (s_radioon_busy) return;
++    char host[RADIO_RELAY_HOST_LEN] = "";
++    uint16_t port = 0;
++    radio_relay_get_target(host, sizeof(host), &port);
++    if (!radio_relay_enabled() || !host[0]) {
++        ui_toast_ms("The radio is on USB. Only the NAS relay can switch the QMX on "
++                    "(Radio source -> Use NAS).", 5000);
++        return;
++    }
++    /* No cat_is_ready() shortcut: the relay knows whether the QMX is on the
++     * USB bus, the Tab5 only knows whether its own link is up. */
++    s_radioon_busy = true;
++    ESP_LOGW(TAG, "operator asked the NAS to power the radio on");
++    ui_toast_ms("Asking the NAS to switch the QMX on...", 1500);
++    if (xTaskCreate(radioon_task, "radio_on", 4096, NULL, 4, NULL) != pdPASS) {
++        s_radioon_busy = false;
++        ui_toast_ms("Could not start the request - try again.", 3000);
++    }
++}
++
+ /* Power the QMX off from the glass: PS0; (the radio's own power-off command).
+  * Like ui_power_off_safely() the radio is put back into receive first - the
+  * FT8 robot stands down, TX is disarmed and TA0;/RX; go out - so this can
+diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
+index bb70f8e..9b4d68d 100644
+--- a/tools/nas-relay/README.md
++++ b/tools/nas-relay/README.md
+@@ -211,14 +211,20 @@ changes.
+   everything passes through as usual. Other commands get no reply while the
+   radio is off, just as from a radio that is switched off. A second `PS1;`
+   within 20 s does not press again, so it cannot switch the radio back off.
+-* **From the Tab5 or a scheduled task:** the Tab5 cannot reach a radio that is
+-  off, so create an empty file named `power-on.request` in the relay folder (File
++* **From the Tab5:** **Power on the radio** in the drawer (under Radio source)
++  sends `QMXR-PWR1` over UDP to the relay's port (7355, the same as `QMXR?`).
++  The relay presses the button and answers `QMXR-PWR pressing`, or `on` (the
++  QMX is already on), `nocable` or `busy` (pressed in the last 20 s), and the
++  Tab5 shows that as a message. Anyone on the LAN can already send `PS1;` to
++  port 3, so this opens nothing new.
++* **From a scheduled task:** create an empty file named `power-on.request` in the relay folder (File
+   Station, or a Task Scheduler task). The relay presses the button within 2 s and
+   deletes the file where DSM allows it (on the DS416j a Synology ACL may not let
+   even root delete it; then touch or re-create the file for the next press). A
+   file already there when the relay starts is ignored.
+ * **Power off** is still `PS0;`, subject to the power-off guard (`allow-ps0`,
+-  see Behaviour). The radio shuts down cleanly and saves its state.
++  see Behaviour). The radio shuts down cleanly and saves its state. On the Tab5
++  it is **Power off the radio** in the drawer (Advanced).
+ * **No glitch on the button:** opening a serial port such as `/dev/ttyUSB0`
+   makes Linux assert DTR and RTS for a moment, which would close the
+   optocoupler. The relay never opens the cable as a serial port. It sends the
+diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
+index 7cd7925..d6671d7 100644
+--- a/tools/nas-relay/qmx_nas_relay.py
++++ b/tools/nas-relay/qmx_nas_relay.py
+@@ -2502,7 +2502,25 @@ def _arrived_on(ancdata):
+     return "", 0
+ 
+ 
+-def discovery_responder(listen: str, udp_port: int, tcp_port: int):
++POWER_QUERY = b"QMXR-PWR1"      # the Tab5's "Power on the radio": press the power button
++POWER_REPLY = b"QMXR-PWR"       # + " pressing" | " on" | " nocable" | " busy"
++
++
++def power_query_answer(mgr, peer_ip: str) -> bytes:
++    """What the Tab5's Power on the radio gets back. Presses at most once per
++    POWER_BOOT_S, so the Tab5 asking three times (UDP) is one press."""
++    if mgr is None or mgr.radio_present():
++        return POWER_REPLY + b" on"
++    if not mgr.power:
++        log.info("power button: the Tab5 at %s asked to power on - no FTDI cable", peer_ip)
++        return POWER_REPLY + b" nocable"
++    if time.monotonic() < mgr.power.busy_until:
++        return POWER_REPLY + b" busy"
++    mgr.power_on("Tab5 at %s" % peer_ip)
++    return POWER_REPLY + b" pressing"
++
++
++def discovery_responder(listen: str, udp_port: int, tcp_port: int, mgr=None):
+     """Answer "QMXR?" with the address the question ARRIVED ON, sent from that
+     address.
+ 
+@@ -2537,6 +2555,9 @@ def discovery_responder(listen: str, udp_port: int, tcp_port: int):
+             else:
+                 data, peer = s.recvfrom(256)
+                 ip, ifindex = "", 0
++            if data.startswith(POWER_QUERY):
++                s.sendto(power_query_answer(mgr, peer[0]), peer)
++                continue
+             if not data.startswith(DISCOVERY_QUERY):
+                 continue
+             how = "arrived on"
+@@ -2832,7 +2853,7 @@ def main():
+     disc = args.port if args.discovery_port is None else args.discovery_port
+     if disc:
+         threading.Thread(target=discovery_responder, daemon=True, name="discovery",
+-                         args=(args.listen, disc, args.port)).start()
++                         args=(args.listen, disc, args.port, mgr)).start()
+     serve(args.listen, args.port, lambda s, p: Session(s, p, args, mgr), "QMXR/1 for the Tab5")
+ 
+ 
+-- 
+2.34.1
+
