@@ -1,7 +1,7 @@
-From f3b3aa1d140490508bbd952f7ac93801d108448b Mon Sep 17 00:00:00 2001
+From 280ed6949ebcfaa773ae5c629410fc3ce423bd9f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 21 Nov 2026 18:05:36 +0000
-Subject: [PATCH] nas-relay: Remote Power-ON with a FTDI serial cable
+Subject: [PATCH 47/48] nas-relay: Remote Power-ON with a FTDI serial cable
 
 A QMX/QMX+ that is off has no USB device, so PS1; can never reach it. An
 FTDI TTL-232R-5V cable on a second NAS USB port drives a bestep PC817 board
@@ -20536,7 +20536,7 @@ zPrm&)`9I)0K{=f9pZwVOKky%H{qKL1%l|n4&OcI=Kkv^W`20I12~<CvYX6DF8iVGa
 F{{?nR$D{xN
 
 diff --git a/README.md b/README.md
-index 954470f..fe10efd 100644
+index 139ce5c..095b6f0 100644
 --- a/README.md
 +++ b/README.md
 @@ -36,8 +36,9 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -20549,7 +20549,7 @@ index 954470f..fe10efd 100644
 +9. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +10. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v2.0.2-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
+ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
  
 @@ -94,6 +95,31 @@ The QMX firmware version, the radio settings the Tab5 needs, the power-up order
  5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
@@ -20594,7 +20594,7 @@ index 682d476..f98d9ec 100644
 -This is section 9 of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) (v2.0.2 + NAS patches 0001-0046).
 +This is section 9 of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) (v2.0.2 + NAS patches 0001-0047).
 diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
-index afa9310..d6013cb 100644
+index 09f8f2a..bb70f8e 100644
 --- a/tools/nas-relay/README.md
 +++ b/tools/nas-relay/README.md
 @@ -184,6 +184,56 @@ Notes:
