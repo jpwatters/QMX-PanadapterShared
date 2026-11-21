@@ -101,7 +101,7 @@ While the QMX transmits its I/Q is of no use, yet it is ~190 KB/s of traffic int
 
 ## Why PS0; is blocked
 
-While the radio was being debugged it was found switched off more than once. CAT can switch a QMX off (PS0;) but never on: once off, it is not on the USB bus at all. (The cause turned out to be a 12 V current limiter in the supply, not CAT.) The relay therefore blocks PS0; from the Tab5 and from PC software alike, logs it as BLOCKED, and lets it through only while a flag file allow-ps0 is present.
+While the radio was being debugged it was found switched off more than once. CAT can switch a QMX off (PS0;) but never on: once off, it is not on the USB bus at all (section 6.1 adds a power button that can). (The cause turned out to be a 12 V current limiter in the supply, not CAT.) The relay therefore blocks PS0; from the Tab5 and from PC software alike, logs it as BLOCKED, and lets it through only while a flag file allow-ps0 is present.
 
 ## Why one transmitter at a time
 
@@ -229,6 +229,7 @@ The base is driven on the ESP32-P4’s SPI3 bus at 20 MHz (SPI2 belongs to the S
 | iq-during-tx | Keeps I/Q streaming to the Tab5 while transmitting (paused by default)
 | tab5-timed-tx | The Tab5 times each tone itself instead of the relay (takes effect when the Tab5 next connects)
 | tab5-tx-always | Lets the Tab5 transmit even while a TCI program on the Mac is connected (normally the Tab5 is kept off the transmitter then)
+| power-on.request | With the FTDI cable fitted (6.1): presses the QMX’s power button once. Deleted where DSM allows; otherwise each new or touched file counts once, and one already there at start-up is ignored
 
 ## Logs
 
@@ -246,6 +247,36 @@ The base is driven on the ESP32-P4’s SPI3 bus at 20 MHz (SPI2 belongs to the S
 - **QMX is in use by another program**: the relay must be the only program using the radio. Never run a NAS relay and a Pi relay on the same radio.
 - **Find NAS finds nothing, but typing the address works**: look at the discovery line in qmx-relay.log. A note "the routing table would have used ..." means a VPN or second network on the NAS claims the LAN’s range; the relay answers on the arrival interface regardless (patch 0042), but other traffic the NAS starts toward the LAN may still go into the VPN.
 - **Touch dead on the Tab5 after a restart without power-off**: unplug its USB-C and battery for ~15 s.
+
+## 6.1 Remote Power-ON with a FTDI Serial Cable
+
+A QMX/QMX+ that is switched off has no USB device, so PS1; (power on) can never reach it. The relay presses the radio’s power button instead: an FTDI TTL-232R-5V cable (FT232R, USB 0403:6001) on a second NAS USB port drives a bestep PC817 optocoupler board wired across the QMX’s VOL encoder push switch. Holding the cable’s RTS line for 1.8 s is the long press that turns the radio on. Parts: the cable, https://www.amazon.com/dp/B07RBK2P47 ; the board (5 V version), https://www.amazon.com/dp/B0DD3KBQV5 .
+
+|~ 2.4 | 2.4 | 2.2
+| From | To | Note
+| Cable red (pin 3, +5 V) | Board INPUT + | Supplies the input LED string
+| Cable green (pin 6, RTS#) | Board INPUT − | 0 V while the button is held
+| Board OUT | QMX VOL switch, signal side | PC817 collector
+| Board GND (output side) | QMX ground | PC817 emitter
+| Board VCC (output side) | Not connected | R2 pull-up unused
+| Cable black, brown, orange, yellow | Not connected | No shared ground: isolation
+
+|~ 1.5 | 5.5
+| Situation | What the relay does
+| Radio off, PC on port 3 sends PS1; | Answers PS1;, holds the button 1.8 s, reopens port 3 when the QMX appears; the PC stays connected throughout
+| Radio off, PS; | Answers PS0;
+| Radio off, anything else | No reply, as from a radio that is switched off (CAT log: PC>RELAY ... QMX off)
+| Radio goes off (PS0; with allow-ps0) | The PC stays connected and the relay answers PS; and PS1; for the radio
+| PS1; again while booting | Answered, but no second press for 20 s (it could switch the radio back off)
+| File power-on.request | One press within 2 s (the Tab5 cannot reach a radio that is off)
+| No cable at start-up | Log: "power button: no FTDI cable"; the relay behaves as before (port 3 closes while the radio is off)
+
+**Why the button never glitches.** Opening a serial port such as /dev/ttyUSB0 makes Linux assert DTR and RTS for a moment, even when the program asks for them released, and on this cable that would close the optocoupler. The relay never opens the cable as a serial port: it sends the FT232R’s SIO_SET_MODEM_CTRL vendor request (request type 0x40, request 1, value 0x0202 to assert RTS and 0x0200 to release it) through usbfs, as it already does for the QMX, and detaches ftdi_sio from the cable so no /dev/ttyUSB0 exists for anything else to open. No DSM driver is needed. The FT232R powers up with RTS released, and the relay releases it at start-up, after every press and on SIGTERM.
+
+- Install: plug the cable into the NAS, copy the new qmx_nas_relay.py, and restart the relay (restart.request). qmx-relay.log then shows "power button: FTDI cable at /dev/bus/usb/..." and "power button: ready". `python3 qmx_nas_relay.py --probe` marks the cable "FTDI cable (power button)".
+- Bench test, before wiring to the radio and with the relay stopped: connect board VCC/GND to the cable’s red/black for the test only, meter on OUT. `python3 qmx_nas_relay.py --power-press` lights the board LED for 1.8 s (OUT ~0.2 V); it must stay off when the cable is plugged in and when the relay starts or stops.
+- Options: --power-button auto|off, --power-hold 1.8, --power-line rts|dtr, --power-press.
+- Before wiring, confirm on the QMX+ schematic which pin of the VOL switch is ground and that this switch wakes the radio from off.
 
 # 7. Raspberry Pi relay: installation, operation and maintenance
 
@@ -432,6 +463,7 @@ An FT8 transmission carries a 77-bit message plus a 14-bit CRC (91 bits), LDPC-e
 | Relay-timed transmit | Bench-tested against the fake radio (complete, abort, disconnect mid-burst), then 10 of 10 FT8 bursts on the hardware
 | Raspberry Pi relay | Written; not yet run on a Pi
 | Mac TCI bridge | Bench-tested against the relay’s fake radio (receive audio pitch, FT8 GFSK tones at 160 ms ± 1 ms, Tab5 network test passing at the same time); not yet used with WS on the air
+| Remote Power-ON (FTDI cable, 6.1) | Tested in the relay with its fake radio (PS;, PS1;, no second press while booting, port 3 reopening, the radio going off again) and the USB requests checked (0x0200, 0x0202, 0x0200); nettest still passes. Not yet run on the NAS with the cable and board
 | Wired Ethernet (W5500 PoE base) | Full ESP-IDF build succeeds; the base was detected on a Tab5 (eth.present); not yet used with a cable
 | FT4 relay-timed bursts | Supported by the same path; not yet measured on the air
 | RTTY over the NAS | New in upstream v2.0.0. Receive uses the same I/Q as everything else; transmit tones are sent by the Tab5 over the network (not relay-timed), so Wi-Fi timing applies. Not yet tried over the NAS

@@ -184,6 +184,56 @@ Notes:
   `--serial-port 0` (add it to the `qmx_nas_relay.py` line in
   `start-relay.sh`, or to `command:` in `docker-compose.yml`).
 
+## 4. Turning the QMX on from the network (optional)
+
+A QMX that is off has no USB device, so it can never receive `PS1;` (power on).
+The relay can press the radio's power button for it:
+
+```
+NAS USB -- FTDI TTL-232R-5V cable       bestep PC817 board (5 V version)      QMX+
+           red   (pin 3, +5 V) ------>  INPUT +
+           green (pin 6, RTS#) ------>  INPUT -
+                                        OUT ------------------------------>  VOL switch, signal side
+                                        GND ------------------------------>  ground
+                                        VCC   not connected
+```
+
+Leave the cable's black, brown, orange and yellow wires unconnected: the NAS and
+the radio share no ground, so the board isolates them. Plug the cable into any
+NAS USB port and restart the relay (`restart.request`). The log then says
+`power button: ready`. Without the cable it says `no FTDI cable` and nothing
+changes.
+
+* **PS1; from PC software:** while the QMX is off, a client on port 3 (7356)
+  stays connected. The relay answers `PS;` with `PS0;`, answers `PS1;` with
+  `PS1;` and holds the button for 1.8 s, the long press that turns the radio
+  on. When the radio's USB device appears, port 3 is opened again and
+  everything passes through as usual. Other commands get no reply while the
+  radio is off, just as from a radio that is switched off. A second `PS1;`
+  within 20 s does not press again, so it cannot switch the radio back off.
+* **From the Tab5 or a scheduled task:** the Tab5 cannot reach a radio that is
+  off, so create an empty file named `power-on.request` in the relay folder (File
+  Station, or a Task Scheduler task). The relay presses the button within 2 s and
+  deletes the file where DSM allows it (on the DS416j a Synology ACL may not let
+  even root delete it; then touch or re-create the file for the next press). A
+  file already there when the relay starts is ignored.
+* **Power off** is still `PS0;`, subject to the power-off guard (`allow-ps0`,
+  see Behaviour). The radio shuts down cleanly and saves its state.
+* **No glitch on the button:** opening a serial port such as `/dev/ttyUSB0`
+  makes Linux assert DTR and RTS for a moment, which would close the
+  optocoupler. The relay never opens the cable as a serial port. It sends the
+  FT232R's own "set modem control" request through usbfs and detaches the
+  `ftdi_sio` driver from the cable, so there is no `/dev/ttyUSB0` for anything
+  else to open either. No DSM driver is needed. The FT232R starts with RTS
+  released, and the relay releases it at start-up, after every press and when
+  it is stopped.
+* Options: `--power-hold 1.8` (seconds), `--power-line rts|dtr`,
+  `--power-button off`.
+* **Bench test** before wiring the board to the radio: with the relay
+  stopped, `python3 qmx_nas_relay.py --power-press` holds the button once. The
+  board's LED lights for 1.8 s and stays off before and after, including when
+  the relay starts and stops and when the cable is plugged in.
+
 ## Behaviour
 
 * If the QMX is powered off or unplugged, the relay closes the connection
@@ -246,8 +296,8 @@ Notes:
   and from PC software alike. It's logged as `BLOCKED` in the CAT log and in
   `qmx-relay.log`. To let it through, put a file named `allow-ps0` in the relay
   folder; delete the file to block it again. Both flag files are re-checked
-  every 2 s, so no restart is needed. CAT cannot switch a QMX *on*: while it is
-  off the radio is not on the USB bus at all, so there is nothing to talk to.
+  every 2 s, so no restart is needed. A QMX that is *off* is not on the USB bus at
+  all, so CAT alone cannot switch it on; section 4 adds a power button that can.
 
 * **I/Q paused while transmitting:** from the Tab5's `TX;` to its `RX;` the relay
   stops sending I/Q to the Tab5 (pings continue). During a transmission the
