@@ -1,7 +1,7 @@
-From 07059dc84c3339662ab05b9ecc02236773275c8e Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 18bfb7823712f3435a3bd666df10d974d9a3cdbc Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
-Subject: [PATCH 38/46] web: Radio source window with Find NAS, like the Tab5's
+Subject: [PATCH 38/54] web: Radio source window with Find NAS, like the Tab5's
  drawer
 
 The web page's "Radio source" entry only offered a prompt for typing the
@@ -30,7 +30,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  3 files changed, 174 insertions(+), 15 deletions(-)
 
 diff --git a/README.md b/README.md
-index 5a6cd4cc..b661f89b 100644
+index b3a5d876..c416e18c 100644
 --- a/README.md
 +++ b/README.md
 @@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-chec
@@ -43,7 +43,7 @@ index 5a6cd4cc..b661f89b 100644
  * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
  * Live spectrum on the web page. Tested.
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index cacaf9af..6348b2f5 100644
+index 4c1654fa..f72711be 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
 @@ -6338,6 +6338,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
@@ -136,10 +136,10 @@ index cacaf9af..6348b2f5 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 4e397a9c..34516cdd 100644
+index e7fade45..1598f45b 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -2125,6 +2125,33 @@
+@@ -2149,6 +2149,33 @@
      </div>
    </div>
  
@@ -173,7 +173,7 @@ index 4e397a9c..34516cdd 100644
    <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
      <!-- max-height + an inner scroll box: with 32 slots the card ran off the
           bottom of the window and the last rows could not be reached at all. -->
-@@ -8159,27 +8186,84 @@ function paintPaused(on) {
+@@ -8232,27 +8259,84 @@ function paintPaused(on) {
  }
  /* Network radio - the QMX plugged into a NAS, reached over TCP through
     tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */

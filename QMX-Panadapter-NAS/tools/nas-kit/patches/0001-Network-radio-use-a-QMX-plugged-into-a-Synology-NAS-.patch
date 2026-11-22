@@ -1,7 +1,7 @@
-From ac0952ea723583ca473489483b91988d5dc7aef7 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From fdc44a115c1ce2702c7fdec04b25ea5206903b47 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 00:57:14 +0000
-Subject: [PATCH 01/46] Network radio: use a QMX plugged into a Synology NAS
+Subject: [PATCH 01/54] Network radio: use a QMX plugged into a Synology NAS
  over TCP/IP
 
 Adds a "network radio" source so the Tab5 can use a QMX that is plugged
@@ -2570,7 +2570,7 @@ literal 0
 HcmV?d00001
 
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 17c0573c..f257c7d0 100644
+index 9ae870b9..bf05ead8 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
 @@ -135,6 +135,7 @@ idf_component_register(
@@ -2931,7 +2931,7 @@ index af7021ac..e7b89710 100644
 +/** @brief "usb", "net" or "none" - which transport the CAT link is using. */
 +const char *cat_get_transport(void);
 diff --git a/main/main.c b/main/main.c
-index 8dacb716..9c52851e 100644
+index f81ea060..3431d9f6 100644
 --- a/main/main.c
 +++ b/main/main.c
 @@ -19,6 +19,7 @@
@@ -3469,7 +3469,7 @@ index 00000000..2dfd794e
 +uint32_t radio_relay_iq_pairs_total(void);
 +const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index be330ceb..493b3ec5 100644
+index b08ae8c1..25344dd5 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
 @@ -110,6 +110,7 @@
@@ -3569,10 +3569,10 @@ index be330ceb..493b3ec5 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index d2b9f30f..c555407c 100644
+index a4263cc1..5d96eb1d 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1831,6 +1831,7 @@
+@@ -1855,6 +1855,7 @@
          <a href="#" class="screen-to" data-screen="ft4" style="color:#FF6A00" title="Open the FT8 page on the Tab5 and select FT4">Switch to FT4</a>
          <a href="#" class="screen-to" data-screen="js8" style="color:#E040FB" title="Open the FT8 page on the Tab5 and select JS8">Switch to JS8</a>
          <a href="#" class="screen-to" data-screen="wspr" style="color:#5CC060" title="Open the WSPR page on the Tab5">Switch to WSPR</a>
@@ -3580,7 +3580,7 @@ index d2b9f30f..c555407c 100644
          <!-- T18 noise reduction for the audio Listen plays, done in this
               browser. ⛔ A MENU ROW, NOT A TOP-BAR BUTTON. It was first built as
               a button beside Listen: 81 px, MEASURED to push the top bar into
-@@ -8062,6 +8063,39 @@ function paintPaused(on) {
+@@ -8135,6 +8136,39 @@ function paintPaused(on) {
      bar.remove();
    }
  }
@@ -3620,7 +3620,7 @@ index d2b9f30f..c555407c 100644
  document.getElementById("pause-btn").addEventListener("click", async () => {
    await sendCmd({ action: pausedNow ? "resume" : "pause" });
    paintPaused(!pausedNow);   // optimistic; the next status poll is authoritative
-@@ -8758,6 +8792,7 @@ async function tick() {
+@@ -8831,6 +8865,7 @@ async function tick() {
       * one poll has had time to return carrying it. That window is the debounce
       * plus a round trip; anything shorter and the last snap-back still shows. */
      radioFreqHz = s.freq_hz || 0;      /* always - see its declaration */
@@ -3758,7 +3758,7 @@ index 666b6b20..945201f5 100644
              else if (!strcasecmp(key, "cloudlog_key"))      settings_set_cloudlog_key(val);
              else if (!strcasecmp(key, "cloudlog_station"))  settings_set_cloudlog_station(val);
 diff --git a/main/storage/settings.c b/main/storage/settings.c
-index e3f3e915..9d8f031a 100644
+index 98f53687..01c679ef 100644
 --- a/main/storage/settings.c
 +++ b/main/storage/settings.c
 @@ -100,6 +100,8 @@ static const char *TAG = "settings";
@@ -3770,7 +3770,7 @@ index e3f3e915..9d8f031a 100644
  #define KEY_QRZ_LU_USER  "qrz_lu_user"
  #define KEY_QRZ_LU_PASS  "qrz_lu_pass"
  #define KEY_EQSL_UPLOADED "eqsl_upl_n"
-@@ -282,7 +284,7 @@ static const char *TAG = "settings";
+@@ -284,7 +286,7 @@ static const char *TAG = "settings";
   * taken every one of them while the comment still said 62. Bumped to 5 words
   * rather than land the next person on a full bitmap behind a wrong number.
   * Cost is 4 bytes. Recount before trusting this figure again. */
@@ -3779,7 +3779,7 @@ index e3f3e915..9d8f031a 100644
  #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
  
  typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
-@@ -524,6 +526,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
+@@ -526,6 +528,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t
  #define DIRTY_CW_CONTEST       159  /* contest name/ID */
  #define DIRTY_RTTY             160  /* R019 RTTY receive settings blob - first bit of word 6 */
  #define DIRTY_RTTY_CONTEST     161  /* R030 RTTY contest blob */
@@ -3787,7 +3787,7 @@ index e3f3e915..9d8f031a 100644
  
  // Bits that actually affect config_io_export()'s output (storage/config_io.c).
  // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
-@@ -546,6 +549,7 @@ static const uint8_t s_config_export_bits[] = {
+@@ -548,6 +551,7 @@ static const uint8_t s_config_export_bits[] = {
      DIRTY_CQ_MSG2, DIRTY_CQ_SEL, DIRTY_ONBOARDED, DIRTY_FT8_FILT,
      DIRTY_WIFI_ENABLED, DIRTY_QMX_GPS, DIRTY_FREQ_KP_CALC,
      DIRTY_QRZ_KEY, DIRTY_QRZ_LU_USER, DIRTY_QRZ_LU_PASS, DIRTY_EQSL_USER, DIRTY_EQSL_PSWD,
@@ -3795,7 +3795,7 @@ index e3f3e915..9d8f031a 100644
      DIRTY_CL_URL, DIRTY_CL_KEY, DIRTY_CL_STATION,
      DIRTY_WF_BLACK, DIRTY_WF_CONTRAST, DIRTY_WF_BLEND, DIRTY_WF_WINDOW,
      DIRTY_DISP_FLIP, DIRTY_QMX_VOL, DIRTY_RX_AUD_VOL, DIRTY_CHARGE_LIM_EN,
-@@ -781,6 +785,10 @@ static void flush_task(void *arg)
+@@ -783,6 +787,10 @@ static void flush_task(void *arg)
          if (dirty_test(&dirty_local, DIRTY_QRZ_UPLOADED)) nvs_set_u32(s_nvs, KEY_QRZ_UPLOADED, snap->qrz_uploaded_n);
          if (dirty_test(&dirty_local, DIRTY_EQSL_USER))     nvs_set_str(s_nvs, KEY_EQSL_USER, snap->eqsl_user);
          if (dirty_test(&dirty_local, DIRTY_EQSL_PSWD))     nvs_set_str(s_nvs, KEY_EQSL_PSWD, snap->eqsl_pswd);
@@ -3806,7 +3806,7 @@ index e3f3e915..9d8f031a 100644
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_USER))   nvs_set_str(s_nvs, KEY_QRZ_LU_USER, snap->qrz_lookup_user);
          if (dirty_test(&dirty_local, DIRTY_QRZ_LU_PASS))   nvs_set_str(s_nvs, KEY_QRZ_LU_PASS, snap->qrz_lookup_pass);
          if (dirty_test(&dirty_local, DIRTY_EQSL_UPLOADED)) nvs_set_u32(s_nvs, KEY_EQSL_UPLOADED, snap->eqsl_uploaded_n);
-@@ -1135,6 +1143,8 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -1137,6 +1145,8 @@ static void load_from_nvs(qmx_settings_t *out)
      out->qrz_lookup_pass[0] = '\0';
      out->eqsl_user[0] = '\0';
      out->eqsl_pswd[0] = '\0';
@@ -3815,7 +3815,7 @@ index e3f3e915..9d8f031a 100644
      out->eqsl_uploaded_n = 0;
      out->cloudlog_url[0] = '\0';
      out->cloudlog_key[0] = '\0';
-@@ -1404,6 +1414,12 @@ static void load_from_nvs(qmx_settings_t *out)
+@@ -1420,6 +1430,12 @@ static void load_from_nvs(qmx_settings_t *out)
      out->eqsl_pswd[0] = '\0';
      sz = sizeof(out->eqsl_pswd);
      nvs_get_str(s_nvs, KEY_EQSL_PSWD, out->eqsl_pswd, &sz);
@@ -3828,7 +3828,7 @@ index e3f3e915..9d8f031a 100644
      nvs_get_u32(s_nvs, KEY_EQSL_UPLOADED, &out->eqsl_uploaded_n);
      out->cloudlog_url[0] = '\0';
      sz = sizeof(out->cloudlog_url);
-@@ -5290,3 +5306,13 @@ void settings_set_gps_grid_auto(const char *grid)
+@@ -5340,3 +5356,13 @@ void settings_set_gps_grid_auto(const char *grid)
      nvs_commit(s_nvs);
      xSemaphoreGive(s_mutex);
  }
@@ -3843,10 +3843,10 @@ index e3f3e915..9d8f031a 100644
 +    mark_dirty(DIRTY_RELAY);
 +}
 diff --git a/main/storage/settings.h b/main/storage/settings.h
-index 35cbbc76..9fd28fd3 100644
+index f6e52d71..c74e2164 100644
 --- a/main/storage/settings.h
 +++ b/main/storage/settings.h
-@@ -1038,6 +1038,10 @@ typedef struct {
+@@ -1043,6 +1043,10 @@ typedef struct {
      char     lotw_state[4];     // 2-letter US state, e.g. "VA"
      char     lotw_county[40];   // county name only, e.g. "Arlington"
      uint32_t lotw_uploaded_n;   // count of ADIF records already uploaded to LoTW
@@ -3857,7 +3857,7 @@ index 35cbbc76..9fd28fd3 100644
  } qmx_settings_t;
  
  // Initialise the settings module. Opens an NVS handle. Safe to call
-@@ -1604,6 +1608,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
+@@ -1609,6 +1613,10 @@ void settings_set_qrz_uploaded_n(uint32_t n);
  void settings_set_eqsl_user(const char *user);
  void settings_set_eqsl_pswd(const char *pswd);
  

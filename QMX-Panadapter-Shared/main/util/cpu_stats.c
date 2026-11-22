@@ -121,6 +121,30 @@ static void cpu_stats_task(void *arg)
                          (unsigned)pubfail, (unsigned)getfail,
                          sfs.age_mean_us / 1000, sfs.age_max_us / 1000);
 
+                /* Zoomed, the waterfall draws the ZOOM FFT, whose rate is
+                 * 46.9/D per second (times ZOOM_OVERLAP_MAX, capped at D) -
+                 * not the base rate the line above counts. Printed only
+                 * while zoomed, so the unzoomed log is unchanged. */
+                {
+                    /* ⚠ Gated on the zoom path having RUN, not on the zoom
+                     * setting: FT8 and the other full-screen pages keep D=2
+                     * but never feed the zoom FFT, and the first version
+                     * printed "D=2 0.0 spectra/s" every 10 s there - which
+                     * reads as a stall. A real stall (fed, no output) still
+                     * prints 0. */
+                    static uint32_t zf_last, zc_last;
+                    static int64_t  zf_t;
+                    uint32_t zf = dsp_zoom_frames(), zc = dsp_zoom_calls();
+                    int64_t  now = esp_timer_get_time();
+                    int zd = dsp_get_zoom_decim();
+                    if (zd > 1 && zc != zc_last && zf_t && now > zf_t)
+                        ESP_LOGI(TAG, "zoom: D=%d %.1f spectra/s", zd,
+                                 (double)(zf - zf_last) * 1e6 / (double)(now - zf_t));
+                    zf_last = zf;
+                    zc_last = zc;
+                    zf_t    = now;
+                }
+
                 /* ⭐ THE ONE LINE THAT DESCRIBES THE MOTION. Every other
                  * counter here measures a stage; this measures the result -
                  * how long each picture stood still before the next replaced
@@ -133,9 +157,10 @@ static void cpu_stats_task(void *arg)
                 /* Which branch kept the spectrum on the full-canvas
                  * invalidate. partial should dominate on a quiet band. */
                 ESP_LOGI(TAG, "partial inval: ok %u | rejected: noarr %u stale %u overlay %u wide %u"
-                              " | band %u px",
+                              " | band %u x %u px",
                          sfs.pi_partial, sfs.pi_no_array, sfs.pi_stale,
-                         sfs.pi_overlay, sfs.pi_wide, sfs.pi_band_mean_px);
+                         sfs.pi_overlay, sfs.pi_wide, sfs.pi_cols_mean_px,
+                         sfs.pi_band_mean_px);
 
                 ESP_LOGI(TAG, "carpet: %u rows -> %u shifts (batch %d)",
                          sfs.wf_rows_written, sfs.wf_shifts,

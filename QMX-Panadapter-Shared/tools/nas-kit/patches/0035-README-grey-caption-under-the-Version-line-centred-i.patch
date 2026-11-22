@@ -1,7 +1,7 @@
-From 75c4bd4f0b32d5688d2ab7e46f604fb99c9404fc Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From d08c0932251322c256962881b2699d0eaf6809ca Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 13:00:00 -0500
-Subject: [PATCH 35/46] README: grey caption under the Version line, centred in
+Subject: [PATCH 35/54] README: grey caption under the Version line, centred in
  the right half
 
 "(The above version example from Steffen's Repository)" in smaller grey
@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 2 insertions(+)
 
 diff --git a/README.md b/README.md
-index 34a2b0e2..dfdf0616 100644
+index 8e49bbbd..bc2e76df 100644
 --- a/README.md
 +++ b/README.md
 @@ -6,6 +6,8 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th

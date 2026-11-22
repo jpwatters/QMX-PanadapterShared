@@ -1294,14 +1294,14 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                                band_err, sizeof band_err);
     if (!band_ok) {
         ESP_LOGE(TAG, "TX aborted before key-up: %s", band_err);
-        ui_toast_ms(band_err, 15000);
+        ui_toast_alert_ms(band_err, 15000);
         ft8_status_set("%s", band_err);
     } else if (!sim && radio_relay_tx_locked(lock_why, sizeof(lock_why))) {
         // Locked after this burst was armed (the TCI program connected in the
         // meantime). Not keyed at all - the relay would drop it anyway.
         ESP_LOGW(TAG, "TX not keyed: " RADIO_RELAY_TX_LOCKED_MSG " (%s)", lock_why);
         ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
-        ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG, 6000);
+        ui_toast_alert_ms(RADIO_RELAY_TX_LOCKED_MSG " - FT8 did not transmit.", 8000);
     } else if (strcmp(mode, "DiGi") != 0) {
         ESP_LOGW(TAG, "TX aborted before key-up: mode drifted to '%s' (need DiGi)", mode);
     } else {
@@ -1592,7 +1592,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                     // the check above and the hand-over.
                     ESP_LOGW(TAG, "relay refused the burst: " RADIO_RELAY_TX_LOCKED_MSG);
                     ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
-                    ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG, 6000);
+                    ui_toast_alert_ms(RADIO_RELAY_TX_LOCKED_MSG " - FT8 did not transmit.", 8000);
                 }
             } else {
                 ESP_LOGW(TAG, "no report from the relay for the burst - sending key-up from the Tab5");

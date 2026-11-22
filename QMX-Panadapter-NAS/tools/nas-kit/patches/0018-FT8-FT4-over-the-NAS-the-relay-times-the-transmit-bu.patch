@@ -1,7 +1,7 @@
-From 7055e9bc375d96bd4bd6e43c4895c80535594d3f Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From e4f7c39ade55529fcd004897f7aed7661de9d26b Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 19:11:26 -0500
-Subject: [PATCH 18/46] FT8/FT4 over the NAS: the relay times the transmit
+Subject: [PATCH 18/54] FT8/FT4 over the NAS: the relay times the transmit
  burst itself
 
 Over the network every tone change crossed Wi-Fi on its own, 160 ms apart.
@@ -41,7 +41,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  7 files changed, 310 insertions(+), 20 deletions(-)
 
 diff --git a/main/ft8_tx.c b/main/ft8_tx.c
-index 8333457c..221207c7 100644
+index 5da56d18..cc881da7 100644
 --- a/main/ft8_tx.c
 +++ b/main/ft8_tx.c
 @@ -31,6 +31,7 @@

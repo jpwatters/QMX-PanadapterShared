@@ -1,7 +1,7 @@
-From 7f0be720df4f956d02e4cea9cf20bdffe90fe4b1 Mon Sep 17 00:00:00 2001
+From ce678bfac7473e0e0ea66e28985fdf40ae1d217c Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
-Subject: [PATCH 29/46] Tab5: "TX locked: Another Device has the transmitter"
+Subject: [PATCH 29/54] Tab5: "TX locked: Another Device has the transmitter"
 
 The relay now tells the Tab5 when another device has the transmitter, so the
 Tab5 can say so instead of "transmitting" bursts the relay drops. A new
@@ -9581,7 +9581,7 @@ z{pG*?_g|zRCGeZ|Yr{&C*Kg<#e*AbfJ^zQ`Hyr)zT?G5=_3yJF{FT626eE5G!LHH!
 G^?v|zW!0<z
 
 diff --git a/README.md b/README.md
-index 66690853..4dd0ee50 100644
+index aa7b92e0..011dda07 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -9594,7 +9594,7 @@ index 66690853..4dd0ee50 100644
  
  **Keeping up with upstream**
 diff --git a/main/ft8_tx.c b/main/ft8_tx.c
-index 221207c7..84c2e6e6 100644
+index cc881da7..9c603590 100644
 --- a/main/ft8_tx.c
 +++ b/main/ft8_tx.c
 @@ -32,6 +32,7 @@
@@ -9632,7 +9632,7 @@ index 221207c7..84c2e6e6 100644
          : tx_band_guard_allows(tx_dial + (uint32_t)req->audio_freq_hz,
 @@ -1284,6 +1296,12 @@ void ft8_tx_run(const ft8_tx_request_t *req)
          ESP_LOGE(TAG, "TX aborted before key-up: %s", band_err);
-         ui_toast_ms(band_err, 15000);
+         ui_toast_alert_ms(band_err, 15000);
          ft8_status_set("%s", band_err);
 +    } else if (!sim && radio_relay_tx_locked(lock_why, sizeof(lock_why))) {
 +        // Locked after this burst was armed (the TCI program connected in the
@@ -9766,7 +9766,7 @@ index 1ea06f03..90cdd46f 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 493b3ec5..cacaf9af 100644
+index 25344dd5..4c1654fa 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
 @@ -527,6 +527,11 @@ static void add_ft8_tx_status(cJSON *root)
@@ -9791,7 +9791,7 @@ index 493b3ec5..cacaf9af 100644
       * the Tab5's: nobody is standing in front of the radio. Tune keys a
       * carrier on the DIAL in MD8 - no audio offset. */
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 4a65862e..4e397a9c 100644
+index cbcec00a..e7fade45 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
 @@ -901,6 +901,9 @@
@@ -9805,7 +9805,7 @@ index 4a65862e..4e397a9c 100644
    /* ---- Bottom status row ---- */
    #bot {
 diff --git a/main/ui/ft8_screen_view.c b/main/ui/ft8_screen_view.c
-index c972ccc9..32b6d0e5 100644
+index 0c2641d1..25371356 100644
 --- a/main/ui/ft8_screen_view.c
 +++ b/main/ui/ft8_screen_view.c
 @@ -41,6 +41,7 @@
@@ -9816,7 +9816,7 @@ index c972ccc9..32b6d0e5 100644
  #include "ft8_test.h"   // ft8_op_mode_set() - FT8/FT4 sub-mode flag
  #include "ft8_greylist.h"
  #include "js8_page.h"
-@@ -2528,6 +2529,12 @@ static void t_clock_cb(lv_timer_t *t)
+@@ -2529,6 +2530,12 @@ static void t_clock_cb(lv_timer_t *t)
                       (double)trip_swr);
              lv_label_set_text(s_lbl_tx, b);
              lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_RED), 0);
@@ -9830,7 +9830,7 @@ index c972ccc9..32b6d0e5 100644
              // Red: transmitting right now (tap to abort). Each logical chunk
              // gets its own explicit line - "TAP TO ABORT" is always the last
 diff --git a/main/ui/power_cal_modal.c b/main/ui/power_cal_modal.c
-index 2b029ce8..395ffba7 100644
+index 8d583cc9..7c1a56f6 100644
 --- a/main/ui/power_cal_modal.c
 +++ b/main/ui/power_cal_modal.c
 @@ -40,6 +40,7 @@
@@ -9853,7 +9853,7 @@ index 2b029ce8..395ffba7 100644
          ui_toast("FT8 is transmitting - try again once it's idle");
          return;
 diff --git a/main/ui/tune_modal.c b/main/ui/tune_modal.c
-index fb6624fc..ba788d7c 100644
+index e4f22027..a1fd3076 100644
 --- a/main/ui/tune_modal.c
 +++ b/main/ui/tune_modal.c
 @@ -10,6 +10,7 @@
@@ -9877,7 +9877,7 @@ index fb6624fc..ba788d7c 100644
       * the dial itself - no audio offset, unlike the digital modes. Checked
       * before the mode write, not after: once the radio is in MD8 it is already
 diff --git a/main/wspr_tx.c b/main/wspr_tx.c
-index 94e533d1..36d58431 100644
+index cbffeb7c..8501c77f 100644
 --- a/main/wspr_tx.c
 +++ b/main/wspr_tx.c
 @@ -24,6 +24,7 @@

@@ -1,8 +1,8 @@
-From ec9c603f3a1c51fb5b01ee8c90dfbfba6f998560 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From b0d9a39da877d2df8c0ad6bb12e5c37bc58c4cf5 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sat, 21 Nov 2026 19:35:15 +0000
-Subject: [PATCH] Tab5 + relay: "Power on the radio" in the drawer (Remote
- Power-ON)
+Subject: [PATCH 50/54] Tab5 + relay: "Power on the radio" in the drawer
+ (Remote Power-ON)
 
 A QMX that is off has no USB device, so the Tab5 cannot reach it. The new
 drawer row (Basic, under Radio source, section 59, N_DRAWER_SECTIONS 60)
@@ -33,10 +33,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  6 files changed, 201 insertions(+), 8 deletions(-)
 
 diff --git a/README.md b/README.md
-index 59cbc85..0c27c9b 100644
+index 6e076da3..111f7f6c 100644
 --- a/README.md
 +++ b/README.md
-@@ -57,6 +57,7 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
+@@ -58,6 +58,7 @@ The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-chec
  * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
  * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
  * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
@@ -44,7 +44,7 @@ index 59cbc85..0c27c9b 100644
  * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
  * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
  
-@@ -114,7 +115,8 @@ Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com
+@@ -115,7 +116,8 @@ Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com
  Check on the QMX schematic which pin of the VOL switch is ground before wiring.
  
  * PS1; from PC software on port 3 (TCP 7356): while the radio is off, the relay keeps the client connected, answers PS; with PS0;, and answers PS1; with PS1; while it holds the button. When the radio's USB device comes back, port 3 reopens and everything passes through as before. A second PS1; within 20 s doesn't press again, so it can't switch a booting radio back off.
@@ -55,7 +55,7 @@ index 59cbc85..0c27c9b 100644
  * No glitch on the button: opening a serial port such as /dev/ttyUSB0 makes Linux assert DTR and RTS for a moment, which would close the optocoupler. The relay never opens the cable as a serial port. It sets RTS with the FT232R's own USB request (SIO_SET_MODEM_CTRL) through usbfs, the same way it already talks to the QMX, and detaches ftdi_sio from the cable so there's no /dev/ttyUSB0 for anything else to open. No DSM driver is needed. RTS is released at start-up, after every press and when the relay stops.
  * Setup: plug the cable into the NAS and restart the relay (restart.request); qmx-relay.log says `power button: ready`. Without the cable it says `no FTDI cable` and the relay works as before. Bench test before wiring to the radio, with the relay stopped: `python3 qmx_nas_relay.py --power-press` lights the board's LED for 1.8 s. Options: --power-hold, --power-line rts|dtr, --power-button off. Details are in tools/nas-relay/README.md, section 4.
 diff --git a/main/net/radio_relay.c b/main/net/radio_relay.c
-index 58c50c2..3aff98a 100644
+index 58c50c2c..3aff98a5 100644
 --- a/main/net/radio_relay.c
 +++ b/main/net/radio_relay.c
 @@ -548,6 +548,57 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
@@ -117,7 +117,7 @@ index 58c50c2..3aff98a 100644
  
  bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }
 diff --git a/main/net/radio_relay.h b/main/net/radio_relay.h
-index 90cdd46..b5ba322 100644
+index 90cdd46f..b5ba3223 100644
 --- a/main/net/radio_relay.h
 +++ b/main/net/radio_relay.h
 @@ -88,6 +88,23 @@ typedef struct {
@@ -145,7 +145,7 @@ index 90cdd46..b5ba322 100644
   * Over the network every tone change used to cross WiFi on its own, 160 ms
   * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index a5f10e7..ad53bee 100644
+index 06666f13..fd31f053 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
 @@ -3868,7 +3868,7 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
@@ -195,7 +195,7 @@ index a5f10e7..ad53bee 100644
  static void drawer_usedhcp_btn_cb(lv_event_t *e);
  static void drawer_sdeject_btn_cb(lv_event_t *e);
  static void drawer_reboot_btn_cb(lv_event_t *e);
-@@ -17473,6 +17481,23 @@ static void drawer_build(void)
+@@ -17697,6 +17705,23 @@ static void drawer_build(void)
          y += 72;
      }
  
@@ -219,7 +219,7 @@ index a5f10e7..ad53bee 100644
      /* "Power off the radio" - directly under Radio source, the row that says
       * which QMX this is. Same red and two-tap arming as "Power off the Tab5". */
      {
-@@ -21544,6 +21569,77 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
+@@ -21768,6 +21793,77 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
      ui_power_off_safely();
  }
  
@@ -298,7 +298,7 @@ index a5f10e7..ad53bee 100644
   * Like ui_power_off_safely() the radio is put back into receive first - the
   * FT8 robot stands down, TX is disarmed and TA0;/RX; go out - so this can
 diff --git a/tools/nas-relay/README.md b/tools/nas-relay/README.md
-index bb70f8e..9b4d68d 100644
+index bb70f8e1..9b4d68d8 100644
 --- a/tools/nas-relay/README.md
 +++ b/tools/nas-relay/README.md
 @@ -211,14 +211,20 @@ changes.
@@ -326,7 +326,7 @@ index bb70f8e..9b4d68d 100644
    makes Linux assert DTR and RTS for a moment, which would close the
    optocoupler. The relay never opens the cable as a serial port. It sends the
 diff --git a/tools/nas-relay/qmx_nas_relay.py b/tools/nas-relay/qmx_nas_relay.py
-index 7cd7925..d6671d7 100644
+index 7cd79253..d6671d7d 100644
 --- a/tools/nas-relay/qmx_nas_relay.py
 +++ b/tools/nas-relay/qmx_nas_relay.py
 @@ -2502,7 +2502,25 @@ def _arrived_on(ancdata):
@@ -376,5 +376,5 @@ index 7cd7925..d6671d7 100644
  
  
 -- 
-2.34.1
+2.43.0
 

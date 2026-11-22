@@ -1,7 +1,7 @@
-From b2d588696172fa0594e25177929c7109aa789fe0 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 8e56b65261a2eab10bfbcee9c729d213514f644c Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 23:13:44 +0000
-Subject: [PATCH 07/46] nas-kit: rebuild the NAS version from each new upstream
+Subject: [PATCH 07/54] nas-kit: rebuild the NAS version from each new upstream
  release; PDF QMX-Panadapter-Shared
 
 tools/nas-kit/make-qmx-panadapter-nas.sh clones SteffenLav/qmx-panadapter,

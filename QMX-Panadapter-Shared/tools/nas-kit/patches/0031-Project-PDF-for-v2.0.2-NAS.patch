@@ -1,7 +1,7 @@
-From 5b4779a1cbf01cb2a968d0dc68ec15bdbc255ce6 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 9e4fb7935aae745eb35704a02021ea8e7eeab140 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 20:00:00 -0500
-Subject: [PATCH 31/46] Project PDF for v2.0.2-NAS
+Subject: [PATCH 31/54] Project PDF for v2.0.2-NAS
 
 Built by tools/nas-kit/doc/build_pdf.py from project.md, the folder's git
 history (change history) and its code (listings), so it names the release it

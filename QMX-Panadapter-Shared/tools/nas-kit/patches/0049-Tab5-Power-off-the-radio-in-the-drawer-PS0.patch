@@ -1,7 +1,7 @@
-From b56a83d75948121be6a8ebd7b43d8cc3f55f2184 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 4029ebcd820405fd221c4ba2937414e1841a111a Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sat, 21 Nov 2026 19:15:07 +0000
-Subject: [PATCH 49/49] Tab5: "Power off the radio" in the drawer (PS0;)
+Subject: [PATCH 49/54] Tab5: "Power off the radio" in the drawer (PS0;)
 
 A drawer row under Radio source (Advanced, section 58, N_DRAWER_SECTIONS
 59) that switches the QMX off with its own PS0; command. Two taps, like
@@ -25,10 +25,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  2 files changed, 95 insertions(+), 3 deletions(-)
 
 diff --git a/README.md b/README.md
-index ffa7f2f..59cbc85 100644
+index 80304153..6e076da3 100644
 --- a/README.md
 +++ b/README.md
-@@ -57,6 +57,7 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
+@@ -58,6 +58,7 @@ The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-chec
  * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
  * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
  * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
@@ -36,7 +36,7 @@ index ffa7f2f..59cbc85 100644
  * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
  
  **On the relay**
-@@ -114,7 +115,7 @@ Check on the QMX schematic which pin of the VOL switch is ground before wiring.
+@@ -115,7 +116,7 @@ Check on the QMX schematic which pin of the VOL switch is ground before wiring.
  
  * PS1; from PC software on port 3 (TCP 7356): while the radio is off, the relay keeps the client connected, answers PS; with PS0;, and answers PS1; with PS1; while it holds the button. When the radio's USB device comes back, port 3 reopens and everything passes through as before. A second PS1; within 20 s doesn't press again, so it can't switch a booting radio back off.
  * From the Tab5 or a scheduled task: the Tab5 can't reach a radio that's off, so create an empty file named power-on.request in the relay folder. The relay presses the button within 2 s and deletes the file where DSM allows it; if DSM won't let it, touch or re-create the file for the next press.
@@ -46,7 +46,7 @@ index ffa7f2f..59cbc85 100644
  * Setup: plug the cable into the NAS and restart the relay (restart.request); qmx-relay.log says `power button: ready`. Without the cable it says `no FTDI cable` and the relay works as before. Bench test before wiring to the radio, with the relay stopped: `python3 qmx_nas_relay.py --power-press` lights the board's LED for 1.8 s. Options: --power-hold, --power-line rts|dtr, --power-button off. Details are in tools/nas-relay/README.md, section 4.
  
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 23177b5..a5f10e7 100644
+index 97eac2cd..06666f13 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
 @@ -3868,14 +3868,17 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
@@ -95,7 +95,7 @@ index 23177b5..a5f10e7 100644
  static void drawer_usedhcp_btn_cb(lv_event_t *e);
  static void drawer_sdeject_btn_cb(lv_event_t *e);
  static void drawer_reboot_btn_cb(lv_event_t *e);
-@@ -17465,6 +17473,23 @@ static void drawer_build(void)
+@@ -17689,6 +17697,23 @@ static void drawer_build(void)
          y += 72;
      }
  
@@ -119,7 +119,7 @@ index 23177b5..a5f10e7 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -21519,6 +21544,72 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
+@@ -21743,6 +21768,72 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
      ui_power_off_safely();
  }
  
@@ -193,5 +193,5 @@ index 23177b5..a5f10e7 100644
  {
      lv_obj_t *btn = lv_event_get_target(e);
 -- 
-2.34.1
+2.43.0
 

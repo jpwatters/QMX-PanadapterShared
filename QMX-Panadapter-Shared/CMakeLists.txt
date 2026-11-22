@@ -43,14 +43,14 @@ foreach(_gitdep ".git/HEAD" ".git/index" ".git/refs/tags" ".git/packed-refs")
 endforeach()
 
 # Network-radio build: report the release it is based on plus "-NAS"
-# (e.g. v2.0.2-NAS) instead of git describe's v2.0.2-3-g<hash>-dirty, which
+# (e.g. v2.1.0-NAS) instead of git describe's v2.1.0-3-g<hash>-dirty, which
 # is too long for the UI. The update check compares only the numbers before the
-# first '-', so v2.0.2-NAS counts as v2.0.2.
+# first '-', so v2.1.0-NAS counts as v2.1.0.
 execute_process(COMMAND git describe --tags --abbrev=0
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE QMX_BASE_TAG OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 if(NOT QMX_BASE_TAG)
-    set(QMX_BASE_TAG "v2.0.2")
+    set(QMX_BASE_TAG "v2.1.0")
 endif()
 set(PROJECT_VER "${QMX_BASE_TAG}-NAS")
 

@@ -1,7 +1,7 @@
-From c227fa030897fcd66971c18a7967a9f6b4bc2a5c Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 2807f0fef305be10f8e7ac91aebd47758d25e5d8 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 12:00:00 -0500
-Subject: [PATCH 34/46] README: setup picture (QMX+ - USB - Synology DS416j -
+Subject: [PATCH 34/54] README: setup picture (QMX+ - USB - Synology DS416j -
  Ethernet - switch)
 
 Centered above the list of what the shared version adds; the image is
@@ -16,7 +16,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 docs/nas/qmx-nas-setup.png
 
 diff --git a/README.md b/README.md
-index d8ed6b6a..34a2b0e2 100644
+index cd4cf1c5..8e49bbbd 100644
 --- a/README.md
 +++ b/README.md
 @@ -6,6 +6,8 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th

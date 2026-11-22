@@ -647,7 +647,7 @@ static void timer_cb(lv_timer_t *t)
                 uint32_t rf = cat_get_frequency() + (uint32_t)PWRCAL_TONE_HZ;
                 if (!tx_band_guard_allows(rf, rf, "Power calibration",
                                           gerr, sizeof gerr)) {
-                    ui_toast_ms(gerr, 15000);
+                    ui_toast_alert_ms(gerr, 15000);
                     enter_state(PC_IDLE);
                     return;
                 }
@@ -760,7 +760,7 @@ static void start_btn_cb(lv_event_t *e)
         return;
     }
     if (radio_relay_tx_locked(NULL, 0)) {
-        ui_toast(RADIO_RELAY_TX_LOCKED_MSG);
+        ui_toast_alert_ms(RADIO_RELAY_TX_LOCKED_MSG " - nothing was transmitted.", 8000);
         return;
     }
     if (ft8_tx_get_status(NULL, 0, NULL) != FT8_TX_IDLE) {

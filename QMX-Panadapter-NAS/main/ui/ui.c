@@ -4442,6 +4442,7 @@ static lv_obj_t *s_slider_charge_limit_pct = NULL;
 static lv_obj_t *s_check_distance_miles = NULL;
 static lv_obj_t *s_check_wspr_miles     = NULL;   /* DRAWER_SEC_WSPRDIST */
 static lv_obj_t *s_check_tx_subnet = NULL;   /* T206 TX interlock, drawer row */
+static lv_obj_t *s_check_server = NULL;    // "Server mode" checkbox - synced when a wake ends the mode
 static lv_obj_t *s_check_rit_pill = NULL;  // "Show RIT button" checkbox (panadapter only)
 static lv_obj_t *s_check_ft8_early = NULL;       // FT8 fast-pounce early-decode checkbox
 static lv_obj_t *s_check_sim_mode = NULL;        // FT8 simulation mode checkbox
@@ -5034,9 +5035,10 @@ static volatile uint32_t s_pi_partial;    /* took the band path            */
 static volatile uint32_t s_pi_no_array;   /* allocation failed             */
 static volatile uint32_t s_pi_stale;      /* previous frame not usable     */
 static volatile uint32_t s_pi_overlay;    /* signature differed            */
-static volatile uint32_t s_pi_wide;       /* band covered >= 2/3           */
+static volatile uint32_t s_pi_wide;       /* area covered >= 2/3           */
 static volatile uint64_t s_pi_band_sum;   /* band height, for the mean     */
 static volatile uint32_t s_pi_band_n;
+static volatile uint64_t s_pi_cols_sum;   /* band WIDTH, for the mean      */
 
 // "Breathing" opacity animation for edge-swipe grip handles: fades between
 // near-invisible and the normal resting opacity so the user notices the
@@ -8431,6 +8433,20 @@ static void build_resource_monitor(lv_obj_t *scr)
 // _270 depending on "Flip 180", and the inverse differs between them - see
 // util/hid_rotate.h. The cursor object is hidden until a mouse is enumerated.
 static lv_obj_t *s_mouse_cursor = NULL;
+// Draw the pointer image, or not. Default TRUE - on the Tab5 nothing ever calls
+// the setter, so the pointer behaves exactly as it always has. False is for a
+// host that blits this framebuffer into a window of a DIFFERENT size: a thin
+// two-colour arrow does not survive that resampling, so the host draws its own
+// at native resolution and asks this one to stand down.
+//
+// It hides the IMAGE ONLY. hid_cursor_present(), ui_mouse_pointer(), the wheel,
+// the edge-grip hover and the hot/clickable test all keep running - turning the
+// pointer off is not turning the mouse off.
+static bool s_pointer_drawn = true;
+// Published by cursor_set_hot() so the host can colour its own pointer. Valid
+// whether or not the image is drawn, and whether or not the image exists at all
+// (the dot fallback never swaps a bitmap but is still over things).
+static bool s_pointer_hot = false;
 // Which indev is the mouse. Kept so the edge grips can offer CLICK activation to
 // a pointer without changing what a finger does - see grip_mouse_click().
 static lv_indev_t *s_mouse_indev = NULL;
@@ -8726,6 +8742,12 @@ static lv_point_t s_mouse_pt;
 // ui_push_spectrum's passband-fade fix).
 static void cursor_set_hot(bool hot)
 {
+    // Published FIRST, above every early return: the dot fallback and a
+    // host-drawn pointer both have no bitmap to swap, and those are exactly the
+    // cases where ui_pointer_is_hot() is the only way to learn the state.
+    // A plain bool store, so it costs nothing on the LVGL thread.
+    s_pointer_hot = hot;
+
     static int last = -1;
     if (!s_mouse_cursor || !s_cursor_is_image || (int)hot == last) return;
     last = hot;
@@ -9228,11 +9250,33 @@ static void mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     s_mouse_pt.x = lx;
     s_mouse_pt.y = ly;
 
+    // Change-detected. This runs on EVERY indev read, and lv_obj_add_flag/
+    // remove_flag(HIDDEN) invalidates the object, so an unconditional write here
+    // is a continuous invalidate on the LVGL thread - the same cost
+    // cursor_set_hot() above is change-detected to avoid, and which this file
+    // has already paid for once (ui_push_spectrum's passband fade).
     if (s_mouse_cursor) {
-        if (hid_cursor_present()) lv_obj_remove_flag(s_mouse_cursor, LV_OBJ_FLAG_HIDDEN);
-        else                         lv_obj_add_flag(s_mouse_cursor, LV_OBJ_FLAG_HIDDEN);
+        const bool show = hid_cursor_present() && s_pointer_drawn;
+        static int last_show = -1;
+        if ((int)show != last_show) {
+            last_show = show;
+            if (show) lv_obj_remove_flag(s_mouse_cursor, LV_OBJ_FLAG_HIDDEN);
+            else      lv_obj_add_flag(s_mouse_cursor, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
+
+void ui_set_pointer_drawn(bool on)
+{
+    // No LVGL call here: this can be called from any task. The next indev read
+    // (every ~30 ms while a mouse exists) applies it on the LVGL thread, which
+    // is the only thread allowed to touch the object.
+    s_pointer_drawn = on;
+}
+
+bool ui_get_pointer_drawn(void) { return s_pointer_drawn; }
+
+bool ui_pointer_is_hot(void)    { return s_pointer_hot; }
 
 bool ui_mouse_pointer(lv_point_t *out)
 {
@@ -9791,7 +9835,31 @@ static void stroll_apply_offset(int off)
      * anchor away and slide the history off by WF_MARGIN. */
     s_wf_stroll_off = off;
     wf_apply_x();
+
+    /* ⛔ EVERY FREQUENCY-POSITIONED OVERLAY HAS TO MOVE HERE, NOT ON ITS
+     * OWN TIMER. The pan is LOCAL while the button or finger is down - no DSP,
+     * no CAT - so ui_get_pan_offset_hz() does not change until the release.
+     * An overlay that derives its x from that number therefore stands still
+     * for the whole drag and snaps into place afterwards.
+     *
+     * The operator found it on the RTTY page, 2026-11-19: "everything moves
+     * smoothly with the mouse pointer except the two orange guide lines -
+     * they only jump to the right position after releasing."
+     *
+     * Anything PAINTED INTO s_spec_canvas (VFO cursor, passband, curve) rides
+     * along for free. Separate LVGL objects do not, and there are two kinds:
+     *   - a whole container that can be slid bodily, like the spots lane;
+     *   - single markers that must add ui_stroll_offset_px() where they are
+     *     positioned, because their parent carries other content too.
+     * A new overlay has to pick one of the two. */
+    spots_lane_set_stroll_x(off);
+    rtty_screen_view_pan_moved();
 }
+
+/* The live pan drag in pixels - how far the spectrum has been slid from where
+ * the committed pan says it is. 0 whenever nothing is being dragged. See
+ * stroll_apply_offset() for why an overlay needs it. */
+int ui_stroll_offset_px(void) { return s_wf_stroll_off; }
 
 /* Abandon a one-finger pan WITHOUT applying it: no retune, no view move, and
  * everything the drag painted live (tooltip, band strip, the freq readout in
@@ -9892,6 +9960,22 @@ static void display_sleep_enter(void)
     ESP_LOGI(TAG, "display sleep: backlight off (touch to wake)");
 }
 
+static void sync_cb(lv_obj_t *cb, bool on);
+
+/* Everything that follows server mode going OFF, whoever turned it off: the
+ * setter (drawer, web) or a touch wake. It used to be written out twice - the
+ * wake cleared the flag inline and never told the drawer, so the "Server mode"
+ * checkbox still read ticked after a touch had ended the mode (found
+ * 2026-11-18). Caller holds the display lock. */
+static void server_mode_ended(const char *why)
+{
+    rx_audio_suspend(false);
+    if (!s_server_was_muted) rx_audio_set_muted(false);
+    sync_cb(s_check_server, false);
+    ESP_LOGI(TAG, "server mode off - %s%s", why,
+             s_server_was_muted ? " (speaker left muted, as it was)" : "");
+}
+
 static void display_sleep_wake(void)
 {
     qmx_settings_t c;
@@ -9913,9 +9997,7 @@ static void display_sleep_wake(void)
      * crashed device rather than as a mode. */
     if (s_server_mode) {
         s_server_mode = false;
-        rx_audio_suspend(false);
-        if (!s_server_was_muted) rx_audio_set_muted(false);
-        ESP_LOGI(TAG, "server mode off - woken by touch");
+        server_mode_ended("woken by touch");
     }
     ESP_LOGI(TAG, "display sleep: woken by touch");
 }
@@ -11050,7 +11132,14 @@ bool ui_get_server_mode(void) { return s_server_mode; }
 
 void ui_set_server_mode(bool on)
 {
-    if (s_server_mode == on) return;
+    /* The web action calls this from httpd, and both branches touch LVGL
+     * (input devices, the checkbox). The lock is recursive, so the drawer's
+     * own callback, which already holds it, is unaffected. */
+    if (!display_lock(500)) {
+        ESP_LOGW(TAG, "server mode %s: display lock busy, not changed", on ? "on" : "off");
+        return;
+    }
+    if (s_server_mode == on) { display_unlock(); return; }
     s_server_mode = on;
     if (on) {
         /* Reuse the idle-sleep path: it already turns the backlight off and
@@ -11082,12 +11171,11 @@ void ui_set_server_mode(bool on)
                       "is muted; the browser is unaffected (ws_push_task reads "
                       "the DSP directly)");
     } else {
-        display_sleep_wake();
-        rx_audio_suspend(false);
-        if (!s_server_was_muted) rx_audio_set_muted(false);
-        ESP_LOGI(TAG, "server mode off - drawing resumed%s",
-                 s_server_was_muted ? " (speaker left muted, as it was)" : "");
+        display_sleep_wake();   /* sees s_server_mode already false: no double tail */
+        server_mode_ended("drawing resumed");
     }
+    sync_cb(s_check_server, on);
+    display_unlock();
 }
 
 bool ui_any_overlay_active(void)
@@ -11948,9 +12036,10 @@ void ui_spec_frame_stats(ui_spec_frame_stats_t *out)
     out->pi_overlay  = s_pi_overlay;
     out->pi_wide     = s_pi_wide;
     out->pi_band_mean_px = s_pi_band_n ? (unsigned)(s_pi_band_sum / s_pi_band_n) : 0;
+    out->pi_cols_mean_px = s_pi_band_n ? (unsigned)(s_pi_cols_sum / s_pi_band_n) : 0;
     s_pi_partial = 0; s_pi_no_array = 0; s_pi_stale = 0;
     s_pi_overlay = 0; s_pi_wide = 0;
-    s_pi_band_sum = 0; s_pi_band_n = 0;
+    s_pi_band_sum = 0; s_pi_band_n = 0; s_pi_cols_sum = 0;
 
     s_ap_n      = 0;
     s_ap_min_us = UINT32_MAX;
@@ -12529,6 +12618,21 @@ void ui_push_spectrum(const float *bins, int n_bins)
 #define SPEC_SIG(v) do { sig = (sig ^ (uint64_t)(int64_t)(v)) * 1099511628211ULL; } while (0)
     int band_lo = SPECTRUM_H;    /* empty: lo > hi */
     int band_hi = -1;
+    /* ⭐ THE HORIZONTAL EXTENT, beside the vertical one above.
+     *
+     * The band alone is full-width by construction: it is the union of every
+     * column's vertical change, so ONE signal swinging from the noise floor
+     * to the top of the panel invalidates all 1280 x 200. Measured on bench1
+     * 2026-11-19: a dead band ran at 22.8 fps with band 7 px and partial
+     * invalidation accepted on 100% of pushes; a live one ran at 10.9 fps
+     * with band 166 px and REJECTED on 94% (wide 65 vs ok 4), because the
+     * threshold is 2/3 of SPECTRUM_H. Raising that threshold buys 18% and
+     * fixes nothing - the area is wrong in x, not in y.
+     *
+     * So bound x as well. Worst case every column moved and this is the full
+     * width, i.e. exactly today's behaviour. */
+    int col_lo = DISPLAY_H_RES;  /* empty: lo > hi */
+    int col_hi = -1;
     const uint16_t fg = 0x07E0;  // green in RGB565
     const uint16_t grid_color = 0x4208;  // dim grey grid lines
 
@@ -13110,6 +13214,11 @@ void ui_push_spectrum(const float *bins, int n_bins)
                            hi3 = (ohi > phi) ? ohi : phi; }
                     if (lo3 - 1 < band_lo) band_lo = lo3 - 1;
                     if (hi3 + 1 > band_hi) band_hi = hi3 + 1;
+                    /* x-1: this column's pixels depend on the previous
+                     * column's peak too - the joining segment. Same reason
+                     * the band carries +/-1 in y. */
+                    if (x - 1 < col_lo) col_lo = x - 1;
+                    if (x     > col_hi) col_hi = x;
                 }
                 peak_prev_moved = (pprev != py);
                 peak_prev_old   = pprev;
@@ -13129,6 +13238,8 @@ void ui_push_spectrum(const float *bins, int n_bins)
                        hi2 = (prev > y_top) ? prev : y_top; }
                 if (lo2 - 1 < band_lo) band_lo = lo2 - 1;
                 if (hi2 + 1 > band_hi) band_hi = hi2 + 1;
+                if (x - 1 < col_lo) col_lo = x - 1;
+                if (x     > col_hi) col_hi = x;
             }
             s_frame_ytop[x] = (int16_t)y_top;
         }
@@ -13340,9 +13451,14 @@ void ui_push_spectrum(const float *bins, int n_bins)
             // waterfall). An overlay object rather than pixels in the bitmap, for the
             // reason s_wf_cursor is one: rows scroll, so a drawn line would trail.
             // Positioned from this same pass so the two can never disagree.
+            /* The spectrum's RIT line is drawn into s_spec_canvas, which
+             * slides with the drag; these two are objects over the waterfall
+             * and are not. Without the offset the one line comes apart into
+             * two during every pan. */
+            const int rwx = rx + ui_stroll_offset_px();
             if (s_rit_wf_marker) {
-                if (rx >= X0 && rx < DISPLAY_H_RES) {
-                    lv_obj_set_x(s_rit_wf_marker, rx);
+                if (rwx >= X0 && rwx < DISPLAY_H_RES) {
+                    lv_obj_set_x(s_rit_wf_marker, rwx);
                     lv_obj_clear_flag(s_rit_wf_marker, LV_OBJ_FLAG_HIDDEN);
                 } else {
                     lv_obj_add_flag(s_rit_wf_marker, LV_OBJ_FLAG_HIDDEN);
@@ -13353,14 +13469,14 @@ void ui_push_spectrum(const float *bins, int n_bins)
             // the honest place for it, since this is where the marker already says
             // WHERE you are listening and the number says how far.
             if (s_rit_wf_lbl) {
-                if (rx >= 0 && rx < DISPLAY_H_RES) {
+                if (rwx >= 0 && rwx < DISPLAY_H_RES) {
                     char rb[16];
                     snprintf(rb, sizeof rb, "%+d Hz", rit_hz_now);
                     const char *cur = lv_label_get_text(s_rit_wf_lbl);
                     if (!cur || strcmp(cur, rb) != 0) lv_label_set_text(s_rit_wf_lbl, rb);
                     // Flip to the left of the line when it would run off the right
                     // edge - about 80 px covers "+9999 Hz" at montserrat_18.
-                    int lx = (rx + 4 + 80 <= DISPLAY_H_RES) ? rx + 6 : rx - 84;
+                    int lx = (rwx + 4 + 80 <= DISPLAY_H_RES) ? rwx + 6 : rwx - 84;
                     if (lx < 0) lx = 0;
                     lv_obj_set_pos(s_rit_wf_lbl, lx, 2);
                     lv_obj_clear_flag(s_rit_wf_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -13465,13 +13581,25 @@ void ui_push_spectrum(const float *bins, int n_bins)
          * Treated as a 1 px invalidate rather than special-cased out, so the
          * push still ends the same way for every caller. */
         band_lo = 0; band_hi = 0;
+        col_lo  = 0; col_hi  = 0;
     }
     if (have_band) {
         if (band_lo < 0) band_lo = 0;
         if (band_hi > SPECTRUM_H - 1) band_hi = SPECTRUM_H - 1;
-        s_pi_band_sum += (unsigned)(band_hi - band_lo + 1);
+        if (col_lo  < 0) col_lo  = 0;
+        if (col_hi  > DISPLAY_H_RES - 1) col_hi = DISPLAY_H_RES - 1;
+        if (col_hi  < col_lo) { col_lo = 0; col_hi = DISPLAY_H_RES - 1; }
+        unsigned bh = (unsigned)(band_hi - band_lo + 1);
+        unsigned bw = (unsigned)(col_hi  - col_lo  + 1);
+        s_pi_band_sum += bh;
+        s_pi_cols_sum += bw;
         s_pi_band_n++;
-        if ((band_hi - band_lo + 1) * 3 >= SPECTRUM_H * 2) {
+        /* ⛔ THE TEST IS ON AREA, NOT ON HEIGHT. It was height-only until
+         * 2026-11-19 and that made the whole optimisation collapse the moment
+         * the band had a signal in it: one tall carrier sets the height to
+         * the full panel while leaving 1200 of 1280 columns untouched. Keep
+         * both terms. */
+        if ((uint32_t)bh * bw * 3u >= (uint32_t)SPECTRUM_H * DISPLAY_H_RES * 2u) {
             have_band = false;
             s_pi_wide++;
         } else {
@@ -13479,8 +13607,13 @@ void ui_push_spectrum(const float *bins, int n_bins)
         }
     }
     if (have_band) {
+        /* ⛔ SCREEN coordinates, built from the object's own coords - in x as
+         * well as y. Getting x wrong leaves a vertical stripe of the spectrum
+         * stale, the same failure the y note above warns about. */
         lv_area_t a;
         lv_obj_get_coords(s_spec_canvas, &a);
+        a.x2 = a.x1 + col_hi;
+        a.x1 = a.x1 + col_lo;
         a.y2 = a.y1 + band_hi;
         a.y1 = a.y1 + band_lo;
         lv_obj_invalidate_area(s_spec_canvas, &a);
@@ -16658,6 +16791,96 @@ void ui_toast_ms(const char *msg, uint32_t ms)
     display_unlock();
 }
 
+/* ⭐ AN ALERT TOAST: a toast that must not be missed, and that a tap closes.
+ *
+ * The plain toast is white text on 80 % black with a 1 px grey border. Over
+ * the white text of the FT8 decode list it is close to unreadable - the
+ * operator, 2026-11-21, on the "TX INHIBITED" notice: "I can barely see it
+ * with the white text behind it". So: fully opaque dark background and a
+ * thick red frame.
+ *
+ * Any press anywhere closes it. That is a listener on the INPUT DEVICES, not
+ * a full-screen scrim: any_modal_open() counts full-screen children of the
+ * layers as modals, and a scrim would make this read as one and hold back
+ * the QMX-wait prompt. The press is NOT consumed - it reaches whatever is
+ * under the finger as well, exactly as it would with no alert showing.
+ *
+ * Not reentrant with itself in any interesting way: one alert object,
+ * re-texted and re-timed by the next call. Call from any task: it takes the
+ * display lock like ui_toast_ms(). */
+static lv_obj_t   *s_alert       = NULL;
+static lv_timer_t *s_alert_timer = NULL;
+static lv_indev_t *s_alert_hooked[8];
+static int         s_alert_n_hooked;
+
+static void alert_hide(void)
+{
+    if (s_alert) lv_obj_add_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_alert_timer) {
+        lv_timer_delete(s_alert_timer);
+        s_alert_timer = NULL;
+    }
+}
+
+static void alert_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_alert_timer = NULL;          /* one-shot: LVGL deletes it after this */
+    if (s_alert) lv_obj_add_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void alert_press_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_alert && !lv_obj_has_flag(s_alert, LV_OBJ_FLAG_HIDDEN)) alert_hide();
+}
+
+/* Hook every input device that exists now (touch, and in some builds a
+ * mouse); a device added later is hooked by the next alert. */
+static void alert_hook_indevs(void)
+{
+    for (lv_indev_t *in = lv_indev_get_next(NULL); in; in = lv_indev_get_next(in)) {
+        bool have = false;
+        for (int i = 0; i < s_alert_n_hooked; i++) if (s_alert_hooked[i] == in) have = true;
+        if (have || s_alert_n_hooked >= (int)(sizeof s_alert_hooked / sizeof s_alert_hooked[0])) continue;
+        lv_indev_add_event_cb(in, alert_press_cb, LV_EVENT_PRESSED, NULL);
+        s_alert_hooked[s_alert_n_hooked++] = in;
+    }
+}
+
+void ui_toast_alert_ms(const char *msg, uint32_t ms)
+{
+    if (!display_lock(100)) return;
+    alert_hook_indevs();
+    if (!s_alert) {
+        s_alert = lv_label_create(lv_layer_top());
+        lv_obj_set_style_bg_color(s_alert, lv_color_hex(0x101014), 0);
+        lv_obj_set_style_bg_opa(s_alert, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(s_alert, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_alert, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_pad_all(s_alert, 22, 0);
+        lv_obj_set_style_radius(s_alert, 10, 0);
+        lv_obj_set_style_border_width(s_alert, 6, 0);
+        lv_obj_set_style_border_color(s_alert, lv_color_hex(0xE0302A), 0);
+        lv_obj_remove_flag(s_alert, LV_OBJ_FLAG_CLICKABLE);   /* the indev hook closes it */
+        lv_obj_set_width(s_alert, LV_PCT(70));                /* wraps: see ui_toast_ms */
+        lv_label_set_long_mode(s_alert, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(s_alert, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    lv_label_set_text(s_alert, msg);
+    lv_obj_align(s_alert, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_move_foreground(s_alert);
+    lv_obj_remove_flag(s_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_alert_timer) {
+        lv_timer_set_period(s_alert_timer, ms);
+        lv_timer_reset(s_alert_timer);
+    } else {
+        s_alert_timer = lv_timer_create(alert_timer_cb, ms, NULL);
+        lv_timer_set_repeat_count(s_alert_timer, 1);
+    }
+    display_unlock();
+}
+
 /* ⭐ A NOTICE THE OPERATOR HAS TO DISMISS, NOT A TOAST THAT TIMES OUT.
  *
  * A toast is right for "that worked". It is wrong for anything the operator
@@ -16831,6 +17054,7 @@ static void drawer_refresh_checkboxes(void)
     sync_cb(s_check_charge_limit,   c.charge_limit_en);
     sync_cb(s_cb_bt,                c.bt_mouse_en);
     sync_cb(s_check_rit_pill,       c.rit_pill_show);
+    sync_cb(s_check_server,         ui_get_server_mode());
     /* These three are owned by a module rather than read straight from the
        struct, so they are asked rather than copied. */
     sync_cb(s_switch_iq,            iq_balance_is_enabled());
@@ -17943,9 +18167,9 @@ static void drawer_build(void)
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
         lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, 10);
-        lv_obj_t *cb = make_drawer_checkbox(sec, ui_get_server_mode(),
-                                            drawer_check_server_cb, NULL);
-        lv_obj_align(cb, LV_ALIGN_TOP_RIGHT, 0, 6);
+        s_check_server = make_drawer_checkbox(sec, ui_get_server_mode(),
+                                              drawer_check_server_cb, NULL);
+        lv_obj_align(s_check_server, LV_ALIGN_TOP_RIGHT, 0, 6);
 
         lv_obj_t *note = lv_label_create(sec);
         lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);

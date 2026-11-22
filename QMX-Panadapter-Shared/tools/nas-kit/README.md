@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (52 patches). It applies to upstream **v2.0.2** as it
+* `patches/` - the NAS series (54 patches). It applies to upstream **v2.1.0** as it
   is (ported 2026-11-18; built, not yet flashed or tested on the Tab5).
   v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
@@ -24,6 +24,11 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     interlock); v2.0.0 raised DIRTY_WORDS to 6 itself and took 160 for RTTY
     (earlier: 159 in v1.26.1, 157-158 in v1.24.2, 152-156 in v1.24.1).
     check_dirty_bits is clean, 28 free - patch 0001;
+  * (v2.1.0) nothing stopped the series except git am: patches made on top of
+    earlier ones carry README blobs that no longer exist once upstream's
+    README changes, so the series was rebased onto v2.1.0 (it merged without
+    conflicts). Upstream's TX refusals now use a red alert toast, and the
+    NAS's "TX locked" refusals do the same (0053);
   * (v2.0.2) the README appendix (0041) follows upstream's new licence text
     (the MP3 decoder is now minimp3, in the tree); nothing else needed hand work;
   * (v2.0.0) /api/status keeps upstream's new rtty_mark_off next to the NAS's
@@ -66,9 +71,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     (patch 0015); the "TX locked" refusal sits after upstream's band guard (T48)
     (patch 0029); CMakeLists.txt keeps both upstream's configure-on-commit block
     and the -NAS version block.
-  On v2.0.2 the host harnesses (`tools/run_harnesses.py`) give 69 passed, 2
-  failed (adif_worked_cache, rtty_auto), 1 skipped - the same as pristine
-  upstream v2.0.2 in the same environment;
+  On v2.1.0 the host harnesses (`tools/run_harnesses.py`) give 70 passed, 3
+  failed (ft8_gap and ft8_piece do not build here, rtty_auto), 4 skipped -
+  the same as pristine upstream v2.1.0 in the same environment;
   check_tx_guard, check_unattended_tx, check_dirty_bits, check_web and
   check_webui are clean, and check_docs gives upstream's own two warnings.
   Later patches: **0021** the version fallback, **0022** the front-page README
@@ -94,7 +99,14 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   **0044** upstream's sdio recovery script re-runs the other sdio patches with pwsh on the Mac,
   **0045** RTTY transmit refuses while another device has the transmitter,
   **0046** QMX Bridge, the native Mac app (tools/mac-bridge-app) with its
-  DriverKit virtual USB serial port, /dev/cu.QMX-NAS.
+  DriverKit virtual USB serial port, /dev/cu.QMX-NAS,
+  **0047** the relay's Remote Power-ON (FTDI cable + PC817 board across the VOL switch),
+  **0048** and **0051** the setup picture with the power-on board and its wires,
+  **0049** "Power off the radio" in the Tab5 drawer (PS0; after RX;),
+  **0050** "Power on the radio" in the drawer: QMXR-PWR1 over UDP asks the relay to press the button,
+  **0052** both on the web page's Misc menu and on /api/cmd,
+  **0053** the "TX locked" refusals use upstream's red alert toast (v2.1.0),
+  **0054** the project PDF for v2.1.0-NAS.
 * `doc/` - the source of the project PDF (`project.md`, plus `port-status.txt`
   and `tab5-status.txt`) and its builder. After a new release is built and
   checked, rebuild the PDF from the folder it describes (needs python3 with
@@ -144,7 +156,7 @@ Other options: `--ref vX.Y.Z` (a specific tag, branch or commit),
 * Each tree holds `.qmx-nas-build` (release, upstream commit, patch-series
   checksum, build time) and, once tested, `.qmx-nas-tested`. Both are excluded
   from `git status`.
-* Builds report the upstream release plus `-NAS`, e.g. `v2.0.2-NAS`.
+* Builds report the upstream release plus `-NAS`, e.g. `v2.1.0-NAS`.
 
 Tested 2026-10-15 (cloud, against a copy of upstream): a fresh run on the current release
 produced a tree identical to QMX-Panadapter-NAS (same git tree hash); a rebuild

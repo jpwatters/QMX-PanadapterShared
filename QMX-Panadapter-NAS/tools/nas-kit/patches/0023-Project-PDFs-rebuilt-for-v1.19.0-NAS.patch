@@ -1,7 +1,7 @@
-From c1ab6baee13bb25543ac426e2ec94b7109b5411f Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From cce7be42005e0374e494422d9ef8c33ec04b07e6 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Thu, 15 Oct 2026 00:25:51 -0500
-Subject: [PATCH 23/46] Project PDFs rebuilt for v1.19.0-NAS
+Subject: [PATCH 23/54] Project PDFs rebuilt for v1.19.0-NAS
 
 M5StackTab5QMX+SharedOverNetwork.pdf, QMX-Panadapter-Shared.pdf and
 QMX-Panadapter-SharedViaNAS.pdf now describe v1.19.0-NAS: firmware base

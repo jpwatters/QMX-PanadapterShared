@@ -1,7 +1,7 @@
-From 23033d6ad9f0e504a445f9d6163d97d823501837 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 47580343cac8729f45c5f644d2550393e8b8fa9f Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Fri, 23 Oct 2026 21:00:00 -0500
-Subject: [PATCH 30/46] README: features of v1.20.5-NAS - TX locked, one
+Subject: [PATCH 30/54] README: features of v1.20.5-NAS - TX locked, one
  transmitter at a time, I/Q copy, port status
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 10 insertions(+), 3 deletions(-)
 
 diff --git a/README.md b/README.md
-index 4dd0ee50..a3002fc9 100644
+index 011dda07..c4fc6b43 100644
 --- a/README.md
 +++ b/README.md
 @@ -12,7 +12,10 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,

@@ -1,7 +1,7 @@
-From fe78945811608d5427b540c8db2d55333aea4d53 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 8fad17d93b2495022d5604111026c67f00fcfd28 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Fri, 16 Oct 2026 08:00:00 -0500
-Subject: [PATCH 26/46] Project PDF for v1.20.0-NAS
+Subject: [PATCH 26/54] Project PDF for v1.20.0-NAS
 
 M5StackTab5QMX+SharedOverNetwork.pdf now describes v1.20.0-NAS: firmware
 base v1.20.0, patch series 0001-0027, listings as diffs against v1.20.0, and

@@ -21,6 +21,7 @@
  * Build (host, not the device):
  *   gcc -O2 -o ft8_decode_bench test/ft8_decode_bench.c \
  *       components/ft8_lib/ft8/{decode,encode,ldpc,text,message,crc,constants}.c \
+ *       components/ft8_lib/ft8/{js8_codec,js8_tables}.c \
  *       components/ft8_lib/common/monitor.c \
  *       components/ft8_lib/fft/kiss_fft.c components/ft8_lib/fft/kiss_fftr.c \
  *       -Icomponents/ft8_lib -Icomponents/ft8_lib/ft8 \
@@ -31,6 +32,84 @@
  *
  * Not a pass/fail harness, so run_harnesses.py does not run it - it has no
  * correct answer, only a number you compare between two builds.
+ *
+ * ⛔ THE TWO JS8 FILES ARE NOT OPTIONAL. decode.c grew a JS8 branch after
+ * this build line was written, and without them the link fails on
+ * js8_check_payload_crc, kJS8_LDPC_colorder, kJS8_Costas_original and three
+ * more. A stale build line in a comment reads as a broken harness.
+ *
+ * Baseline over test/wav_reference (the 22 WAVs that have a .txt ground
+ * truth), measured 2026-11-20 on the Ryzen box, gcc -O2:
+ *   236 unique decodes, 235 of 345 ground-truth messages (68.1 %)
+ *
+ * ⛔ DO NOT COMPARE THAT ROW WITH A PER-FILE SUM OF THIS BENCH'S OWN OUTPUT.
+ * Summing the printed uniq/truth/hit columns across the 22 files, same binary,
+ * same settings, gives 264 uniq and 260 of 362 - not 236 and 235 of 345. The
+ * truth count differs too, so this is an AGGREGATION difference and not a
+ * decoder change: a per-file sum counts a message appearing in two files
+ * twice, and how the 236/345 row above was totalled is not recorded.
+ * UNEXPLAINED and left that way, because only whoever produced that row can
+ * say. 362/260 is the figure ft8_subtract_bench.c, ft8_osd_reach_harness.c
+ * and ft8_osd_proto_harness.c all agree on, and those three are mutually
+ * validated; quote one of them, or re-derive this row's method before
+ * quoting it.
+ *   stft 141.3 + find 52.5 + dec 199.3 = 393.1 ms for all 22 slots
+ * The 110 missed ground-truth messages are the size of the prize, and what
+ * subtract-and-repeat and OSD would be for; neither exists in ft8_lib.
+ *
+ * SWEEP 2026-11-20, same 22 WAVs, one binary per setting (-D overrides):
+ *
+ *   setting        hit/345  uniq   stft ms   dec ms
+ *   2x2 baseline      235    236     142      200
+ *   cand 300          235    236     146      487
+ *   cand 600          235    236     143     1031
+ *   minscore 2        235    236     144      200
+ *   iters 60          235    236     147      202
+ *   time_osr 4        241    252     298      176    <-- the only winner
+ *   freq_osr 4        167    163     305      207
+ *   freq_osr 1        175    173      72      228
+ *
+ * [*] CANDIDATES, MIN SCORE AND LDPC ITERATIONS ARE NOT BINDING, and this is
+ * an INDEPENDENT replication of what the device measured: ft8_test.c records
+ * 140 -> 300 as a clean negative on 20 m. Here 140 -> 600 moves nothing at
+ * all while decode cost goes up 5x. Stop proposing these three.
+ *
+ * [*] time_osr 2 -> 4 IS A REAL GAIN: +16 unique decodes (+6.8 %), and decode
+ * gets CHEAPER (176 vs 200 ms) because better time resolution means fewer
+ * candidates burn the full LDPC iteration count before failing. STFT doubles,
+ * 142 -> 298 ms, which on the device is PSRAM and core-1 time it does not
+ * have, and on a host is nothing.
+ *
+ * [!] THE EXTRA DECODES ARE GENUINE, NOT FALSE POSITIVES. uniq rises 236 ->
+ * 252 while hit rises 235 -> 241, so 11 decodes are not in the .txt. Every
+ * decode ft8_lib returns has passed a 14-bit CRC (decode.c:815), so the
+ * expected number of random passes across 252 decodes is 252/16384 = 0.015.
+ * The ground truth is WSJT-X's own output and is simply not exhaustive.
+ *
+ * [*] WHY freq_osr 4 IS WORSE, AND WHY 2 IS THE OPTIMUM - explained, not
+ * just observed. The decoder reads ONE sub-bin per tone: get_cand_mag()
+ * (decode.c:182) selects a single (time_sub, freq_sub) plane and every
+ * magnitude after that is read inside it. The STFT bin is 6.25/freq_osr Hz
+ * wide against FT8's 6.25 Hz tone spacing, so:
+ *
+ *     freq_osr 1   6.25 Hz   one bin per tone, but NO sub-bin correction -
+ *                            a tone sitting between bins is scalloped away
+ *     freq_osr 2   3.125 Hz  half-bin correction available, bin still wide
+ *                            enough to hold most of one tone   <-- optimum
+ *     freq_osr 4   1.5625 Hz bin NARROWER than the tone, so the one bin the
+ *                            decoder reads holds a fraction of its energy
+ *
+ * The measurements follow that exactly: 175, 235, 167. Raising the candidate
+ * cap recovers only 6 of the 68 lost at freq_osr 4 (173 at cand 280, and no
+ * further at 560), so candidate dilution is a small second-order effect and
+ * the lost energy is the cause. This is a property of the decoder's design,
+ * not a bug with a cheap fix - reading all freq_osr sub-bins per tone would
+ * be the fix, and that is a change to ft8_lib's core.
+ *
+ * [!] time_osr 8 and 4x4 CRASH partway through the corpus (the run stops at
+ * truth 139 and 121 of 345) while a single file at 4x4 completes. Unexplained,
+ * and it is a harness limit, not a decoder result - do not quote those two
+ * rows as measurements.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,11 +120,30 @@
 #include <ft8/decode.h>
 #include <ft8/message.h>
 #include <common/monitor.h>
+#if FT8_OSD_ORDER0
+#include <ft8/osd.h>
+#endif
 
 #define SR 12000
-#define MAXC 140
-#define MINSCORE 5
-#define ITERS 30
+/* Overridable with -D so one binary per setting can be swept against the same
+ * corpus. The DEFAULTS must stay equal to the device's own constants in
+ * main/ft8_test.c, or the number this prints stops meaning anything - that is
+ * what the file header promises and it is the whole point of the harness. */
+#ifndef MAXC
+#define MAXC 140          /* FT8_MAX_CANDIDATES */
+#endif
+#ifndef MINSCORE
+#define MINSCORE 5        /* FT8_FIND_MIN_SCORE */
+#endif
+#ifndef ITERS
+#define ITERS 30          /* FT8_LDPC_MAX_ITERS */
+#endif
+#ifndef TIME_OSR
+#define TIME_OSR 2
+#endif
+#ifndef FREQ_OSR
+#define FREQ_OSR 2
+#endif
 
 static double now_ms(void){ struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts);
     return ts.tv_sec*1000.0 + ts.tv_nsec/1e6; }
@@ -94,7 +192,10 @@ int main(int argc,char** argv){
     if(load_wav(sig,&n,&sr,argv[1])<0){ fprintf(stderr,"bad wav %s\n",argv[1]); return 1; }
     if(argc>2) load_expected(argv[2]);
 
-    monitor_t mon; monitor_config_t cfg={200,3000,sr,2,2,FTX_PROTOCOL_FT8};
+#if FT8_OSD_ORDER0
+    ft8_osd_init();
+#endif
+    monitor_t mon; monitor_config_t cfg={200,3000,sr,TIME_OSR,FREQ_OSR,FTX_PROTOCOL_FT8};
     monitor_init(&mon,&cfg);
     double t0=now_ms();
     for(int p=0;p+mon.block_size<=n;p+=mon.block_size) monitor_process(&mon,sig+p);

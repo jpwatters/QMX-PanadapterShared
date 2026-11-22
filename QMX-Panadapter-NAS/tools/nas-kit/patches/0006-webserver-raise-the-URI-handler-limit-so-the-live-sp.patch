@@ -1,7 +1,7 @@
-From e1c6f8c058175225411b26e329451cc4e7ad2e60 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From e02703522bf9e70f02f3b0ebc305d2914d8bd1f6 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 22:32:25 +0000
-Subject: [PATCH 06/46] webserver: raise the URI handler limit so the live
+Subject: [PATCH 06/54] webserver: raise the URI handler limit so the live
  spectrum socket registers
 
 GET + POST /api/relay brought webserver.c to 50 handlers; with 5 in

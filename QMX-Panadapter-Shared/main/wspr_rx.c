@@ -110,7 +110,9 @@ static const char *TAG = "wspr_rx";
  * never reached, and pass 2 is what subtracts a decoded station to uncover
  * its neighbours. The host said 2.1x; the device measured about 4.5x.
  * Over-running the budget costs more than the extra candidates buy. */
+#ifndef WSPR_MAX_CANDS     /* an off-device build may raise it - with WSPR_MARKS_MAX */
 #define WSPR_MAX_CANDS    20
+#endif
 /* How far above the cycle's MEDIAN candidate score an undecoded candidate has
  * to sit before it earns a '?' on the waterfall (#360). See the long note where
  * it is applied - the finder pads its list out of the noise, so without this
@@ -1851,6 +1853,12 @@ static void decode_one_window(int16_t *pcm, int64_t cycle_utc)
                   "%d skipped (budget, pass %d), %d pass(es), %d subtracted, %lld ms",
              (long long)cycle_utc, ncand, decoded, guarded, skipped,
              pass, pass, subtracted, (long long)dec_ms);
+    /* Every cycle, 0 of 0 included: the shipping ration is 0, and a line
+     * that appeared only when the pass ran could not tell "off" from "ran,
+     * spent nothing". */
+    ESP_LOGI(TAG, "cycle %lld: deep searches %d of %d",
+             (long long)cycle_utc, wspr_decode_get_deep_used(),
+             wspr_decode_get_deep_max());
     /* ⚠ WHICH PASS was cut is the whole meaning of this warning. A cut in pass
      * 1 means part of the band was never looked at; a cut in a later pass just
      * means the cheap second look ran out of time, which costs at most a

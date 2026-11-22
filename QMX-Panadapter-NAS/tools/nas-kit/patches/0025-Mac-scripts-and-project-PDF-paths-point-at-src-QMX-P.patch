@@ -1,7 +1,7 @@
-From 5261fedca060d69029ffb07602ec43b22266e207 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 817f9db87f5f6e1780b194d4de392af42f91e4ea Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Thu, 15 Oct 2026 06:29:06 -0500
-Subject: [PATCH 25/46] Mac scripts and project PDF: paths point at
+Subject: [PATCH 25/54] Mac scripts and project PDF: paths point at
  ~/src/QMX-Panadapter-NAS
 
 mac-build-flash.sh and mac-capture-serial.sh named the old work tree

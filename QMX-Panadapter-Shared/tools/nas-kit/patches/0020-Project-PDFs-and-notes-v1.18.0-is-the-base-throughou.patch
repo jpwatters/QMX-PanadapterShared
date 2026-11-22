@@ -1,7 +1,7 @@
-From 26edb337eb61ff10328a086e53fb0944785c089a Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 6c4720760fd0394c32da0d49865af7d0aa6663df Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 22:12:27 -0500
-Subject: [PATCH 20/46] Project PDFs and notes: v1.18.0 is the base throughout
+Subject: [PATCH 20/54] Project PDFs and notes: v1.18.0 is the base throughout
 
 The three project PDFs (M5StackTab5QMX+SharedOverNetwork.pdf,
 QMX-Panadapter-Shared.pdf, QMX-Panadapter-SharedViaNAS.pdf) are rebuilt
@@ -31648,7 +31648,7 @@ z^!1gfTsGJ5Pmg?ezY^W+_4Um^Pv`4?C3^e+TmLyr%w)cvujS+Q=fn{bj-mSH^Oaiq
 G*Z%{U8fydq
 
 diff --git a/README.md b/README.md
-index fe619be2..c24bcd38 100644
+index 5bdfda3f..4ac5e9ea 100644
 --- a/README.md
 +++ b/README.md
 @@ -38,7 +38,7 @@ Keeping up with upstream

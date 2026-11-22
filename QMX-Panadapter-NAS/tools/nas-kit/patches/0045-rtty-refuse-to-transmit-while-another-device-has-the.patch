@@ -1,7 +1,7 @@
-From 88364b37c861ec9e33fba375932e1b812309c0da Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 8053e9e74d2ef0b69ea1379aa0a082f79deb448e Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 08:25:57 -0600
-Subject: [PATCH 45/46] rtty: refuse to transmit while another device has the
+Subject: [PATCH 45/54] rtty: refuse to transmit while another device has the
  transmitter
 
 v2.0.0 adds RTTY transmit. Like FT8/FT4 and WSPR, an RTTY over now refuses

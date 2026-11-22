@@ -1,7 +1,7 @@
-From 0964eb33c1b05fd6491fa723fb54943fa5c3f2c5 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 1be286a55d18c587533406828e49959141c9f7b5 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 14:00:00 -0500
-Subject: [PATCH 36/46] README: heading before the upstream documentation
+Subject: [PATCH 36/54] README: heading before the upstream documentation
  (SteffenLav/qmx-panadapter, by Steffen Lav OZ1LAV)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 4 insertions(+)
 
 diff --git a/README.md b/README.md
-index dfdf0616..c028a1f0 100644
+index bc2e76df..b7434932 100644
 --- a/README.md
 +++ b/README.md
 @@ -108,6 +108,10 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──

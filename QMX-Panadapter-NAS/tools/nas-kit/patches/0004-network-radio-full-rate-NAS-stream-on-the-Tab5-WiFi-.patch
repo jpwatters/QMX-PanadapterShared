@@ -1,7 +1,7 @@
-From 50a1c5a049d88c4a43c6d72fc329dfb898cff889 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From a76b72851ba1991108ab92ab97f44ca1dcfc4845 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
-Subject: [PATCH 04/46] network-radio: full-rate NAS stream on the Tab5 - WiFi
+Subject: [PATCH 04/54] network-radio: full-rate NAS stream on the Tab5 - WiFi
  RX fixes, build on macOS
 
 Bring-up on the real hardware (Tab5 + QMX+ on a Synology DS416j) found the

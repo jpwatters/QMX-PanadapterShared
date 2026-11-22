@@ -1,7 +1,7 @@
-From 005428e95cfd9e6d478cd15a21f51d8c21283716 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 2ca045bd0676ab05ed91d3f0f2ad95bc30864e18 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Thu, 12 Nov 2026 08:15:24 -0600
-Subject: [PATCH 43/46] README: what each upstream release changed for the NAS
+Subject: [PATCH 43/54] README: what each upstream release changed for the NAS
  patches; how the PDF is built
 
 A table under "Keeping up with upstream" lists, for every port from v1.20.5
@@ -15,22 +15,22 @@ the folder.
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
 ---
- README.md                            | 23 ++++++++++++++++++++++-
+ README.md                            | 24 +++++++++++++++++++++++-
  docs/nas/keeping-up-with-upstream.md | 23 +++++++++++++++++++++++
- 2 files changed, 45 insertions(+), 1 deletion(-)
+ 2 files changed, 46 insertions(+), 1 deletion(-)
  create mode 100644 docs/nas/keeping-up-with-upstream.md
 
 diff --git a/README.md b/README.md
-index c1e3270f..22cbdd85 100644
+index b59060e4..552cc5ab 100644
 --- a/README.md
 +++ b/README.md
-@@ -8,6 +8,24 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
+@@ -8,6 +8,25 @@ A standalone real-time panadapter — spectrum analyser and waterfall — for th
  
  $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
  
 +**Keeping up with upstream: what each release changed**
 +
-+Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](docs/nas/keeping-up-with-upstream.md) has the details (the same text as in the [project PDF](M5StackTab5QMX+SharedOverNetwork.pdf), page 12).
++Each new upstream release can stop the patches applying: new settings take the same slots, new menu sections take the same numbers, and files the patches touch get rewritten or removed. When that happens the kit stops without changing anything, the series is rebased onto the new release by hand, built and checked against upstream’s own checks and host tests, and a new kit is committed. [Section 9 of the project PDF](docs/nas/keeping-up-with-upstream.md) has the details (the same text as in the [project PDF](M5StackTab5QMX+SharedOverNetwork.pdf), page 13).
 +
 +| Release (ported) | What stopped the patches | How it was resolved |
 +|---|---|---|
@@ -45,20 +45,21 @@ index c1e3270f..22cbdd85 100644
 +| v1.26.3 (2026-11-13) | Nothing - the patches applied as they were | - |
 +| v2.0.0 (2026-11-15) | Upstream also enlarged the settings table and took bit 160 (RTTY); the web status gained an RTTY field where the NAS adds its own; a frequency function was renamed; upstream’s Wi-Fi driver fix now re-runs the other driver patches with a command that macOS doesn’t have; RTTY transmit is new | Relay setting bit 161; both status fields kept; the NAS frequency check moved into the renamed function; the driver fix re-runs them with the PowerShell already running (pwsh on the Mac); RTTY refuses to transmit while another device has the transmitter |
 +| v2.0.2 (2026-11-18) | Upstream took bits 161 (RTTY contest) and 162 (TX subnet interlock); the README’s licence section, where the NAS appendix follows, changed; the web radio’s MP3 decoder was replaced | Relay setting bit 163; the appendix kept after upstream’s new licence text; nothing to carry for the MP3 decoder |
++| v2.1.0 (2026-11-22) | No conflicting change, but the patches added on the Mac since v2.0.2 could not be merged by the kit, which had no matching base to merge from | Series rebased onto v2.1.0; the "TX locked" refusals use upstream’s new red alert toast |
 +
  <p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
  
  Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
-@@ -20,7 +38,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+@@ -20,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
  7. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
  8. An update kit that rebuilds all of this on each new upstream release
  
 -The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.0; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
-+The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v1.23.1-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
++The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.0; not yet flashed). The last build marked tested was v2.0.2-NAS (2026-11-18).
  
  **Sharing the radio over the network**
  * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
-@@ -149,6 +167,8 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
+@@ -149,6 +168,8 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
  * Version names: builds report themselves as the upstream version plus -NAS, e.g. v1.19.0-NAS.
  
  Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
@@ -67,7 +68,7 @@ index c1e3270f..22cbdd85 100644
  ________________________________________________________________________________________________________________________________________________
  
  These commands build a new version whenever Steffen publishes a new upstream release:
-@@ -214,6 +234,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
+@@ -214,6 +235,7 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──
  **Documentation**
  * The project PDF, M5StackTab5QMX+SharedOverNetwork.pdf, is the one document for the network-shared version: architecture, why the data goes through a relay, the Synology and Raspberry Pi relays with their installation, operation and maintenance scripts, the Mac tools, the update kit, the FT8 burst timing comparisons, sources and full code listings. (The user guide PDFs in docs/ are upstream's.)
  * The relay README (tools/nas-relay/README.md): setup, troubleshooting, and the power-off cure for a stuck touch chip.

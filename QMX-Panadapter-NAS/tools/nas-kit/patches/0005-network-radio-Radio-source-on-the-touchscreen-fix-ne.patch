@@ -1,7 +1,7 @@
-From 012424e663b04c36ef015cda3db185a92666dbe6 Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From ebc9f042155a20873139e6a95476d7695a3f310c Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
-Subject: [PATCH 05/46] network-radio: Radio source on the touchscreen; fix
+Subject: [PATCH 05/54] network-radio: Radio source on the touchscreen; fix
  network freeze and DMA RAM drain
 
 - Settings drawer: "Radio source" button showing USB / NAS and link state,
@@ -6531,7 +6531,7 @@ index 1c6e15ce..1e8a3e18 100644
          return ESP_ERR_TIMEOUT;
      }
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index aa39e06c..8592de92 100644
+index 36663240..70378b59 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
 @@ -97,6 +97,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
@@ -6576,7 +6576,7 @@ index aa39e06c..8592de92 100644
      { DRAWER_SEC_QMXVOL, "QMX volume", true },
      { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
      /* T139: under the two gains because it only makes sense read against them
-@@ -4702,6 +4714,9 @@ static void gain_resolve_stop(void);
+@@ -4703,6 +4715,9 @@ static void gain_resolve_stop(void);
  static void drawer_pause_btn_cb(lv_event_t *e);
  static void drawer_term_btn_cb(lv_event_t *e);
  static void drawer_gpsstats_btn_cb(lv_event_t *e);
@@ -6586,7 +6586,7 @@ index aa39e06c..8592de92 100644
  static void topbar_reconcile_cb(lv_timer_t *t);
  static void drawer_slider_cwtxoff_cb(lv_event_t *e);
  static void ui_set_cw_tx_offset_label(int hz);
-@@ -17427,6 +17442,29 @@ static void drawer_build(void)
+@@ -17651,6 +17666,29 @@ static void drawer_build(void)
      //
      // Directly under the pause button on purpose: an operator reaching for
      // "let me use the QMX menus" on a radio with no front panel wanted this.
@@ -6616,7 +6616,7 @@ index aa39e06c..8592de92 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -21056,6 +21094,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
+@@ -21280,6 +21318,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
   * physically swap a card - which is exactly when it disappears. It also has a
   * second instruction after the swap, so it has to still be there afterwards.
   * A window waits. */

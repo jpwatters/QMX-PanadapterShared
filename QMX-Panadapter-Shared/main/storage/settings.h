@@ -907,10 +907,15 @@ typedef struct {
      * or wspr_enabled = yes in an imported config file. */
     bool     wspr_en;
 
-    /* ⛔ PUBLISHES TO A PUBLIC DATABASE UNDER THE OPERATOR'S CALLSIGN, so it
-     * starts OFF and only the operator turns it on. wsprnet is a scientific
-     * dataset other people draw propagation conclusions from - an upload is
-     * not a private action, and it cannot be taken back once indexed. */
+    /* ⛔ PUBLISHES TO A PUBLIC DATABASE UNDER THE OPERATOR'S CALLSIGN.
+     * wsprnet is a scientific dataset other people draw propagation
+     * conclusions from - an upload is not a private action, and it cannot be
+     * taken back once indexed.
+     *
+     * ⭐ DEFAULT ON since 2026-11-19 (was off). The operator's call:
+     * reporting is what a WSPR receiver is for. A stored 0 from someone who
+     * switched it off still wins - see the note at the default in settings.c
+     * for why a default change cannot override that. */
     bool     wspr_net_en;
 
     /* WSPR PA-voltage guard (#290). WSPR keys the PA for ~110 s out of every
@@ -1551,7 +1556,7 @@ void settings_set_wspr_pa_saved_x10(uint16_t v);// value to restore, tenths of a
 void settings_set_wspr_hop_mask(uint16_t v);
 void settings_set_wspr_hop_en(bool v);
 void settings_set_wspr_en(bool v);   // master switch for the WSPR page - default OFF
-void settings_set_wspr_net_en(bool v);   // publish spots to wsprnet - default OFF
+void settings_set_wspr_net_en(bool v);   // publish spots to wsprnet - default ON since 2026-11-19
 void settings_set_wspr_dump_cycles(uint8_t v);
 void settings_set_ft8_op_mode(uint8_t v);
 
@@ -1719,6 +1724,15 @@ void settings_set_date_src(uint8_t src);
 // battery reaches charge_limit_pct and resumed with a hysteresis gap below
 // it, to avoid holding the pack at 100% indefinitely (long-term battery
 // wear). charge_limit_pct is clamped to 50..100.
+/* The three fields status_task reads, under one mutex take and with NO
+ * qmx_settings_t copy on the caller's stack. sizeof(qmx_settings_t) is
+ * 4268 B (measured from the ELF, 2026-11-22) and status_task held two at
+ * once on a 13 KB stack - see the comment on the definition in settings.c.
+ * Any NULL argument is skipped. */
+void settings_get_status_fields(bool *charge_limit_en,
+                                uint8_t *charge_limit_pct,
+                                bool *resmon_en);
+
 void settings_set_charge_limit_en(bool v);
 void settings_set_charge_limit_pct(uint8_t pct);
 

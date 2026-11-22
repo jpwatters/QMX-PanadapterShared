@@ -1,4 +1,5 @@
 #include "decode.h"
+#include "osd.h"
 #include "constants.h"
 #include "js8.h"
 #include "js8_message.h"
@@ -57,6 +58,22 @@
 #ifndef FT8_MULTI_SYMBOL_FALLBACK
 #define FT8_MULTI_SYMBOL_FALLBACK 0
 #endif
+
+/* Order-0 OSD on a candidate belief propagation could not decode. OFF, and
+ * the measurement that says it is worth switching on is in osd.h: +4 of 362
+ * ground-truth messages for 2.82 ms a slot on a host, additive with
+ * subtract-and-repeat. It is off because the P4 cost is an ESTIMATE (~136 ms
+ * a slot, probably optimistic) and because it wants ~3.4 KB of stack in
+ * whichever task decodes. Both need measuring on a Tab5 before this flips.
+ *
+ * ⛔ UNLIKE the subtract pass this needs NO PSRAM and no second monitor, which
+ * is the whole reason it is the better candidate for the device. */
+#ifndef FT8_OSD_ORDER0
+#define FT8_OSD_ORDER0 0
+#endif
+
+/* FT8_OSD_MAX_NDIS lives in osd.h: ft8_test.c logs it at init, and a second
+ * copy here would be free to drift from the one it prints. */
 
 /* Abandon an FT8 candidate after this many belief-propagation iterations with
  * no improvement. The table of what each value costs in DECODES is at the
@@ -552,13 +569,21 @@ static float estimate_snr_db(const ftx_waterfall_t* wf, const ftx_candidate_t* c
 {
     const WF_ELEM_T* mag = get_cand_mag(wf, cand);
     const int num_bins = 8;  // FSK tones per symbol
+    /* ⛔ time_offset can be NEGATIVE (a signal that started before the
+     * waterfall), and then `mag` points BEFORE the buffer. Both loops here
+     * bounded only the end, so the first -time_offset rows were read out of
+     * bounds - a segfault on the host (ft8_piece_harness, 2026-11-21), on the
+     * Tab5 a read of whatever PSRAM lies below the waterfall, on such
+     * candidates since 47dc8653 (2026-07-07). Every other user of
+     * get_cand_mag() in this file checks block < 0; this one did not. */
+    const int sym0 = cand->time_offset < 0 ? -cand->time_offset : 0;
 
     // Collect signal power from the candidate's FSK tones (first 10 symbols)
     float signal_sum = 0.0f;
     int signal_count = 0;
 
     // Sample signal from the 8 FSK tone bins across multiple symbols
-    for (int sym = 0; sym < 10 && sym < wf->num_blocks - cand->time_offset; ++sym) {
+    for (int sym = sym0; sym < 10 && sym < wf->num_blocks - cand->time_offset; ++sym) {
         const WF_ELEM_T* block = mag + sym * wf->block_stride;
         for (int bin = 0; bin < num_bins; ++bin) {
             float magnitude_db = WF_ELEM_MAG(block[bin]);
@@ -579,10 +604,11 @@ static float estimate_snr_db(const ftx_waterfall_t* wf, const ftx_candidate_t* c
 
     // Sample between the FSK tones (bins 4-7 in a typical 8-bin FSK window)
     // These are unlikely to contain strong signal
-    for (int sym = 0; sym < 10 && sym < wf->num_blocks - cand->time_offset; ++sym) {
+    for (int sym = sym0; sym < 10 && sym < wf->num_blocks - cand->time_offset; ++sym) {
         const WF_ELEM_T* block = mag + sym * wf->block_stride;
         // Sample the "gaps" between expected FSK tones
-        for (int bin = 50; bin < wf->num_bins && bin < 150; bin += 3) {
+        /* The bound is the ROW: freq_offset + bin past num_bins read the next row. */
+        for (int bin = 50; cand->freq_offset + bin < wf->num_bins && bin < 150; bin += 3) {
             float magnitude_db = WF_ELEM_MAG(block[bin]);
             float magnitude_linear = powf(10.0f, magnitude_db / 10.0f);
             noise_sum += magnitude_linear;
@@ -721,6 +747,8 @@ static bool js8_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_
 
 bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand, int max_iterations, ftx_message_t* message, ftx_decode_status_t* status)
 {
+    /* Before the JS8 branch: every return path must leave it defined. */
+    status->osd = false;
     if (ftx_protocol_is_js8(wf->protocol))
     {
         return js8_decode_candidate(wf, cand, max_iterations, message, status);
@@ -795,10 +823,46 @@ bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand
 
     if (status->ldpc_errors > 0)
     {
+#if FT8_OSD_ORDER0
+        /* ⭐ BP FAILED - TRY ORDER-0 OSD BEFORE GIVING UP. Measured +4 of 362
+         * ground-truth messages on the reference corpus for 2.82 ms a slot on
+         * a host, and ADDITIVE with subtract-and-repeat. See osd.h for the
+         * numbers, the P4 cost estimate and the ~3.4 KB of stack it wants.
+         *
+         * HERE, and not in a wrapper around ftx_decode_candidate(), for two
+         * reasons: log174 already exists at this point, so OSD costs no second
+         * likelihood extraction; and everything below - pack_bits, the CRC,
+         * the FT4 XOR, the unpack, the symbol extraction - then applies to an
+         * OSD codeword unchanged.
+         *
+         * ⛔ A CODEWORD IS NOT A MESSAGE. ft8_osd_order0() returns a valid
+         * codeword; the 14-bit CRC below is the only thing that makes it a
+         * message, and one trial false-accepts with probability 2^-14. Falling
+         * through to that check is deliberate - do not add an early accept.
+         *
+         * FT8 only: FT4's parity matrix differs and no corpus has been
+         * measured for it, the same caution bp_decode()'s stall_limit carries
+         * above. */
+        bool osd_ok = false;
+        if (wf->protocol == FTX_PROTOCOL_FT8)
+        {
+            osd_ok = ft8_osd_decode(log174, FT8_OSD_ORDER1 ? 1 : 0, FT8_OSD_MAX_NDIS,
+                                    FT8_OSD_MAX_NDIS1, plain174);
+        }
+        if (!osd_ok)
+        {
+            diag_log_candidate(cand->score, 0.0f, cand->freq_offset,
+                              single_symbol_errors, fallback_triggered, multi_symbol_errors, 0, "FAIL");
+            return false;
+        }
+        status->ldpc_errors = 0;     /* an OSD codeword satisfies every check */
+        status->osd = true;          /* the CRC below may still reject it */
+#else
         // Log the failure
         diag_log_candidate(cand->score, 0.0f, cand->freq_offset,
                           single_symbol_errors, fallback_triggered, multi_symbol_errors, 0, "FAIL");
         return false;
+#endif
     }
 
     // Extract payload + CRC (first FTX_LDPC_K bits) packed into a byte array
@@ -850,6 +914,34 @@ bool ftx_decode_candidate(const ftx_waterfall_t* wf, const ftx_candidate_t* cand
     // LOG(LOG_DEBUG, "Decoded message (CRC %04x), trying to unpack...\n", status->crc_extracted);
     return true;
 }
+
+#ifdef FTX_EXPOSE_LIKELIHOOD
+/* The 174 soft bits a candidate produces, with no LDPC decode.
+ *
+ * ⛔ COMPILED OUT UNLESS -DFTX_EXPOSE_LIKELIHOOD. The device build must stay
+ * byte-identical, so this exists only for host harnesses that need the LLRs
+ * themselves - OSD reprocessing is the reason it was added
+ * (test/ft8_osd_proto_harness.c). It duplicates the first four lines of
+ * ftx_decode_candidate() and nothing else; if that extraction order ever
+ * changes, change it here in the same commit or the harness silently measures
+ * a different decoder.
+ *
+ * SIGN: positive means a ONE bit. See the note at the top of ldpc.c - the
+ * upstream comment claiming the opposite was wrong. */
+void ftx_extract_likelihood_probe(const ftx_waterfall_t* wf, const ftx_candidate_t* cand,
+                                  float log174_out[FTX_LDPC_N])
+{
+    if (wf->protocol == FTX_PROTOCOL_FT4)
+    {
+        ft4_extract_likelihood(wf, cand, log174_out);
+    }
+    else
+    {
+        ft8_extract_likelihood(wf, cand, log174_out);
+    }
+    ftx_normalize_logl(log174_out);
+}
+#endif
 
 static float max2(float a, float b)
 {

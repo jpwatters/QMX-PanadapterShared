@@ -70,6 +70,7 @@ typedef struct
     uint16_t crc_calculated; ///< CRC value calculated over the payload
     // int unpack_status;       ///< Return value of the unpack routine
     uint8_t symbols[FT8_NN]; ///< Decoded FT8 symbols (0-7) for Stage 2 reconstruction; populated on successful decode
+    bool osd;                ///< true when order-0 OSD, not belief propagation, produced the codeword
 } ftx_decode_status_t;
 
 /// Localize top N candidates in frequency and time according to their sync strength (looking at Costas symbols)
@@ -90,6 +91,13 @@ int ftx_find_candidates(const ftx_waterfall_t* power, int num_candidates, ftx_ca
 /// @param[out] status ftx_decode_status_t structure that will be filled with the status of various decoding steps
 /// @return True if the decoding was successful, false otherwise (check status for details)
 bool ftx_decode_candidate(const ftx_waterfall_t* power, const ftx_candidate_t* cand, int max_iterations, ftx_message_t* message, ftx_decode_status_t* status);
+
+#ifdef FTX_EXPOSE_LIKELIHOOD
+/// Host-harness only: the 174 soft bits for a candidate, normalized, no LDPC
+/// decode. Positive means a ONE bit. Compiled out of the device build.
+void ftx_extract_likelihood_probe(const ftx_waterfall_t* wf, const ftx_candidate_t* cand,
+                                  float log174_out[FTX_LDPC_N]);
+#endif
 
 /// Set the current filename for diagnostic logging
 void diag_set_filename(const char* filename);

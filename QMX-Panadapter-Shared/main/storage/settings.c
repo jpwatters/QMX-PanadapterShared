@@ -247,7 +247,9 @@ static const char *TAG = "settings";
 #define DEF_WF_BLEND      (100)
 #define DEF_WF_WINDOW     (0)
 #define DEF_CW_ROWS       (4)    /* four since 2026-10-15 (Sam W7STF); Bryan N0LUF may pick 2 */
+#ifndef DEF_WF_ROWS   /* #ifndef: an off-device build with frames to spare sets 20 */
 #define DEF_WF_ROWS       (10)   /* rows/s - the rate the waterfall has always run at */
+#endif
 #define DEF_SPEC_PEAK     (0)    /* peak hold OFF until asked for - it costs 25 KB of PSRAM */
 #define DEF_CW_PEAK       (0)    /* CW peak filter OFF - it changes how the radio SOUNDS */
 #define DEF_CHARGE_LIM_EN  (false)
@@ -1250,7 +1252,21 @@ static void load_from_nvs(qmx_settings_t *out)
      * It shipped dark behind a seven-tap unlock while the bug rate had not
      * flattened; that is over. Transmitting is still opt-in (wspr_tx_en). */
     out->wspr_en       = true;
-    out->wspr_net_en   = false;       /* nothing is published unasked */
+    /* ⭐ DEFAULT ON since 2026-11-19, the operator's call: "Never seen it off
+     * like this - please make it default on". Reporting is what a WSPR
+     * receiver is FOR, and a receiver that hears and says nothing is the
+     * surprising state, not the safe one.
+     *
+     * It reaches only operators who never touched the setting. KEY_WSPR_NET
+     * is written solely when DIRTY_WSPR_NET is set - there is no write-all on
+     * first boot - so anyone who deliberately switched publishing OFF has a
+     * stored 0 that still wins on load. A default change cannot undo a
+     * decision somebody made.
+     *
+     * Two gates still stand between this and the air: nothing is sent without
+     * a callsign AND grid (status reads "no call/grid"), and no callsign is
+     * published until it has been heard more than once. See net/wsprnet.h. */
+    out->wspr_net_en   = true;
     out->ft8_op_mode = 0;     // FT8
     out->charge_limit_en  = DEF_CHARGE_LIM_EN;
     out->charge_limit_pct = DEF_CHARGE_LIM_PCT;
@@ -4022,6 +4038,40 @@ bool settings_get_tx_subnet_interlock(void)
     bool v = s_pending.tx_subnet_interlock;
     xSemaphoreGive(s_mutex);
     return v;
+}
+
+/* The three fields status_task reads, under one mutex take, with NO
+ * qmx_settings_t copy.
+ *
+ * ⛔ WHY THIS EXISTS: status_task held TWO of those structs at once - its
+ * own loop local and status_battery_display_level()'s, which the loop calls -
+ * on a 13312-byte stack. MEASURED from the ELF with gdb, 2026-11-22:
+ * sizeof(qmx_settings_t) is 4268 B, so the two were 8536 B, 64 % of the
+ * stack, leaving ~4.8 KB for LVGL label/layout calls and logging underneath.
+ * Mark N8MH hit it twice on 2026-11-17 on his port of this code: "Stack
+ * protection fault, task status", both panics decoding to the same function.
+ * Our own stack comment in status.c records the same pressure from the other
+ * end - 8192 -> 11264 was raised BECAUSE of a qmx_settings_t local.
+ *
+ * Same remedy as 5d0b76da (tx_band_guard), which copied the whole struct onto
+ * a stack for two fields and crashed every CW send. Reading a 4 KB settings
+ * snapshot to look at three booleans is the bug; a bigger stack only moves
+ * the edge. */
+void settings_get_status_fields(bool *charge_limit_en,
+                                uint8_t *charge_limit_pct,
+                                bool *resmon_en)
+{
+    if (!s_ready) {
+        if (charge_limit_en)  *charge_limit_en  = false;
+        if (charge_limit_pct) *charge_limit_pct = 0;
+        if (resmon_en)        *resmon_en        = false;
+        return;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (charge_limit_en)  *charge_limit_en  = s_pending.charge_limit_en;
+    if (charge_limit_pct) *charge_limit_pct = s_pending.charge_limit_pct;
+    if (resmon_en)        *resmon_en        = s_pending.resmon_en;
+    xSemaphoreGive(s_mutex);
 }
 
 void settings_set_pskreporter_en(bool v)

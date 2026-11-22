@@ -110,7 +110,7 @@ static void action_btn_cb(lv_event_t *e)
     }
     // Another device has the transmitter: the relay drops Tune (MD8;) too.
     if (radio_relay_tx_locked(NULL, 0)) {
-        ui_toast(RADIO_RELAY_TX_LOCKED_MSG);
+        ui_toast_alert_ms(RADIO_RELAY_TX_LOCKED_MSG " - nothing was transmitted.", 8000);
         return;
     }
     /* ⛔ BAND GUARD (T48). Tune keys a CARRIER, and in MD8 the emitted RF is
@@ -121,7 +121,7 @@ static void action_btn_cb(lv_event_t *e)
         char gerr[160];
         uint32_t d = cat_get_frequency();
         if (!tx_band_guard_allows(d, d, "Antenna Tune", gerr, sizeof gerr)) {
-            ui_toast_ms(gerr, 15000);
+            ui_toast_alert_ms(gerr, 15000);
             return;
         }
     }

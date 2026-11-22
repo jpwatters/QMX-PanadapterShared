@@ -1,7 +1,7 @@
-From d3d5d382713b3fbe8cff5024764c1764e5ac9d2a Mon Sep 17 00:00:00 2001
-From: J P <jpwatters@mac.com>
+From 26b9910d3861e69965766f6d2b11f10f297aad46 Mon Sep 17 00:00:00 2001
+From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 08:16:58 -0600
-Subject: [PATCH 44/46] patches: sdio recovery re-applies the other sdio
+Subject: [PATCH 44/54] patches: sdio recovery re-applies the other sdio
  patches with the running PowerShell
 
 Upstream's v2.0.0 apply_esp_hosted_sdio_recovery.ps1 re-runs the other

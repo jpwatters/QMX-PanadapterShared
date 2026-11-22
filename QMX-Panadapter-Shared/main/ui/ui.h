@@ -41,6 +41,23 @@ void ui_mouse_init(void);
  * on this must be an extra rather than the only way to learn something. */
 bool ui_mouse_pointer(lv_point_t *out);
 
+/* Whether the firmware draws the mouse pointer into the framebuffer. Default
+ * true, so the Tab5 is unchanged. Set false when something outside the
+ * framebuffer draws the pointer instead - a host that scales this 1280x720
+ * image to a window of another size, where the thin two-colour arrow does not
+ * survive the resampling but a native-resolution one does.
+ *
+ * It hides the POINTER IMAGE ONLY. The mouse keeps working in full:
+ * hid_cursor_present() stays true, ui_mouse_pointer() keeps reporting the
+ * position, the wheel, the edge-grip hover and the hot test all keep running. */
+void ui_set_pointer_drawn(bool on);
+bool ui_get_pointer_drawn(void);
+
+/* True while the pointer is over something CLICKABLE - the green pointer state.
+ * Valid even when ui_set_pointer_drawn(false) has turned the image off, which
+ * is exactly when an outside drawer needs it to colour its own pointer. */
+bool ui_pointer_is_hot(void);
+
 // Restore the UI mode (Panadapter/FT8) persisted at the last toggle.
 // Call after ft8_screen_init()/ft8_status_init()/ft8_tx_init()/ft8_qso_init()
 // and audio/cat init have completed.
@@ -72,6 +89,9 @@ void ui_push_waterfall_row(const uint8_t *rgb565_row);  // Phase 5
 void ui_toast(const char *msg);
 /* Same toast, with a readable dwell for anything the operator must act on. */
 void ui_toast_ms(const char *msg, uint32_t ms);
+/* The same, for what must not be missed: opaque, red-framed, closed by any
+ * press anywhere (the press still reaches what is under it). Any task. */
+void ui_toast_alert_ms(const char *msg, uint32_t ms);
 
 /* A notice the operator must dismiss with OK. Use this - not a toast - for
  * anything they have to ACT on: a toast leaves on its own whether or not it
@@ -192,6 +212,13 @@ bool ui_pan_view_current(pan_view_cfg_t *c, pan_view_t *v, int n_bins);
  * See ui.c for the four separate bug reports that came from the browser having
  * no viewport at all above zoom x1. */
 void ui_screen_view_hz(int64_t *lo_out, int32_t *span_out);
+
+/* How far the spectrum is slid from where ui_get_pan_offset_hz() says it is,
+ * in pixels: the pan gesture while the button or finger is down, 0 otherwise.
+ * An overlay drawn as its own LVGL object - rather than painted into the
+ * spectrum canvas, which slides bodily - has to add this where it sets its x,
+ * or it stands still for the whole drag. See stroll_apply_offset(). */
+int ui_stroll_offset_px(void);
 /* The on-device spectrum viewport. The CW page's keyer pane covers columns
  * [0, CW_PANE_W), so the Tab5 draws the view into [ui_spec_x0(), 1280) and the
  * WEB keeps the full width - see the block comment in ui.c. Anything drawing on
@@ -334,6 +361,7 @@ typedef struct {
      * band path, and how tall the band was when it was computed. */
     unsigned pi_partial, pi_no_array, pi_stale, pi_overlay, pi_wide;
     unsigned pi_band_mean_px;
+    unsigned pi_cols_mean_px;   /* mean WIDTH of the changed region */
     /* Carpet: rows written into the buffer, and how many of those actually
      * moved the view. rows/shifts should equal the shift batch. */
     unsigned wf_shifts, wf_rows_written;
