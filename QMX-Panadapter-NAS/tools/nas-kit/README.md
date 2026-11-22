@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (51 patches). It applies to upstream **v2.0.2** as it
+* `patches/` - the NAS series (52 patches). It applies to upstream **v2.0.2** as it
   is (ported 2026-11-18; built, not yet flashed or tested on the Tab5).
   v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,

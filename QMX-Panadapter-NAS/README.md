@@ -59,6 +59,7 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
 * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
 * Power on the radio in the drawer (under Radio source): asks the NAS relay to press the QMX's power button through its FTDI cable (Remote Power-ON). Built and compile-checked; the relay side tested against its fake radio; not yet tested with the cable.
 * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
+* Power on the radio and Power off the radio on the web page too (Misc menu, above Power off the Tab5): the same actions as the drawer, also available to other programs as POST /api/cmd {"action":"radio_power_on"} and {"action":"radio_power_off","confirm":"RADIOOFF"}. Power off asks for confirmation first. Built and compile-checked; not yet tested on the Tab5.
 * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
 
 **On the relay**

@@ -429,6 +429,14 @@ void ui_drawer_relayout(void);
  * not return. */
 void ui_power_off_safely(void);
 
+/* Switch the QMX itself off with PS0; after putting it back into receive (FT8
+ * robot stood down, TX disarmed, TA0; and RX;). Shared by the drawer's "Power
+ * off the radio" and the web page's /api/cmd radio_power_off. No LVGL calls.
+ * Returns 0 when PS0; was sent, -1 when no radio is connected, -2 while
+ * another device has the transmitter. msg (may be NULL) gets a sentence for
+ * the operator. */
+int ui_radio_power_off(char *msg, size_t cap);
+
 // Call whenever a help overlay (the docs Reader, the "What's wrong?" panel) opens
 // or closes. While one owns the screen the top-bar hit zones and the drawer/memory
 // edge swipes are dropped out of hit-testing, and the QMX-wait prompt stands down -

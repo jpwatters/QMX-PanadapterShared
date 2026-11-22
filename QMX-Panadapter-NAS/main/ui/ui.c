@@ -21660,19 +21660,14 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     static bool armed = false;
 
-    if (!cat_is_ready()) {
+    if (!cat_is_ready() || radio_relay_tx_locked(NULL, 0)) {
+        /* Refused before arming; ui_radio_power_off() says why. */
         armed = false;
         if (lbl) lv_label_set_text(lbl, "Power off the radio");
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
-        ui_toast_ms("The radio is not connected - nothing to power off.", 3000);
-        return;
-    }
-    char why[96] = "";
-    if (radio_relay_tx_locked(why, sizeof(why))) {
-        armed = false;
-        if (lbl) lv_label_set_text(lbl, "Power off the radio");
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
-        ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG " - the radio stays on.", 3000);
+        char msg[160];
+        ui_radio_power_off(msg, sizeof(msg));
+        ui_toast_ms(msg, 3000);
         return;
     }
     if (!armed) {
@@ -21686,6 +21681,23 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
 
     ESP_LOGW(TAG, "operator asked to power the radio off from the drawer");
+    char msg[160];
+    int rc = ui_radio_power_off(msg, sizeof(msg));
+    ui_toast_ms(msg, rc == 0 ? 5000 : 3000);
+}
+
+int ui_radio_power_off(char *msg, size_t cap)
+{
+    char dummy[8];
+    if (!msg || !cap) { msg = dummy; cap = sizeof(dummy); }
+    if (!cat_is_ready()) {
+        snprintf(msg, cap, "The radio is not connected - nothing to power off.");
+        return -1;
+    }
+    if (radio_relay_tx_locked(NULL, 0)) {
+        snprintf(msg, cap, RADIO_RELAY_TX_LOCKED_MSG " - the radio stays on.");
+        return -2;
+    }
     ft8_robot_stand_down(NULL);
     ft8_tx_disarm();
     ft8_tx_request_abort();
@@ -21695,15 +21707,16 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
     vTaskDelay(pdMS_TO_TICKS(120));
     cat_send_raw_cmd("PS0;");
 
-    char host[64] = "";
+    char host[RADIO_RELAY_HOST_LEN] = "";
     uint16_t port = 0;
     radio_relay_get_target(host, sizeof(host), &port);
     if (radio_relay_enabled() && host[0]) {
-        ui_toast_ms("PS0; sent to the QMX on the NAS. If it stays on, put a file "
-                    "named allow-ps0 in the relay's folder.", 5000);
+        snprintf(msg, cap, "PS0; sent to the QMX on the NAS. If it stays on, put a file "
+                           "named allow-ps0 in the relay's folder.");
     } else {
-        ui_toast_ms("PS0; sent - the QMX is powering off.", 3000);
+        snprintf(msg, cap, "PS0; sent - the QMX is powering off.");
     }
+    return 0;
 }
 
 static void drawer_usedhcp_btn_cb(lv_event_t *e)
