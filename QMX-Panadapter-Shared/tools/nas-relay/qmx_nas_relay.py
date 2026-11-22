@@ -26,6 +26,11 @@ as the DS416j (QMX_BACKEND=libusb|usbfs forces one):
           as a plain TCP serial port (default 7356) for PC software - WSJT-X,
           rigctld, a terminal - so a PC can control the radio at the same
           time as the Tab5, on its own port.
+  * Power on: a QMX that is off has no USB device, so it cannot receive PS1;.
+          With an FTDI TTL-232R-5V cable driving a PC817 board across the
+          QMX's VOL switch, the relay keeps a port-3 client connected while the
+          radio is off, answers PS; with PS0; and turns the radio on for PS1;
+          (see PowerButton below).
 
 Wire format (QMXR/1): every frame = 4-byte header + payload
      u8  type   1=HELLO 2=IQ 3=CAT 4=PING
@@ -80,6 +85,7 @@ import os
 import queue
 import re
 import select
+import signal
 import socket
 import struct
 import sys
@@ -1302,6 +1308,131 @@ class FakeRadio:
 
 
 # ---------------------------------------------------------------------------
+# Power button: turn the QMX on from the network.
+#
+# A QMX that is off has no USB device, so it can never receive PS1; (power
+# on). An FTDI TTL-232R-5V cable (FT232R, 0403:6001) on another NAS USB port
+# drives a bestep PC817 optocoupler board wired across the QMX's VOL encoder
+# push switch. Holding RTS asserted for about 1.8 s is the long press that
+# turns the radio on:
+#     cable red (+5 V)   -> board INPUT +     board OUT -> VOL switch, signal side
+#     cable green (RTS#) -> board INPUT -     board GND -> QMX ground
+#
+# No glitch when a port opens: the cable is driven with FTDI's own vendor
+# request (SIO_SET_MODEM_CTRL) through usbfs and is never opened as a serial
+# port. Opening /dev/ttyUSB0 would make Linux assert DTR and RTS for a moment,
+# which closes the optocoupler; the relay never opens one, and it detaches
+# ftdi_sio from the cable so there is no /dev/ttyUSB0 for anything else to
+# open. The FT232R powers up with RTS released, and the relay releases it
+# again at start-up, after every press and on exit (SIGTERM included).
+# ---------------------------------------------------------------------------
+
+FTDI_VID, FT232R_PID = 0x0403, 0x6001
+FTDI_SIO_SET_MODEM_CTRL = 0x01
+FTDI_REQ_OUT = 0x40                    # vendor request, device recipient, host to device
+FTDI_LINES = {"rts": (0x0202, 0x0200), "dtr": (0x0101, 0x0100)}   # (assert, release)
+POWER_BOOT_S = 20.0                    # no second press while the radio boots from the first
+POWER_REQUEST = "power-on.request"     # a file of this name in the relay folder = press once
+
+
+class PowerButton:
+    def __init__(self, hold_s: float = 1.8, line: str = "rts", vid: int = FTDI_VID, pid: int = FT232R_PID):
+        self.hold_s, self.line, self.vid, self.pid = hold_s, line, vid, pid
+        self.lock = threading.Lock()
+        self.busy_until = 0.0
+        self.last_path = None
+
+    def present(self):
+        return usbfs_find_device(self.vid, self.pid)
+
+    def _set(self, value: int) -> None:
+        found = self.present()
+        if not found:
+            raise UsbfsError(errno.ENODEV, "FTDI cable (%04x:%04x) not found" % (self.vid, self.pid))
+        name, path = found
+        fd = os.open(path, os.O_RDWR)
+        try:
+            # Keep ftdi_sio off the cable: no /dev/ttyUSB0, so nothing can open it and glitch RTS.
+            try:
+                ioctl(fd, USBDEVFS_IOCTL, UsbdevfsIoctl(0, USBDEVFS_DISCONNECT, None))
+            except UsbfsError as e:
+                if e.errno not in (errno.ENODATA, errno.ENOENT, errno.EINVAL):
+                    raise
+            ioctl(fd, USBDEVFS_CONTROL, CtrlTransfer(FTDI_REQ_OUT, FTDI_SIO_SET_MODEM_CTRL, value, 0, 0, 1000, None))
+        finally:
+            os.close(fd)
+        if path != self.last_path:
+            self.last_path = path
+            log.info("power button: FTDI cable at %s (%s), %s line", path, name, self.line.upper())
+
+    def release(self, quiet: bool = False) -> bool:
+        try:
+            self._set(FTDI_LINES[self.line][1])
+            return True
+        except OSError as e:
+            if not quiet:
+                log.warning("power button: could not release %s: %s", self.line.upper(), e)
+            return False
+
+    def press(self, why: str) -> bool:
+        """Hold the button for hold_s, then release it. A second press while the
+        radio is still booting from the first is refused (it could turn it off)."""
+        now = time.monotonic()
+        if now < self.busy_until:
+            log.info("power button: %s ignored - the QMX is still powering on", why)
+            return False
+        with self.lock:
+            self.busy_until = now + POWER_BOOT_S
+            log.info("power button: pressing for %.1f s (%s)", self.hold_s, why)
+            try:
+                self._set(FTDI_LINES[self.line][0])
+                time.sleep(self.hold_s)
+                return True
+            except OSError as e:
+                log.error("power button: %s", e)
+                self.busy_until = 0.0
+                return False
+            finally:
+                if not self.release():
+                    time.sleep(0.2)
+                    self.release()
+
+
+def power_request_watcher(mgr):
+    """A file named power-on.request in the relay folder presses the button once
+    (for the Tab5, which cannot reach a radio that is off, or a scheduled task).
+    The file is deleted where DSM allows it; on the DS416j a Synology ACL can
+    refuse even root, so each new or touched file (a new modification time)
+    counts once, and a file already there when the relay starts is ignored."""
+    path = os.path.join(RELAY_DIR, POWER_REQUEST)
+
+    def stamp():
+        try:
+            st = os.stat(path)
+            return (st.st_mtime_ns, st.st_ino)
+        except OSError:
+            return None
+
+    handled = stamp()
+    while True:
+        time.sleep(2.0)
+        now = stamp()
+        if now is None or now == handled:
+            handled = now if now is None else handled
+            continue
+        handled = now
+        try:
+            os.remove(path)
+            handled = None
+        except OSError as e:
+            log.info("%s: cannot delete it (%s) - create or touch it again for another press", POWER_REQUEST, e)
+        if mgr.radio_present():
+            log.info("%s: the QMX is already on", POWER_REQUEST)
+        else:
+            mgr.power_on("file " + POWER_REQUEST)
+
+
+# ---------------------------------------------------------------------------
 # Shared radio: opened by the first user (Tab5 session or port-3 client),
 # released by the last.
 # ---------------------------------------------------------------------------
@@ -1318,6 +1449,20 @@ class RadioManager:
         self.txlog = None            # TxLog, unless --txlog-dir ''
         self.catlog = None           # CatLog (see catlog.off)
         self.flags = Flags(RELAY_DIR)
+        self.power = None            # PowerButton, when the FTDI cable is on the USB bus
+
+    def radio_present(self) -> bool:
+        """Is the QMX on the USB bus (i.e. switched on)? Read from sysfs, quietly."""
+        if self.args.fake or not os.path.isdir(SYS_USB):
+            return True
+        return usbfs_find_device(QMX_VID, QMX_PID) is not None
+
+    def power_on(self, why: str) -> bool:
+        if not self.power:
+            log.warning("%s: no power button (FTDI cable) - cannot turn the QMX on", why)
+            return False
+        threading.Thread(target=self.power.press, args=(why,), daemon=True, name="power-button").start()
+        return True
 
     def acquire(self, user):
         with self.lock:
@@ -2089,15 +2234,26 @@ PORT3 = 2   # index into the QMX's serial ports (0 = CAT, 1 = terminal, 2 = port
 
 class SerialClient:
     """One PC on the QMX's third serial port. Bytes are passed through
-    unchanged in both directions - no framing, like a serial cable."""
+    unchanged in both directions - no framing, like a serial cable.
+
+    With a power button (FTDI cable) the PC stays connected while the QMX is
+    off: the relay answers PS; with PS0;, and PS1; with PS1; while it presses
+    the button. When the radio's USB device comes back the relay reopens port 3
+    and passes everything through again. Without one, the connection closes
+    when the radio goes away, as before."""
 
     def __init__(self, sock: socket.socket, peer, mgr: RadioManager):
         self.sock, self.peer, self.mgr = sock, peer, mgr
         self.q: queue.Queue[bytes] = queue.Queue()
         self.alive = True
+        self.lost = False            # the QMX went away while connected (power button present)
+        self.sender = None
 
     def radio_gone(self):
-        self.stop("QMX disconnected")
+        if self.mgr.power:
+            self.lost = True
+        else:
+            self.stop("QMX disconnected")
 
     def stop(self, why: str):
         if self.alive:
@@ -2125,47 +2281,136 @@ class SerialClient:
                 self.stop("send failed: %s" % e)
                 return
 
+    def _recv(self):
+        """Up to 4096 bytes, None if nothing arrived for 0.5 s, b"" when the PC left."""
+        r, _, _ = select.select([self.sock], [], [], 0.5)
+        if not r:
+            return None
+        return self.sock.recv(4096)
+
     def run(self):
         sock = self.sock
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        radio = opened = None
+        carry = bytearray()
         try:
-            radio = self.mgr.acquire(self)
+            while self.alive:
+                try:
+                    radio = self.mgr.acquire(self)
+                except RadioGone as e:
+                    if not self.mgr.power:
+                        log.warning("port 3: %s", e)
+                        return
+                    radio = self._while_off(carry)
+                if radio is None or not self._with_radio(radio, carry):
+                    return
+        finally:
+            self.alive = False
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _with_radio(self, radio, carry) -> bool:
+        """Pass bytes both ways. True = the QMX went off and the PC stays connected."""
+        opened = False
+        self.lost = False
+        try:
             ok, why = radio.serial_open(PORT3, self._on_data)
             if not ok:
                 log.warning("port 3 client %s refused: %s", self.peer[0], why)
-                return
+                return False
             opened = True
             log.info("port 3 client %s:%d connected", self.peer[0], self.peer[1])
-            threading.Thread(target=self._send_loop, daemon=True).start()
-            carry = bytearray()
-            while self.alive:
-                data = sock.recv(4096)
+            if self.sender is None:
+                self.sender = threading.Thread(target=self._send_loop, daemon=True)
+                self.sender.start()
+            while self.alive and not self.lost:
+                data = self._recv()
+                if data is None:
+                    continue
                 if not data:
                     log.info("port 3 client %s:%d disconnected", self.peer[0], self.peer[1])
-                    break
+                    return False
                 data = guard_cat(data, carry, "PC", self.mgr, self.mgr.pc_tx_block)
                 if data:
                     radio.serial_send(PORT3, data)
         except RadioGone as e:
             log.warning("port 3: %s", e)
+            if not (self.mgr.power and self.alive):
+                return False
+            self.lost = True
         except OSError as e:
-            if self.alive:
-                log.info("port 3 client %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
+            if not (self.lost and self.mgr.power and self.alive):
+                if self.alive:
+                    log.info("port 3 client %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
+                return False
         finally:
-            self.alive = False
-            if radio:
-                if opened:
+            if opened:
+                try:
+                    radio.serial_close(PORT3)
+                except Exception:
+                    pass
+            self.mgr.release(self, radio)
+        if self.lost and self.alive:
+            log.info("port 3 client %s:%d: the QMX went off - staying connected", self.peer[0], self.peer[1])
+            return True
+        return False
+
+    def _while_off(self, carry):
+        """The QMX is off: answer PS; and PS1; for it until it comes back.
+        Returns the radio once it is open again, or None when the PC leaves."""
+        log.info("port 3 client %s:%d: the QMX is off - PS; is answered PS0;, PS1; turns it on",
+                 self.peer[0], self.peer[1])
+        next_look = 0.0
+        while self.alive:
+            now = time.monotonic()
+            if now >= next_look:
+                next_look = now + 1.0
+                if self.mgr.radio_present():
+                    time.sleep(1.0)                  # let it finish enumerating
                     try:
-                        radio.serial_close(PORT3)
-                    except Exception:
-                        pass
-                self.mgr.release(self, radio)
+                        radio = self.mgr.acquire(self)
+                        log.info("port 3 client %s:%d: the QMX is on", self.peer[0], self.peer[1])
+                        return radio
+                    except RadioGone as e:
+                        log.info("port 3: QMX not ready yet: %s", e)
             try:
-                sock.close()
-            except OSError:
-                pass
+                data = self._recv()
+            except OSError as e:
+                log.info("port 3 client %s:%d disconnected: %s", self.peer[0], self.peer[1], e)
+                return None
+            if data is None:
+                continue
+            if not data:
+                log.info("port 3 client %s:%d disconnected", self.peer[0], self.peer[1])
+                return None
+            carry += data
+            while True:
+                i = carry.find(b";")
+                if i < 0:
+                    break
+                cmd = bytes(carry[:i + 1])
+                del carry[:i + 1]
+                key = re.sub(rb"\s+", b"", cmd[:-1]).upper()
+                reply = b""
+                if key == b"PS1":
+                    reply = b"PS1;"
+                    self.mgr.power_on("PS1; from %s" % self.peer[0])
+                elif key == b"PS":
+                    reply = b"PS0;"
+                if self.mgr.catlog:
+                    self.mgr.catlog.note("PC>RELAY", cmd, "QMX off" + (" - power button" if key == b"PS1" else ""))
+                    if reply:
+                        self.mgr.catlog.note("RELAY>PC", reply)
+                if reply:
+                    try:
+                        self.sock.sendall(reply)
+                    except OSError:
+                        return None
+            if len(carry) > 256:
+                del carry[:]
+        return None
 
 
 def serve(listen, port, make, label):
@@ -2257,7 +2502,25 @@ def _arrived_on(ancdata):
     return "", 0
 
 
-def discovery_responder(listen: str, udp_port: int, tcp_port: int):
+POWER_QUERY = b"QMXR-PWR1"      # the Tab5's "Power on the radio": press the power button
+POWER_REPLY = b"QMXR-PWR"       # + " pressing" | " on" | " nocable" | " busy"
+
+
+def power_query_answer(mgr, peer_ip: str) -> bytes:
+    """What the Tab5's Power on the radio gets back. Presses at most once per
+    POWER_BOOT_S, so the Tab5 asking three times (UDP) is one press."""
+    if mgr is None or mgr.radio_present():
+        return POWER_REPLY + b" on"
+    if not mgr.power:
+        log.info("power button: the Tab5 at %s asked to power on - no FTDI cable", peer_ip)
+        return POWER_REPLY + b" nocable"
+    if time.monotonic() < mgr.power.busy_until:
+        return POWER_REPLY + b" busy"
+    mgr.power_on("Tab5 at %s" % peer_ip)
+    return POWER_REPLY + b" pressing"
+
+
+def discovery_responder(listen: str, udp_port: int, tcp_port: int, mgr=None):
     """Answer "QMXR?" with the address the question ARRIVED ON, sent from that
     address.
 
@@ -2292,6 +2555,9 @@ def discovery_responder(listen: str, udp_port: int, tcp_port: int):
             else:
                 data, peer = s.recvfrom(256)
                 ip, ifindex = "", 0
+            if data.startswith(POWER_QUERY):
+                s.sendto(power_query_answer(mgr, peer[0]), peer)
+                continue
             if not data.startswith(DISCOVERY_QUERY):
                 continue
             how = "arrived on"
@@ -2443,7 +2709,8 @@ def probe_usbfs():
     found = False
     for bus, devn, vid, pid, name in usbfs_list_devices():
         mark = "  <== QMX" if (vid, pid) == (QMX_VID, QMX_PID) else ""
-        print("%03d/%03d %04x:%04x %s%s" % (bus, devn, vid, pid, name, mark))
+        print("%03d/%03d %04x:%04x %s%s" % (bus, devn, vid, pid, name, mark or (
+            "  <== FTDI cable (power button)" if (vid, pid) == (FTDI_VID, FT232R_PID) else "")))
         if mark:
             found = True
             with open("/dev/bus/usb/%03d/%03d" % (bus, devn), "rb") as f:
@@ -2517,18 +2784,50 @@ def main():
     ap.add_argument("--txlog-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "txlog"),
                     help="where to log each transmit burst as the relay sent it to the QMX "
                          "(default: txlog/ next to this script; '' = off)")
+    ap.add_argument("--power-button", choices=("auto", "off"), default="auto",
+                    help="turn the QMX on from the network with an FTDI TTL-232R cable driving a PC817 "
+                         "board across its VOL switch: PS1; on port 3, or a file named power-on.request "
+                         "in the relay folder (default auto = when the cable is on the USB bus)")
+    ap.add_argument("--power-hold", type=float, default=1.8,
+                    help="how long the power button is held, seconds (default 1.8)")
+    ap.add_argument("--power-line", choices=("rts", "dtr"), default="rts",
+                    help="cable line wired to the PC817 board (default rts, the green wire)")
+    ap.add_argument("--power-press", action="store_true",
+                    help="bench test: press the power button once (--power-hold seconds) and exit")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     if args.probe:
         return probe(args)
+    if args.power_press:
+        pb = PowerButton(args.power_hold, args.power_line)
+        if not pb.present():
+            print("FTDI cable (%04x:%04x) not found on the USB bus" % (FTDI_VID, FT232R_PID))
+            return 1
+        return 0 if pb.release() and pb.press("--power-press") else 1
 
     mgr = RadioManager(args)
     if args.catlog_dir:
         mgr.catlog = CatLog(args.catlog_dir, mgr.flags)
         log.info("CAT commands are logged to %s/catlog-<date>.log (pause: file catlog.off in %s)",
                  args.catlog_dir, RELAY_DIR)
+    if args.power_button != "off" and sys.platform.startswith("linux") and not args.fake:
+        pb = PowerButton(args.power_hold, args.power_line)
+        if pb.present() and pb.release():
+            mgr.power = pb
+
+            def _term(signum, frame):
+                pb.release(quiet=True)       # never leave the button held
+                sys.exit(0)
+            signal.signal(signal.SIGTERM, _term)
+            threading.Thread(target=power_request_watcher, args=(mgr,), daemon=True,
+                             name="power-request").start()
+            log.info("power button: ready - PS1; on port %d, or a file named %s in %s, turns the QMX on",
+                     args.serial_port, POWER_REQUEST, RELAY_DIR)
+        else:
+            log.info("power button: no FTDI cable (%04x:%04x) - PS1; cannot turn the QMX on",
+                     FTDI_VID, FT232R_PID)
     log.info("PS0; (power off) is %s (flag file allow-ps0 in %s)",
              "PASSED" if mgr.flags.has("allow-ps0") else "BLOCKED", RELAY_DIR)
     log.info("I/Q to the Tab5 during transmit: %s (flag file iq-during-tx in %s)",
@@ -2554,7 +2853,7 @@ def main():
     disc = args.port if args.discovery_port is None else args.discovery_port
     if disc:
         threading.Thread(target=discovery_responder, daemon=True, name="discovery",
-                         args=(args.listen, disc, args.port)).start()
+                         args=(args.listen, disc, args.port, mgr)).start()
     serve(args.listen, args.port, lambda s, p: Session(s, p, args, mgr), "QMXR/1 for the Tab5")
 
 

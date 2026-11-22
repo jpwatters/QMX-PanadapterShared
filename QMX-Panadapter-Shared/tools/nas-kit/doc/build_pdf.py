@@ -294,6 +294,22 @@ SOURCES = [
     ("Espressif esp-usb, esp-bsp, esp-dsp; LVGL; chmorgan/esp-libhelix-mp3",
      "https://github.com/espressif/esp-usb ; esp-bsp ; esp-dsp ; https://github.com/lvgl/lvgl ; https://github.com/chmorgan/esp-libhelix-mp3",
      "CDC-ACM host API, LVGL port, touch, DSP and MP3 decoder headers needed to compile the firmware. Verified."),
+    ("QRP Labs QMX operating manual, firmware 1_04_003", "https://qrp-labs.com/images/qmx/manuals/operation_1_04_003.pdf",
+     "Remote Power-ON: a single firm long press on the left VOL encoder turns the QMX/QMX+ on or off; powering off saves band, "
+     "mode and frequency. Read."),
+    ("FTDI TTL-232R cables datasheet (FT_000054); the cable used", "https://www.digikey.be/en/resources/datasheets/ftdi/ttl-232r ; "
+     "https://www.amazon.com/dp/B07RBK2P47",
+     "Remote Power-ON: 6-way header 1 GND (black), 2 CTS#, 3 VCC +5 V (red), 4 TXD, 5 RXD, 6 RTS# (green); RTS# is active-low. Read."),
+    ("bestep PC817 optocoupler isolation board; Sharp PC817 datasheet", "https://www.amazon.com/dp/B0DD3KBQV5 ; "
+     "https://static6.arrow.com/aropdfconversion/e1e3e3c308227505e5491e92cd8ba9ac78fd0e7c/sharp_pc817xxnsz2b_e.pdf",
+     "Remote Power-ON: board terminals INPUT +/-, VCC/OUT/GND (R1 input resistor, R2 pull-up, LED); PC817C CTR 200-400 % at "
+     "IF = 5 mA. Read."),
+    ("Linux drivers/usb/serial/ftdi_sio.h", "https://codebrowser.dev/linux/linux/drivers/usb/serial/ftdi_sio.h.html",
+     "Remote Power-ON: FTDI_SIO_MODEM_CTRL = request 1, type 0x40, RTS high 0x0202 / low 0x0200, wIndex = port; the values the "
+     "relay sends. Read; request values checked in a unit test."),
+    ("DTR/RTS asserted when a serial port opens", "https://pyserial.readthedocs.io/en/stable/pyserial_api.html ; "
+     "https://github.com/pyserial/pyserial/issues/729 ; https://mail.python.org/pipermail/python-list/2011-July/607808.html",
+     "Remote Power-ON: why the relay never opens the cable as /dev/ttyUSB0 (drivers raise DTR/RTS on open, about 20 ms reported). Read."),
     ("M5Stack Tab5 and W5500 PoE base documentation", "https://docs.m5stack.com/en/core/Tab5 ; https://docs.m5stack.com/en/base/w5500PoE",
      "M5-Bus pin numbers and Tab5 GPIOs for the W5500 (MOSI G18, MISO G19, SCK G5, CS G52, INT G51, RST G48); the M5-Bus 5 V as an "
      "output. Verified against both documents."),

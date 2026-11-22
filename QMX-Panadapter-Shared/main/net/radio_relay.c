@@ -548,6 +548,57 @@ int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms)
     return n;
 }
 
+// ---- Remote Power-ON ---------------------------------------------------------
+
+radio_power_result_t radio_relay_power_on(uint32_t timeout_ms)
+{
+    char host[RADIO_RELAY_HOST_LEN] = "";
+    uint16_t port = 0;
+    radio_relay_get_target(host, sizeof(host), &port);
+    if (!host[0] || !net_is_up()) return RADIO_POWER_NO_NAS;
+    if (!port) port = RADIO_RELAY_DEFAULT_PORT;
+
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM };
+    struct addrinfo *res = NULL;
+    char ps[8];
+    snprintf(ps, sizeof(ps), "%u", (unsigned)port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0 || !res) return RADIO_POWER_NO_NAS;
+    int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s < 0) { freeaddrinfo(res); return RADIO_POWER_NO_NAS; }
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 200 * 1000 };
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    radio_power_result_t rc = RADIO_POWER_NO_ANSWER;
+    int sent = 0;
+    const int64_t start = esp_timer_get_time();
+    const int64_t total = (int64_t)timeout_ms * 1000;
+    while (esp_timer_get_time() - start < total) {
+        /* Ask up to 3 times: UDP can be lost. The relay presses at most once per
+         * 20 s, so a repeated question can never become a second press. */
+        if (sent < 3 && esp_timer_get_time() - start >= sent * total / 3) {
+            if (sendto(s, "QMXR-PWR1", 9, 0, res->ai_addr, res->ai_addrlen) < 0)
+                ESP_LOGW(TAG, "power on: send to %s failed (errno %d)", host, errno);
+            sent++;
+        }
+        char buf[64];
+        int r = recv(s, buf, sizeof(buf) - 1, 0);
+        if (r <= 0) continue;
+        buf[r] = '\0';
+        if (strncmp(buf, "QMXR-PWR ", 9) != 0) continue;
+        const char *st = buf + 9;
+        if      (strncmp(st, "pressing", 8) == 0) rc = RADIO_POWER_PRESSING;
+        else if (strncmp(st, "on", 2) == 0)       rc = RADIO_POWER_ALREADY;
+        else if (strncmp(st, "nocable", 7) == 0)  rc = RADIO_POWER_NO_CABLE;
+        else if (strncmp(st, "busy", 4) == 0)     rc = RADIO_POWER_BUSY;
+        else continue;
+        break;
+    }
+    close(s);
+    freeaddrinfo(res);
+    ESP_LOGI(TAG, "power on: asked %s:%u -> %d", host, (unsigned)port, (int)rc);
+    return rc;
+}
+
 // ---- relay-timed transmit bursts --------------------------------------------
 
 bool radio_relay_txsched_supported(void) { return s_connected && s_txsched_supported; }

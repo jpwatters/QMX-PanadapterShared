@@ -20,4 +20,4 @@ Upstream (SteffenLav/qmx-panadapter) releases often, and each release is a movin
 
 *Each port is checked the same way: a full ESP-IDF v5.4.4 build with every source compiled and the standing patches applied, upstream’s check scripts (check_dirty_bits, check_tx_guard, check_unattended_tx, check_web, check_webui, check_docs) and host harnesses run on plain upstream and on the NAS version with the same results, and the new kit run against GitHub on the Mac, producing the same tree. The relay’s discovery fix (0042, 2026-10-31) was not a port: it was found on the NAS when a VPN client was connected (section 3).*
 
-This is section 9 of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) (v2.0.2 + NAS patches 0001-0046).
+This is section 9 of the project PDF, [M5StackTab5QMX+SharedOverNetwork.pdf](../../M5StackTab5QMX+SharedOverNetwork.pdf) (v2.0.2 + NAS patches 0001-0047).

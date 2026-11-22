@@ -1753,6 +1753,8 @@
         <a href="/ss.bmp" id="ss-link" target="_blank" title="Opens in a new tab straight away - quickest way to just look at the screen">Tab5 screenshot</a> <a href="#" id="ss-save" title="Saves a PNG file - slower, but the format forums and apps accept">(save PNG)</a>
         <a href="#" id="server-mode-link" title="Stop the Tab5 drawing its screen and running its speaker, and keep serving this page. Measured: it hands back about half of core 0 and a fifth of core 1. A touch on the Tab5 ends it.">Server mode: <span id="server-mode-state">off</span></a>
         <a href="#" id="reboot-link" title="Restart the Tab5 now. Receiving stops for about ten seconds. Until now this was only reachable after a firmware update.">Reboot the Tab5</a>
+        <a href="#" id="radio-on-link" title="Ask the NAS relay to press the QMX's power button (Remote Power-ON: FTDI cable and opto board on the NAS). Only works with the radio on the NAS.">Power on the radio</a>
+        <a href="#" id="radio-off-link" class="danger" title="Switch the QMX off with PS0;. The radio is put back into receive first. It does not come back on by itself - Power on the radio (NAS with the FTDI cable) or the VOL knob. Over the NAS the relay needs its allow-ps0 flag file.">Power off the radio</a>
         <a href="#" id="poweroff-link" class="danger" title="Shut the Tab5 down. The radio is put back into receive FIRST, so a transmission in progress cannot be left keyed. It does NOT come back on its own - someone has to press the button, or cut and restore its power.">Power off the Tab5</a>
         <a href="#" id="reset-settings-link" class="danger" title="Reset all app settings + memory channels to defaults (keeps the QSO log and WiFi). Clears a stuck stored value without an esptool full-erase. Reboots.">Reset settings</a>
         <a href="#" id="reset-network-link" class="danger" title="Clear stored WiFi/network state (keeps app settings). Clears a stuck WiFi/link state a normal reflash leaves in place. Reboots.">Reset WiFi</a>
@@ -3854,6 +3856,50 @@ function adifImportMessage(j) {
         alert("No answer from the Tab5. It may already be off.");
       } finally {
         po.textContent = prev;
+      }
+    }); }
+
+  /* Power the QMX itself on and off - the same as the drawer's two rows.
+     On goes to the NAS relay (Remote Power-ON); off is PS0; after RX;. */
+  { const on = document.getElementById("radio-on-link");
+    if (on) on.addEventListener("click", async function (e) {
+      e.preventDefault();
+      const prev = on.textContent;
+      on.textContent = "Asking the NAS …";
+      try {
+        const r = await fetch("/api/cmd", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "radio_power_on" })
+        });
+        const j = await r.json().catch(() => ({}));
+        alert(j.message || ("The device answered HTTP " + r.status));
+      } catch (err) {
+        alert("No answer from the Tab5.");
+      } finally {
+        on.textContent = prev;
+      }
+    }); }
+  { const off = document.getElementById("radio-off-link");
+    if (off) off.addEventListener("click", async function (e) {
+      e.preventDefault();
+      if (!confirm("Power the radio (QMX) off?\n\n" +
+                   "• The radio is put back into receive first.\n" +
+                   "• It does NOT come back on by itself - use Power on the radio " +
+                   "(NAS with the FTDI cable) or the QMX's VOL knob.\n" +
+                   "• Over the NAS the relay needs its allow-ps0 flag file.")) return;
+      const prev = off.textContent;
+      off.textContent = "Powering the radio off …";
+      try {
+        const r = await fetch("/api/cmd", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "radio_power_off", confirm: "RADIOOFF" })
+        });
+        const j = await r.json().catch(() => ({}));
+        alert(j.message || ("The device answered HTTP " + r.status));
+      } catch (err) {
+        alert("No answer from the Tab5.");
+      } finally {
+        off.textContent = prev;
       }
     }); }
 

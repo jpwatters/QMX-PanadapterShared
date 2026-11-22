@@ -88,6 +88,23 @@ typedef struct {
 } radio_relay_found_t;
 int radio_relay_discover(radio_relay_found_t *out, int max, uint32_t timeout_ms);
 
+/* ---- Remote Power-ON ---------------------------------------------------------
+ * A QMX that is off has no USB device, so nothing sent over QMXR/1 can reach
+ * it. The relay can press the radio's power button through an FTDI cable and
+ * an opto board (tools/nas-relay, "Remote Power-ON"); this asks it to, with
+ * "QMXR-PWR1" to the NAS address on the relay's UDP port (the same port as
+ * QMXR? and QMXR/1). The relay answers "QMXR-PWR <state>". BLOCKS for up to
+ * timeout_ms - never call it on the LVGL task. */
+typedef enum {
+    RADIO_POWER_PRESSING  = 1,   /* the relay is pressing the button (1.8 s); the radio boots */
+    RADIO_POWER_ALREADY   = 0,   /* the QMX is already on */
+    RADIO_POWER_NO_ANSWER = -1,  /* no answer: relay not running or older than Remote Power-ON */
+    RADIO_POWER_NO_CABLE  = -2,  /* the relay has no FTDI cable */
+    RADIO_POWER_BUSY      = -3,  /* pressed in the last 20 s: the radio is still booting */
+    RADIO_POWER_NO_NAS    = -4,  /* no NAS address set, or the network is down */
+} radio_power_result_t;
+radio_power_result_t radio_relay_power_on(uint32_t timeout_ms);
+
 /* ---- Relay-timed transmit bursts (QMXR/1 "txsched=1") ----------------------
  * Over the network every tone change used to cross WiFi on its own, 160 ms
  * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)

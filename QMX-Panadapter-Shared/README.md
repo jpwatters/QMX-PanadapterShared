@@ -26,7 +26,7 @@ Each new upstream release can stop the patches applying: new settings take the s
 | v2.0.0 (2026-11-15) | Upstream also enlarged the settings table and took bit 160 (RTTY); the web status gained an RTTY field where the NAS adds its own; a frequency function was renamed; upstream’s Wi-Fi driver fix now re-runs the other driver patches with a command that macOS doesn’t have; RTTY transmit is new | Relay setting bit 161; both status fields kept; the NAS frequency check moved into the renamed function; the driver fix re-runs them with the PowerShell already running (pwsh on the Mac); RTTY refuses to transmit while another device has the transmitter |
 | v2.0.2 (2026-11-18) | Upstream took bits 161 (RTTY contest) and 162 (TX subnet interlock); the README’s licence section, where the NAS appendix follows, changed; the web radio’s MP3 decoder was replaced | Relay setting bit 163; the appendix kept after upstream’s new licence text; nothing to carry for the MP3 decoder |
 
-<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
+<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, with an optional PC817 opto board on the QMX+ power-on pins driven from the NAS by an FTDI TTL-232R-5V cable (its red wire goes to the ungrounded side of the VOL switch, its black wire to QMX ground); the NAS is wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 
 Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, with how far each has been tested:
 1. Sharing the radio over the network (Synology NAS or Raspberry Pi relay)
@@ -36,8 +36,9 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 5. QMX Bridge, a native Mac app: Discover, Probe, the serial port and the TCI server in one window, with a virtual USB serial port driver
 6. M5Stack Tab5 discovery with the web browser at http://qmx.local
 7. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
-8. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
-9. An update kit that rebuilds all of this on each new upstream release
+8. Remote Power-ON of the QMX/QMX+ with a FTDI serial cable on the NAS
+9. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
+10. An update kit that rebuilds all of this on each new upstream release
 
 The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.0.2; not yet flashed). The last build flashed and marked tested on the Tab5 was v2.0.2-NAS (2026-10-31), including Find NAS with the relay’s discovery fix.
 
@@ -56,6 +57,9 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
 * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
 * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
 * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
+* Power on the radio in the drawer (under Radio source): asks the NAS relay to press the QMX's power button through its FTDI cable (Remote Power-ON). Built and compile-checked; the relay side tested against its fake radio; not yet tested with the cable.
+* Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
+* Power on the radio and Power off the radio on the web page too (Misc menu, above Power off the Tab5): the same actions as the drawer, also available to other programs as POST /api/cmd {"action":"radio_power_on"} and {"action":"radio_power_off","confirm":"RADIOOFF"}. Power off asks for confirmation first. Built and compile-checked; not yet tested on the Tab5.
 * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
 
 **On the relay**
@@ -93,6 +97,32 @@ The QMX firmware version, the radio settings the Tab5 needs, the power-up order 
    * If the Tab5 uses the NAS, check the drawer’s Radio source shows the NAS.
 5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
 6. If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
+
+**Remote Power-ON with a FTDI Serial Cable**
+
+A QMX/QMX+ that is switched off has no USB device, so it can't receive the CAT power-on command (PS1;). The NAS relay can press the radio's power button for it: an FTDI TTL-232R-5V USB serial cable on a second NAS USB port drives a PC817 optocoupler board wired across the radio's VOL encoder push switch, and holding the cable's RTS line for 1.8 s is the long press that turns the radio on. Tested in the relay with its simulated radio; not yet tested with the cable and board on the NAS.
+
+Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com/dp/B07RBK2P47) (FTDI TTL-232R-5V pinout) and [bestep PC817 optocoupler isolation board](https://www.amazon.com/dp/B0DD3KBQV5) (order the 5 V version).
+
+| From | To |
+|---|---|
+| Cable red (pin 3, +5 V) | Board INPUT + |
+| Cable green (pin 6, RTS#) | Board INPUT − |
+| Board OUT | QMX VOL encoder switch, signal side |
+| Board GND (output side) | QMX ground (switch ground side) |
+| Board VCC (output side) | Not connected |
+| Cable black, brown, orange, yellow | Not connected: the NAS and the radio share no ground |
+
+Check on the QMX schematic which pin of the VOL switch is ground before wiring.
+
+* PS1; from PC software on port 3 (TCP 7356): while the radio is off, the relay keeps the client connected, answers PS; with PS0;, and answers PS1; with PS1; while it holds the button. When the radio's USB device comes back, port 3 reopens and everything passes through as before. A second PS1; within 20 s doesn't press again, so it can't switch a booting radio back off.
+* From the Tab5: **Power on the radio** in the drawer (under Radio source) asks the relay over UDP (QMXR-PWR1 to port 7355), and the relay presses the button and says so; the Tab5 shows "pressing", "already on", "no FTDI cable" or "still starting". The stream resumes by itself when the radio is up.
+* From a scheduled task: create an empty file named power-on.request in the relay folder. The relay presses the button within 2 s and deletes the file where DSM allows it; if DSM won't let it, touch or re-create the file for the next press.
+* Power off is still PS0;, subject to the allow-ps0 guard. On the Tab5 it is **Power off the radio** in the drawer (Advanced, under Radio source): two taps, the radio is put back into receive first, and it is refused while another device has the transmitter.
+* No glitch on the button: opening a serial port such as /dev/ttyUSB0 makes Linux assert DTR and RTS for a moment, which would close the optocoupler. The relay never opens the cable as a serial port. It sets RTS with the FT232R's own USB request (SIO_SET_MODEM_CTRL) through usbfs, the same way it already talks to the QMX, and detaches ftdi_sio from the cable so there's no /dev/ttyUSB0 for anything else to open. No DSM driver is needed. RTS is released at start-up, after every press and when the relay stops.
+* Setup: plug the cable into the NAS and restart the relay (restart.request); qmx-relay.log says `power button: ready`. Without the cable it says `no FTDI cable` and the relay works as before. Bench test before wiring to the radio, with the relay stopped: `python3 qmx_nas_relay.py --power-press` lights the board's LED for 1.8 s. Options: --power-hold, --power-line rts|dtr, --power-button off. Details are in tools/nas-relay/README.md, section 4.
+
+*Files*: `tools/nas-relay/qmx_nas_relay.py` (PowerButton, port 3 while the radio is off, the --power-* options), `tools/nas-relay/README.md`.
 
 **TAB5 Wired Ethernet (with optional M5Stack W5500 PoE base)**
 

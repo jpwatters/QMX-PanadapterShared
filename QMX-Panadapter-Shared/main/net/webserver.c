@@ -4410,6 +4410,54 @@ static esp_err_t cmd_handler(httpd_req_t *req)
         vTaskDelay(pdMS_TO_TICKS(150));
         ui_power_off_safely();
         return ESP_OK;
+    } else if (action && strcmp(action, "radio_power_off") == 0) {
+        // Switch the QMX itself off (PS0;) after putting it back into receive -
+        // the same as the drawer's "Power off the radio". Needs
+        // {"confirm":"RADIOOFF"}: the radio does not come back on by itself.
+        // Over the NAS the relay passes PS0; only with its allow-ps0 flag.
+        const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(root, "confirm"));
+        cJSON_Delete(root);
+        if (!c || strcmp(c, "RADIOOFF") != 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"error\":\"needs confirm=RADIOOFF\"}");
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "radio power off requested over HTTP");
+        char msg[160], out[256];
+        int rc = ui_radio_power_off(msg, sizeof(msg));
+        snprintf(out, sizeof(out), "{\"ok\":%s,\"code\":%d,\"message\":\"%s\"}",
+                 rc == 0 ? "true" : "false", rc, msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, out);
+        return ESP_OK;
+    } else if (action && strcmp(action, "radio_power_on") == 0) {
+        // Ask the NAS relay to press the QMX's power button (Remote Power-ON) -
+        // the same as the drawer's "Power on the radio". Blocks up to 1.5 s
+        // while the relay answers over UDP.
+        cJSON_Delete(root);
+        ESP_LOGW(TAG, "radio power on requested over HTTP");
+        radio_power_result_t rc = radio_relay_power_on(1500);
+        const char *res, *msg;
+        switch (rc) {
+        case RADIO_POWER_PRESSING:
+            res = "pressing"; msg = "The NAS is pressing the QMX's power button - the radio starts in a few seconds."; break;
+        case RADIO_POWER_ALREADY:
+            res = "on"; msg = "The QMX is already on."; break;
+        case RADIO_POWER_NO_CABLE:
+            res = "nocable"; msg = "The NAS relay has no FTDI cable, so it cannot press the power button."; break;
+        case RADIO_POWER_BUSY:
+            res = "busy"; msg = "Already pressed - the QMX is still starting. Give it 20 seconds."; break;
+        case RADIO_POWER_NO_NAS:
+            res = "usb"; msg = "The radio is on USB, not the NAS (or the network is down). Only the NAS relay can switch the QMX on."; break;
+        default:
+            res = "noanswer"; msg = "The NAS relay did not answer. Is it running, and updated for Remote Power-ON?"; break;
+        }
+        char out[256];
+        snprintf(out, sizeof(out), "{\"ok\":%s,\"result\":\"%s\",\"message\":\"%s\"}",
+                 rc >= 0 ? "true" : "false", res, msg);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, out);
+        return ESP_OK;
     } else if (action && strcmp(action, "wspr_dump") == 0) {
         /* Dev action: write the next N captured windows to the SD card as WAV,
          * so the same audio can be run through real wsprd on a PC. That is the

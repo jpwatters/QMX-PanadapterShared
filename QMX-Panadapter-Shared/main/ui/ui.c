@@ -3868,14 +3868,20 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  * its own group and is visible everywhere. */
 #define DRAWER_SEC_WEBRADIO   54
 #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
-#define N_DRAWER_SECTIONS     58   /* ids 0..57; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC */
+#define N_DRAWER_SECTIONS     60   /* ids 0..59; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR, 59 RADIOON */
 // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 // or one plugged into a NAS running tools/nas-relay. Same effect as the web
 // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 // cat_reconnect), so the switch no longer needs a computer.
 // (57: upstream uses 0..56 in v1.24.2; N_DRAWER_SECTIONS was 57.)
 #define DRAWER_SEC_RADIOSRC   57
-// ⛔ IDs are 0..57 now. The next one raises N_DRAWER_SECTIONS AND gets an
+// "Power off the radio" - sends PS0; to the QMX after putting it back in
+// receive. Over the NAS the relay passes PS0; only with its allow-ps0 flag.
+#define DRAWER_SEC_RADIOPWR   58
+// "Power on the radio" - asks the NAS relay to press the QMX's power button
+// (Remote Power-ON: FTDI cable + opto board on the NAS).
+#define DRAWER_SEC_RADIOON    59
+// ⛔ IDs are 0..59 now. The next one raises N_DRAWER_SECTIONS AND gets an
 // assert below - see the 2026-10-03 note above.
 
 /* Catches the mistake above at COMPILE time instead of as a crash minutes into
@@ -3893,6 +3899,8 @@ _Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
 _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_RADIOPWR < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_RADIOON  < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
 static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
 static int       s_drawer_section_y[N_DRAWER_SECTIONS];
@@ -3934,6 +3942,12 @@ static const drawer_item_t GRP_STATION[] = {
 };
 static const drawer_item_t GRP_RADIO[] = {
     { DRAWER_SEC_RADIOSRC, "Radio source (USB / NAS)", true },
+    // Advanced, like "Power off the Tab5": the radio does not come back on by
+    // itself (only the relay's Remote Power-ON or a hand on the knob).
+    // Basic: switching the radio on is the first thing a remote operator does,
+    // it cannot interrupt anything, and it does nothing without the relay's cable.
+    { DRAWER_SEC_RADIOON, "Power on the radio (NAS)", true },
+    { DRAWER_SEC_RADIOPWR, "Power off the radio (QMX)", false },
     { DRAWER_SEC_QMXVOL, "QMX volume", true },
     { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
     /* T139: under the two gains because it only makes sense read against them
@@ -4116,6 +4130,8 @@ static void drawer_set_mode(ui_mode_t mode);
 // Defined next to the other restart-the-device callback, used up in the drawer
 // build - see drawer_usedhcp_btn_cb for why that button has to exist (#307).
 static void drawer_poweroff_btn_cb(lv_event_t *e);
+static void drawer_radiopwr_btn_cb(lv_event_t *e);
+static void drawer_radioon_btn_cb(lv_event_t *e);
 static void drawer_usedhcp_btn_cb(lv_event_t *e);
 static void drawer_sdeject_btn_cb(lv_event_t *e);
 static void drawer_reboot_btn_cb(lv_event_t *e);
@@ -17465,6 +17481,40 @@ static void drawer_build(void)
         y += 72;
     }
 
+    /* "Power on the radio" - under Radio source, above Power off. One tap:
+     * turning a radio on interrupts nothing. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_RADIOON, y, 72);
+        lv_obj_t *btn = lv_btn_create(sec);
+        lv_obj_set_size(btn, DRAWER_W - 32, 56);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2F6B3A), 0);
+        lv_obj_add_event_cb(btn, drawer_radioon_btn_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, LV_SYMBOL_POWER "  Power on the radio");
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+        lv_obj_center(lbl);
+        y += 72;
+    }
+
+    /* "Power off the radio" - directly under Radio source, the row that says
+     * which QMX this is. Same red and two-tap arming as "Power off the Tab5". */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_RADIOPWR, y, 72);
+        lv_obj_t *btn = lv_btn_create(sec);
+        lv_obj_set_size(btn, DRAWER_W - 32, 56);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);   /* not PRIMARY: it does not come back */
+        lv_obj_add_event_cb(btn, drawer_radiopwr_btn_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, "Power off the radio");
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+        lv_obj_center(lbl);
+        y += 72;
+    }
+
     {
         lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
         lv_obj_t *btn = lv_btn_create(sec);
@@ -21517,6 +21567,156 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
     lv_timer_handler();
     vTaskDelay(pdMS_TO_TICKS(600));
     ui_power_off_safely();
+}
+
+/* Power the QMX ON from the glass. A radio that is off has no USB device, so
+ * the Tab5 cannot reach it at all - only the NAS relay can, by pressing the
+ * power button through its FTDI cable and opto board (Remote Power-ON). This
+ * asks it to over UDP (radio_relay_power_on(), which blocks ~1.5 s, so it runs
+ * on a short-lived task like Find NAS). When the radio's USB device comes back
+ * the relay opens it and the Tab5's stream resumes on its own. */
+static volatile bool s_radioon_busy;
+
+static void radioon_task(void *arg)
+{
+    (void)arg;
+    radio_power_result_t rc = radio_relay_power_on(1500);
+    const char *msg;
+    uint32_t ms = 4000;
+    switch (rc) {
+    case RADIO_POWER_PRESSING:
+        msg = "The NAS is pressing the QMX's power button - the radio starts in a few seconds.";
+        break;
+    case RADIO_POWER_ALREADY:
+        msg = "The QMX is already on.";
+        ms = 3000;
+        break;
+    case RADIO_POWER_NO_CABLE:
+        msg = "The NAS relay has no FTDI cable, so it cannot press the power button. "
+              "See Remote Power-ON in the README.";
+        ms = 6000;
+        break;
+    case RADIO_POWER_BUSY:
+        msg = "Already pressed - the QMX is still starting. Give it 20 seconds.";
+        break;
+    case RADIO_POWER_NO_NAS:
+        msg = "The radio is on USB, not the NAS (or the network is down). "
+              "Only the NAS relay can switch the QMX on.";
+        ms = 5000;
+        break;
+    default:
+        msg = "The NAS relay did not answer. Is it running, and updated for Remote Power-ON?";
+        ms = 5000;
+        break;
+    }
+    if (display_lock(2000)) {
+        ui_toast_ms(msg, ms);
+        display_unlock();
+    }
+    s_radioon_busy = false;
+    vTaskDelete(NULL);
+}
+
+static void drawer_radioon_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_radioon_busy) return;
+    char host[RADIO_RELAY_HOST_LEN] = "";
+    uint16_t port = 0;
+    radio_relay_get_target(host, sizeof(host), &port);
+    if (!radio_relay_enabled() || !host[0]) {
+        ui_toast_ms("The radio is on USB. Only the NAS relay can switch the QMX on "
+                    "(Radio source -> Use NAS).", 5000);
+        return;
+    }
+    /* No cat_is_ready() shortcut: the relay knows whether the QMX is on the
+     * USB bus, the Tab5 only knows whether its own link is up. */
+    s_radioon_busy = true;
+    ESP_LOGW(TAG, "operator asked the NAS to power the radio on");
+    ui_toast_ms("Asking the NAS to switch the QMX on...", 1500);
+    if (xTaskCreate(radioon_task, "radio_on", 4096, NULL, 4, NULL) != pdPASS) {
+        s_radioon_busy = false;
+        ui_toast_ms("Could not start the request - try again.", 3000);
+    }
+}
+
+/* Power the QMX off from the glass: PS0; (the radio's own power-off command).
+ * Like ui_power_off_safely() the radio is put back into receive first - the
+ * FT8 robot stands down, TX is disarmed and TA0;/RX; go out - so this can
+ * never switch off a radio in the middle of a transmission.
+ *
+ * Refused while another device (the Mac's TCI bridge) has the transmitter:
+ * pulling the radio out from under someone else's QSO is not this button's
+ * call. Two taps, like the Tab5's own power off.
+ *
+ * Over the NAS the relay drops PS0; unless the flag file allow-ps0 is in its
+ * folder (a guard against stray power-offs from PC software), and the Tab5
+ * cannot see that, so the toast says it. On USB it goes straight to the radio.
+ * Turning the radio back on needs the relay's Remote Power-ON (FTDI cable and
+ * opto board) or a long press on the QMX's VOL knob. */
+static void drawer_radiopwr_btn_cb(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+    static bool armed = false;
+
+    if (!cat_is_ready() || radio_relay_tx_locked(NULL, 0)) {
+        /* Refused before arming; ui_radio_power_off() says why. */
+        armed = false;
+        if (lbl) lv_label_set_text(lbl, "Power off the radio");
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
+        char msg[160];
+        ui_radio_power_off(msg, sizeof(msg));
+        ui_toast_ms(msg, 3000);
+        return;
+    }
+    if (!armed) {
+        armed = true;
+        if (lbl) lv_label_set_text(lbl, "Tap again to power off the radio");
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0xC08000), 0);
+        return;
+    }
+    armed = false;
+    if (lbl) lv_label_set_text(lbl, "Power off the radio");
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
+
+    ESP_LOGW(TAG, "operator asked to power the radio off from the drawer");
+    char msg[160];
+    int rc = ui_radio_power_off(msg, sizeof(msg));
+    ui_toast_ms(msg, rc == 0 ? 5000 : 3000);
+}
+
+int ui_radio_power_off(char *msg, size_t cap)
+{
+    char dummy[8];
+    if (!msg || !cap) { msg = dummy; cap = sizeof(dummy); }
+    if (!cat_is_ready()) {
+        snprintf(msg, cap, "The radio is not connected - nothing to power off.");
+        return -1;
+    }
+    if (radio_relay_tx_locked(NULL, 0)) {
+        snprintf(msg, cap, RADIO_RELAY_TX_LOCKED_MSG " - the radio stays on.");
+        return -2;
+    }
+    ft8_robot_stand_down(NULL);
+    ft8_tx_disarm();
+    ft8_tx_request_abort();
+    cat_send_raw_cmd("TA0;");
+    vTaskDelay(pdMS_TO_TICKS(30));
+    cat_send_raw_cmd("RX;");
+    vTaskDelay(pdMS_TO_TICKS(120));
+    cat_send_raw_cmd("PS0;");
+
+    char host[RADIO_RELAY_HOST_LEN] = "";
+    uint16_t port = 0;
+    radio_relay_get_target(host, sizeof(host), &port);
+    if (radio_relay_enabled() && host[0]) {
+        snprintf(msg, cap, "PS0; sent to the QMX on the NAS. If it stays on, put a file "
+                           "named allow-ps0 in the relay's folder.");
+    } else {
+        snprintf(msg, cap, "PS0; sent - the QMX is powering off.");
+    }
+    return 0;
 }
 
 static void drawer_usedhcp_btn_cb(lv_event_t *e)

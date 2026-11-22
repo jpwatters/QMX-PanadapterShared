@@ -1,0 +1,263 @@
+From 5097ce6a1ad7b79ec45a784607d5932e3ac07754 Mon Sep 17 00:00:00 2001
+From: J P <jpwatters@mac.com>
+Date: Sun, 22 Nov 2026 00:01:30 +0000
+Subject: [PATCH] web: Power on the radio and Power off the radio in the Misc
+ menu
+
+The two drawer rows, on the web page: above "Power off the Tab5" in the Misc
+menu, and on /api/cmd for other programs:
+
+  {"action":"radio_power_on"}                       -> the NAS relay presses
+      the QMX's power button (Remote Power-ON); answers result =
+      pressing | on | nocable | busy | usb | noanswer, with a message
+  {"action":"radio_power_off","confirm":"RADIOOFF"} -> RX; then PS0;
+
+Power off asks for confirmation, like Power off the Tab5. The drawer and the
+web share ui_radio_power_off(), which puts the radio back into receive
+first and refuses while no radio is connected or another device has the
+transmitter.
+
+Builds; check_web, check_webui, check_tx_guard, check_unattended_tx and
+check_drawer_sections are clean. Not yet tested on the Tab5.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
+---
+ README.md               |  1 +
+ main/net/webserver.c    | 48 +++++++++++++++++++++++++++++++++++++++++
+ main/net/www/index.html | 46 +++++++++++++++++++++++++++++++++++++++
+ main/ui/ui.c            | 41 +++++++++++++++++++++++------------
+ main/ui/ui.h            |  8 +++++++
+ 5 files changed, 130 insertions(+), 14 deletions(-)
+
+diff --git a/README.md b/README.md
+index 397a0f0..ad1de7e 100644
+--- a/README.md
++++ b/README.md
+@@ -59,6 +59,7 @@ The NAS patches were last ported on 2026-11-18, to upstream v2.0.2 (compile-chec
+ * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
+ * Power on the radio in the drawer (under Radio source): asks the NAS relay to press the QMX's power button through its FTDI cable (Remote Power-ON). Built and compile-checked; the relay side tested against its fake radio; not yet tested with the cable.
+ * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
++* Power on the radio and Power off the radio on the web page too (Misc menu, above Power off the Tab5): the same actions as the drawer, also available to other programs as POST /api/cmd {"action":"radio_power_on"} and {"action":"radio_power_off","confirm":"RADIOOFF"}. Power off asks for confirmation first. Built and compile-checked; not yet tested on the Tab5.
+ * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
+ 
+ **On the relay**
+diff --git a/main/net/webserver.c b/main/net/webserver.c
+index c950561..8138be6 100644
+--- a/main/net/webserver.c
++++ b/main/net/webserver.c
+@@ -4410,6 +4410,54 @@ static esp_err_t cmd_handler(httpd_req_t *req)
+         vTaskDelay(pdMS_TO_TICKS(150));
+         ui_power_off_safely();
+         return ESP_OK;
++    } else if (action && strcmp(action, "radio_power_off") == 0) {
++        // Switch the QMX itself off (PS0;) after putting it back into receive -
++        // the same as the drawer's "Power off the radio". Needs
++        // {"confirm":"RADIOOFF"}: the radio does not come back on by itself.
++        // Over the NAS the relay passes PS0; only with its allow-ps0 flag.
++        const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(root, "confirm"));
++        cJSON_Delete(root);
++        if (!c || strcmp(c, "RADIOOFF") != 0) {
++            httpd_resp_set_status(req, "400 Bad Request");
++            httpd_resp_sendstr(req, "{\"error\":\"needs confirm=RADIOOFF\"}");
++            return ESP_OK;
++        }
++        ESP_LOGW(TAG, "radio power off requested over HTTP");
++        char msg[160], out[256];
++        int rc = ui_radio_power_off(msg, sizeof(msg));
++        snprintf(out, sizeof(out), "{\"ok\":%s,\"code\":%d,\"message\":\"%s\"}",
++                 rc == 0 ? "true" : "false", rc, msg);
++        httpd_resp_set_type(req, "application/json");
++        httpd_resp_sendstr(req, out);
++        return ESP_OK;
++    } else if (action && strcmp(action, "radio_power_on") == 0) {
++        // Ask the NAS relay to press the QMX's power button (Remote Power-ON) -
++        // the same as the drawer's "Power on the radio". Blocks up to 1.5 s
++        // while the relay answers over UDP.
++        cJSON_Delete(root);
++        ESP_LOGW(TAG, "radio power on requested over HTTP");
++        radio_power_result_t rc = radio_relay_power_on(1500);
++        const char *res, *msg;
++        switch (rc) {
++        case RADIO_POWER_PRESSING:
++            res = "pressing"; msg = "The NAS is pressing the QMX's power button - the radio starts in a few seconds."; break;
++        case RADIO_POWER_ALREADY:
++            res = "on"; msg = "The QMX is already on."; break;
++        case RADIO_POWER_NO_CABLE:
++            res = "nocable"; msg = "The NAS relay has no FTDI cable, so it cannot press the power button."; break;
++        case RADIO_POWER_BUSY:
++            res = "busy"; msg = "Already pressed - the QMX is still starting. Give it 20 seconds."; break;
++        case RADIO_POWER_NO_NAS:
++            res = "usb"; msg = "The radio is on USB, not the NAS (or the network is down). Only the NAS relay can switch the QMX on."; break;
++        default:
++            res = "noanswer"; msg = "The NAS relay did not answer. Is it running, and updated for Remote Power-ON?"; break;
++        }
++        char out[256];
++        snprintf(out, sizeof(out), "{\"ok\":%s,\"result\":\"%s\",\"message\":\"%s\"}",
++                 rc >= 0 ? "true" : "false", res, msg);
++        httpd_resp_set_type(req, "application/json");
++        httpd_resp_sendstr(req, out);
++        return ESP_OK;
+     } else if (action && strcmp(action, "wspr_dump") == 0) {
+         /* Dev action: write the next N captured windows to the SD card as WAV,
+          * so the same audio can be run through real wsprd on a PC. That is the
+diff --git a/main/net/www/index.html b/main/net/www/index.html
+index 5ff6b65..252f744 100644
+--- a/main/net/www/index.html
++++ b/main/net/www/index.html
+@@ -1753,6 +1753,8 @@
+         <a href="/ss.bmp" id="ss-link" target="_blank" title="Opens in a new tab straight away - quickest way to just look at the screen">Tab5 screenshot</a> <a href="#" id="ss-save" title="Saves a PNG file - slower, but the format forums and apps accept">(save PNG)</a>
+         <a href="#" id="server-mode-link" title="Stop the Tab5 drawing its screen and running its speaker, and keep serving this page. Measured: it hands back about half of core 0 and a fifth of core 1. A touch on the Tab5 ends it.">Server mode: <span id="server-mode-state">off</span></a>
+         <a href="#" id="reboot-link" title="Restart the Tab5 now. Receiving stops for about ten seconds. Until now this was only reachable after a firmware update.">Reboot the Tab5</a>
++        <a href="#" id="radio-on-link" title="Ask the NAS relay to press the QMX's power button (Remote Power-ON: FTDI cable and opto board on the NAS). Only works with the radio on the NAS.">Power on the radio</a>
++        <a href="#" id="radio-off-link" class="danger" title="Switch the QMX off with PS0;. The radio is put back into receive first. It does not come back on by itself - Power on the radio (NAS with the FTDI cable) or the VOL knob. Over the NAS the relay needs its allow-ps0 flag file.">Power off the radio</a>
+         <a href="#" id="poweroff-link" class="danger" title="Shut the Tab5 down. The radio is put back into receive FIRST, so a transmission in progress cannot be left keyed. It does NOT come back on its own - someone has to press the button, or cut and restore its power.">Power off the Tab5</a>
+         <a href="#" id="reset-settings-link" class="danger" title="Reset all app settings + memory channels to defaults (keeps the QSO log and WiFi). Clears a stuck stored value without an esptool full-erase. Reboots.">Reset settings</a>
+         <a href="#" id="reset-network-link" class="danger" title="Clear stored WiFi/network state (keeps app settings). Clears a stuck WiFi/link state a normal reflash leaves in place. Reboots.">Reset WiFi</a>
+@@ -3857,6 +3859,50 @@ function adifImportMessage(j) {
+       }
+     }); }
+ 
++  /* Power the QMX itself on and off - the same as the drawer's two rows.
++     On goes to the NAS relay (Remote Power-ON); off is PS0; after RX;. */
++  { const on = document.getElementById("radio-on-link");
++    if (on) on.addEventListener("click", async function (e) {
++      e.preventDefault();
++      const prev = on.textContent;
++      on.textContent = "Asking the NAS …";
++      try {
++        const r = await fetch("/api/cmd", {
++          method: "POST", headers: { "Content-Type": "application/json" },
++          body: JSON.stringify({ action: "radio_power_on" })
++        });
++        const j = await r.json().catch(() => ({}));
++        alert(j.message || ("The device answered HTTP " + r.status));
++      } catch (err) {
++        alert("No answer from the Tab5.");
++      } finally {
++        on.textContent = prev;
++      }
++    }); }
++  { const off = document.getElementById("radio-off-link");
++    if (off) off.addEventListener("click", async function (e) {
++      e.preventDefault();
++      if (!confirm("Power the radio (QMX) off?\n\n" +
++                   "• The radio is put back into receive first.\n" +
++                   "• It does NOT come back on by itself - use Power on the radio " +
++                   "(NAS with the FTDI cable) or the QMX's VOL knob.\n" +
++                   "• Over the NAS the relay needs its allow-ps0 flag file.")) return;
++      const prev = off.textContent;
++      off.textContent = "Powering the radio off …";
++      try {
++        const r = await fetch("/api/cmd", {
++          method: "POST", headers: { "Content-Type": "application/json" },
++          body: JSON.stringify({ action: "radio_power_off", confirm: "RADIOOFF" })
++        });
++        const j = await r.json().catch(() => ({}));
++        alert(j.message || ("The device answered HTTP " + r.status));
++      } catch (err) {
++        alert("No answer from the Tab5.");
++      } finally {
++        off.textContent = prev;
++      }
++    }); }
++
+   wireReset("reset-settings-link", "reset_settings",
+     "Reset ALL app settings and memory channels to defaults?\n\n" +
+     "• KEEPS your QSO log (ADIF) and WiFi.\n" +
+diff --git a/main/ui/ui.c b/main/ui/ui.c
+index ad53bee..bdd16be 100644
+--- a/main/ui/ui.c
++++ b/main/ui/ui.c
+@@ -21660,19 +21660,14 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+     static bool armed = false;
+ 
+-    if (!cat_is_ready()) {
++    if (!cat_is_ready() || radio_relay_tx_locked(NULL, 0)) {
++        /* Refused before arming; ui_radio_power_off() says why. */
+         armed = false;
+         if (lbl) lv_label_set_text(lbl, "Power off the radio");
+         lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
+-        ui_toast_ms("The radio is not connected - nothing to power off.", 3000);
+-        return;
+-    }
+-    char why[96] = "";
+-    if (radio_relay_tx_locked(why, sizeof(why))) {
+-        armed = false;
+-        if (lbl) lv_label_set_text(lbl, "Power off the radio");
+-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
+-        ui_toast_ms(RADIO_RELAY_TX_LOCKED_MSG " - the radio stays on.", 3000);
++        char msg[160];
++        ui_radio_power_off(msg, sizeof(msg));
++        ui_toast_ms(msg, 3000);
+         return;
+     }
+     if (!armed) {
+@@ -21686,6 +21681,23 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+     lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
+ 
+     ESP_LOGW(TAG, "operator asked to power the radio off from the drawer");
++    char msg[160];
++    int rc = ui_radio_power_off(msg, sizeof(msg));
++    ui_toast_ms(msg, rc == 0 ? 5000 : 3000);
++}
++
++int ui_radio_power_off(char *msg, size_t cap)
++{
++    char dummy[8];
++    if (!msg || !cap) { msg = dummy; cap = sizeof(dummy); }
++    if (!cat_is_ready()) {
++        snprintf(msg, cap, "The radio is not connected - nothing to power off.");
++        return -1;
++    }
++    if (radio_relay_tx_locked(NULL, 0)) {
++        snprintf(msg, cap, RADIO_RELAY_TX_LOCKED_MSG " - the radio stays on.");
++        return -2;
++    }
+     ft8_robot_stand_down(NULL);
+     ft8_tx_disarm();
+     ft8_tx_request_abort();
+@@ -21695,15 +21707,16 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+     vTaskDelay(pdMS_TO_TICKS(120));
+     cat_send_raw_cmd("PS0;");
+ 
+-    char host[64] = "";
++    char host[RADIO_RELAY_HOST_LEN] = "";
+     uint16_t port = 0;
+     radio_relay_get_target(host, sizeof(host), &port);
+     if (radio_relay_enabled() && host[0]) {
+-        ui_toast_ms("PS0; sent to the QMX on the NAS. If it stays on, put a file "
+-                    "named allow-ps0 in the relay's folder.", 5000);
++        snprintf(msg, cap, "PS0; sent to the QMX on the NAS. If it stays on, put a file "
++                           "named allow-ps0 in the relay's folder.");
+     } else {
+-        ui_toast_ms("PS0; sent - the QMX is powering off.", 3000);
++        snprintf(msg, cap, "PS0; sent - the QMX is powering off.");
+     }
++    return 0;
+ }
+ 
+ static void drawer_usedhcp_btn_cb(lv_event_t *e)
+diff --git a/main/ui/ui.h b/main/ui/ui.h
+index 7c53f3a..5b030b8 100644
+--- a/main/ui/ui.h
++++ b/main/ui/ui.h
+@@ -429,6 +429,14 @@ void ui_drawer_relayout(void);
+  * not return. */
+ void ui_power_off_safely(void);
+ 
++/* Switch the QMX itself off with PS0; after putting it back into receive (FT8
++ * robot stood down, TX disarmed, TA0; and RX;). Shared by the drawer's "Power
++ * off the radio" and the web page's /api/cmd radio_power_off. No LVGL calls.
++ * Returns 0 when PS0; was sent, -1 when no radio is connected, -2 while
++ * another device has the transmitter. msg (may be NULL) gets a sentence for
++ * the operator. */
++int ui_radio_power_off(char *msg, size_t cap);
++
+ // Call whenever a help overlay (the docs Reader, the "What's wrong?" panel) opens
+ // or closes. While one owns the screen the top-bar hit zones and the drawer/memory
+ // edge swipes are dropped out of hit-testing, and the QMX-wait prompt stands down -
+-- 
+2.34.1
+
