@@ -4,7 +4,58 @@ All releases are available on [GitHub Releases](https://github.com/SteffenLav/qm
 
 ## Latest Release
 
-**v2.1.0** - 2026-11-22
+**v2.1.2** - 2026-11-26
+
+**WSPR receives again, and "Who has heard me" keeps the whole day.**
+
+- **WSPR works again** *(Bryan N0LUF)*. In v2.1.1 the WSPR page said "waiting for memory", then "out of memory", and heard nothing. The resizable spectrum held memory that WSPR needs. It now takes that memory only while you drag the split.
+- **"Who has heard me" keeps 24 hours** *(Randy N4OPI)*. PSK Reporter answers each query with only about the last hour, so the list emptied an hour after you stopped transmitting. The Tab5 now adds each answer to what it holds. After a restart the panel says from what time its list is complete.
+- **"Who has heard me" says why when no query ran**, instead of "nobody heard you".
+- **Leaving WSPR puts back the radio's Max. PA voltage** *(Randy N4OPI)*. Before, the QMX stayed at the voltage WSPR set for its declared power.
+- **No TX, and no "may still be transmitting" warning, when the radio is not connected** *(Randy N4OPI)*. WSPR, FT8 and RTTY skip the slot.
+- **An FT8, FT4 or JS8 QSO is not logged without a received report.** If the report comes a slot late, the QSO is logged with it. If none comes within two of the other station's periods, the QSO is not logged.
+- **WSPR band hop: stay on each band for 1 to 30 cycles**, set with - / + in the band hop picker and on the web page. The picker has larger text and the bands in three columns.
+- **The TX CQ period is kept across a restart** and can be set on the web page.
+- **Web page: changing the WSPR dial retunes the radio only while WSPR runs.**
+- **ADIF log view: the list no longer goes blank after a single delete.**
+- **FT8 Simulation Mode: a TX armed in simulation never keys the radio after you switch simulation off.**
+- **The Tab5 retries WiFi by itself** when the WiFi chip stays silent after start-up, instead of waiting for a restart.
+- **One cause of a restart when the radio is unplugged or power-cycled during a USB reconnect is fixed.**
+
+**Known, not fixed**
+
+- Not seen on a Tab5 for this build: a late report completing a held QSO, the Max. PA voltage restore, the skip with no radio connected, and the WiFi retry.
+
+**What can key the radio** - the [unattended-TX inventory](https://github.com/SteffenLav/qmx-panadapter/blob/main/docs/unattended-tx-inventory.md) now lists the CW page's message send (`send_cw_text`), which was missing. It is a press or a browser request. Nothing new can key the radio.
+
+Commits: `v2.1.1..v2.1.2`.
+
+### v2.1.1 - 2026-11-24
+
+**A pounce that lost its station to someone else comes back, Tap to Auto-work, and a resizable spectrum.**
+
+- **A station dropped as busy is not forgotten.** If it answers you within 5 minutes, the QSO resumes. If it signs off with the other station or calls CQ inside those 5 minutes, the Tab5 calls it again, once. Up to four such stations are remembered. See [FT8 Transmit](guide/ft8-tx.md).
+- **Tap to Auto-work** *(Gyula HA3HZ)* - in FT8 Options, off by default. A tap on a decode starts the QSO at once, with no Confirm window. The closing 73 still opens it.
+- **Auto-work pileup skips a caller not heard for about 75 s**, so a report is not sent to a station that has left.
+- **Cancelling a pounce removes the orange highlight at once.**
+- **After a band change, late decodes from the old band no longer refill the list or get spotted.**
+- **Drag the boundary between spectrum and waterfall** *(Robert VE7ZN)*. Long-press the frequency scale, then drag. See [Gestures](reference/gestures.md).
+- **Less redraw work with a strong carrier on a busy band** *(Mark N8MH)*.
+- **A long dropdown list stays on screen** and scrolls with the mouse wheel.
+- **A Bluetooth mouse wheel no longer breaks up the audio.** Every wheel click wrote to the debug log, and on a busy band that held up the USB link to the radio.
+- **Web page: Listen plays binaural CW in stereo**, with an **ST** mark on the button. See [Audio](guide/audio.md#listen-in-the-browser).
+- **Web page: picking a spot centres the view on the station**, as on the Tab5.
+- **The TX interlock logs the requests it allows**, not only the ones it refuses. It cannot see past a router that translates addresses between two of your networks; [Remote Access](guide/remote-access.md) explains.
+- DiGi stays silent on the speaker and in the browser, as in v2.1.0.
+
+**Known, not fixed**
+
+- The busy-station resume and re-call, Tap to Auto-work, the pileup skip and the highlight fix were not all seen on the air for this build: 20 m was closed during the final test. The re-call was seen on the air on an earlier build the same day. A CQ was sent on 20 m on the release candidate.
+- The receive-audio health check ran 48 windows on the release candidate. Four checks passed; the codec-underrun check failed on 2 of 47 windows (4 underruns in 8 minutes). No cause is known.
+
+**What can key the radio** - no new entry in the [unattended-TX inventory](https://github.com/SteffenLav/qmx-panadapter/blob/main/docs/unattended-tx-inventory.md). The `rearm_current` row now names the busy-station resume and re-call as its automatic triggers.
+
+### v2.1.0 - 2026-11-22
 
 **FT8 decodes about 20% more stations per cycle, the spectrum no longer breaks up on a busy band, and live spots work again.**
 
@@ -1388,7 +1439,7 @@ Every goal on the original roadmap is met in v2.0.0. What remains is proof on th
 
 - **Source code:** [GitHub Repository](https://github.com/SteffenLav/qmx-panadapter)
 - **Releases:** [GitHub Releases](https://github.com/SteffenLav/qmx-panadapter/releases)
-- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v2.1.0.pdf) or [Web](quick-start.md)
+- **User Guide:** [PDF](QMX-Panadapter-UserGuide-v2.1.2.pdf) or [Web](quick-start.md)
 - **Build Guide:** [Build from Source](build/build.md)
 - **Technical Details:** [CLAUDE.md](https://github.com/SteffenLav/qmx-panadapter/blob/main/CLAUDE.md)
 

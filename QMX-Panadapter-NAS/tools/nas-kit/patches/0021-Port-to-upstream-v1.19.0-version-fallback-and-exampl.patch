@@ -1,4 +1,4 @@
-From d6f5eca63c263813ac067b94cfc925cbedcd8750 Mon Sep 17 00:00:00 2001
+From 32d7f6dc61dd8dd3d5136ccaf2e08a9e1140cfc1 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 23:36:08 -0500
 Subject: [PATCH 21/54] Port to upstream v1.19.0: version fallback and examples
@@ -44,7 +44,7 @@ index 2da15b80..9298857a 100644
  set(PROJECT_VER "${QMX_BASE_TAG}-NAS")
  
 diff --git a/README.md b/README.md
-index 4ac5e9ea..ba5b6c4d 100644
+index 01816356..ee0703a1 100644
 --- a/README.md
 +++ b/README.md
 @@ -34,7 +34,7 @@ Mac tools

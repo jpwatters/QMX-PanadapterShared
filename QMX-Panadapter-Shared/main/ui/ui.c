@@ -39,6 +39,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "bandplan.h"
 #include "ft8_robot.h"   // ft8_robot_stand_down - a band change stops auto-answer
 #include "ft8_qso.h"     // ft8_band_change_stand_down - a band change ends the QSO
+#include "ft8_hop.h"     // ft8_hop_owns_band_change - a hop keeps the decode list
 #include "ft8_tx.h"      // ft8_tx_disarm / ft8_tx_request_abort - safe power off
 #include "bsp/m5stack_tab5.h"   // bsp_generate_poweroff_signal
 #include "db_gridlines.h"   // round dBm gridlines derived from the dB Range sliders
@@ -68,6 +69,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
 #include "hid_cursor.h"
 #include "util/hid_rotate.h"
 #include "util/wf_shift.h"
+#include "src/display/lv_display_private.h"       /* inv_p: room left for invalid areas, see the strip path in ui_push_spectrum */
 #include "src/widgets/image/lv_image_private.h"   /* img->offset: the CW carpet shift, see ui_push_waterfall_row */
 #include "util/qmx_prompt_gate.h"   // WHEN the "turn on your QMX" prompt may appear
 #include "memory_modal.h"
@@ -106,7 +108,35 @@ static const char *TAG = "ui";
 #define TOP_BAR_H       60
 #define DRAWER_W        520  /* Phase 5.10D Stage 2: settings drawer width (520 in v0.8.x to fit WiFi button + smoothing slider) */
 #define BOTTOM_BAR_H    36
-#define SPECTRUM_H      200
+/* ⭐ THE SPECTRUM HEIGHT IS A VARIABLE, NOT A CONSTANT (T216, Robert VE7ZN).
+ *
+ * Long-pressing the frequency scale between the spectrum and the waterfall
+ * arms a drag that moves the boundary. SPECTRUM_H was a #define used at 51
+ * sites and WATERFALL_H derives from it at 32 more, so rather than edit 83
+ * call sites the macro now expands to the variable and every site follows.
+ *
+ * ⛔⛔ THE CANVASES ARE SIZED TO THE CURRENT SPLIT, NOT TO THE RANGE.
+ *
+ * v2.1.1 allocated both at the maximum (spectrum 400 rows, waterfall 470) for
+ * the life of the session: +1.23 MB of PSRAM, measured as a 1.24 MB step in
+ * bench1's memledger "net/spot" line (13.24 -> 12.00 MB free). WSPR needs
+ * ~11.5 MB and no longer fit: Bryan N0LUF, 2026-11-26, "waiting for memory
+ * ... then out of memory", black waterfall, fixed by going back to v2.1.0.
+ *
+ * Now: allocated at the saved split - 3.16 MB at the default 200 rows, the
+ * same as v2.1.0; the waterfall's rows count double, so the worst case is
+ * 3.62 MB at 100 rows (+0.46 MB, WSPR keeps ~1.2 MB of margin) and 400 rows
+ * takes 2.24 MB. Grown to the maximum
+ * when a drag starts, cut back to the exact size on release - see
+ * split_canvases_resize(). That is safe: both writers (ui_push_spectrum,
+ * ui_push_waterfall_row) hold display_lock, and the drag handler runs on the
+ * LVGL task, which holds it. The waterfall is cleared on release anyway, so
+ * re-pointing its canvas twice per drag costs no history. */
+#define SPECTRUM_H_MIN  100
+#define SPECTRUM_H_MAX  400
+#define SPECTRUM_H_DEF  200
+static int s_spectrum_h = SPECTRUM_H_DEF;
+#define SPECTRUM_H      (s_spectrum_h)
 #define LABEL_BAR_H     32  /* Phase 5.10C: room for Montserrat 18 labels under tick marks */
 #define BANDPLAN_H      22  /* coarse CW/Digi/Phone band-plan strip under the freq axis */
 /* Live spots take NO layout height: they are a see-through overlay on the
@@ -2588,7 +2618,11 @@ static void ui_set_zoom_pan(float zoom, int pan_bins)
     ui_set_zoom_apply(zoom, pan_bins);
 }
 
-#define WATERFALL_H     (DISPLAY_V_RES - TOP_BAR_H - SPECTRUM_H - LABEL_BAR_H - BANDPLAN_H - BOTTOM_BAR_H)
+#define WF_H_OF(spec_h) (DISPLAY_V_RES - TOP_BAR_H - (spec_h) - LABEL_BAR_H - BANDPLAN_H - BOTTOM_BAR_H)
+#define WATERFALL_H     WF_H_OF(SPECTRUM_H)
+/* The tallest waterfall is the one that goes with the SHORTEST spectrum - the
+ * allocation only DURING a split drag (see the note on SPECTRUM_H). 470 rows. */
+#define WATERFALL_H_MAX WF_H_OF(SPECTRUM_H_MIN)
 
 /* ⭐ THE WATERFALL CANVAS IS WIDER THAN THE SCREEN (#298 phase 3).
  *
@@ -3292,6 +3326,7 @@ static bool          s_bot_wifi_fan_valid = false;
 static lv_obj_t *s_bot_wifi_ip = NULL;
 static lv_coord_t s_bot_wifi_min_x = 0;  /* leftmost x the WiFi zone may use (clock's right edge) */
 static lv_obj_t *s_bot_version = NULL; /* firmware version, between battery and clock */
+static void reposition_bot_version(void);
 static lv_obj_t *s_bot_diag_dot = NULL; /* static green dot, shown while a microSD card is mounted */
 static lv_obj_t *s_bot_sd_slash = NULL; /* diagonal stroke over the SD dot+label when NO card is in */
 static lv_obj_t *s_bot_diag_label = NULL; /* "SD" text next to the dot, shown/hidden together with it */
@@ -3460,10 +3495,13 @@ static void output_power_area_refresh(void)
     s_outpwr_n = power_cal_list_watts(band, s_outpwr_w, s_outpwr_v, PWRCAL_STEPS);
 
     if (s_outpwr_n == 0) {
-        char nc_txt[64];
-        snprintf(nc_txt, sizeof(nc_txt), "Not calibrated for %s",
-                 (band && band[0]) ? band : "this band");
-        lv_label_set_text(s_outpwr_nc_lbl, nc_txt);
+        /* Says what calibrating BUYS, not what is missing: "Not calibrated
+         * for 20M" read as a fault in the radio (operator, 2026-11-24). The
+         * radio is fine - it sends at the QMX's own power setting - and the
+         * button below already says "Calibrate this band". 409 px in
+         * montserrat_24 against 488 px of section; the operator's longer
+         * "Calibrate this band to set output power (W)" is 531 px and ran off. */
+        lv_label_set_text(s_outpwr_nc_lbl, "Calibrate to set output power (W)");
         lv_obj_clear_flag(s_outpwr_nc_lbl, LV_OBJ_FLAG_HIDDEN);
         if (s_outpwr_cal_btn) lv_obj_clear_flag(s_outpwr_cal_btn, LV_OBJ_FLAG_HIDDEN);
         if (s_outpwr_recal_btn) lv_obj_add_flag(s_outpwr_recal_btn, LV_OBJ_FLAG_HIDDEN);
@@ -3868,20 +3906,21 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  * its own group and is visible everywhere. */
 #define DRAWER_SEC_WEBRADIO   54
 #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
-#define N_DRAWER_SECTIONS     60   /* ids 0..59; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR, 59 RADIOON */
+#define DRAWER_SEC_FT8HOP     57  // FT8/FT4 receive band hopping (Mark N8MH)
+#define N_DRAWER_SECTIONS     61   /* ids 0..60; 24 retired (no section built), 57 is FT8HOP, 58 RADIOSRC, 59 RADIOPWR, 60 RADIOON */
 // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 // or one plugged into a NAS running tools/nas-relay. Same effect as the web
 // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 // cat_reconnect), so the switch no longer needs a computer.
-// (57: upstream uses 0..56 in v1.24.2; N_DRAWER_SECTIONS was 57.)
-#define DRAWER_SEC_RADIOSRC   57
+// (58: upstream uses 0..57 in v2.1.2, 57 for FT8HOP; N_DRAWER_SECTIONS was 58.)
+#define DRAWER_SEC_RADIOSRC   58
 // "Power off the radio" - sends PS0; to the QMX after putting it back in
 // receive. Over the NAS the relay passes PS0; only with its allow-ps0 flag.
-#define DRAWER_SEC_RADIOPWR   58
+#define DRAWER_SEC_RADIOPWR   59
 // "Power on the radio" - asks the NAS relay to press the QMX's power button
 // (Remote Power-ON: FTDI cable + opto board on the NAS).
-#define DRAWER_SEC_RADIOON    59
-// ⛔ IDs are 0..59 now. The next one raises N_DRAWER_SECTIONS AND gets an
+#define DRAWER_SEC_RADIOON    60
+// ⛔ IDs are 0..60 now. The next one raises N_DRAWER_SECTIONS AND gets an
 // assert below - see the 2026-10-03 note above.
 
 /* Catches the mistake above at COMPILE time instead of as a crash minutes into
@@ -3897,6 +3936,7 @@ _Static_assert(DRAWER_SEC_SERVER < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS")
 _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+_Static_assert(DRAWER_SEC_FT8HOP < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 _Static_assert(DRAWER_SEC_RADIOPWR < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
@@ -4030,6 +4070,9 @@ static const drawer_item_t GRP_FT8[] = {
      * and it is invisible in every other sub-mode anyway, so hiding it behind
      * Advanced would hide it from exactly the operator who went looking. */
     { DRAWER_SEC_JS8SUB, "JS8 submode", true },
+    /* Basic: off until bands are ticked, so an operator who never finds it
+     * never gets the feature - the same reasoning as Bluetooth mouse. */
+    { DRAWER_SEC_FT8HOP, "FT8/FT4 band hopping", true },
     { DRAWER_SEC_SIMMODE, "Simulation mode", false },
 };
 /* The CW page's own practice toggle. Filed in its own group rather than in
@@ -4308,6 +4351,10 @@ static bool drawer_sec_visible(int id, ui_mode_t mode, bool tune_ok)
      * drawer after every sub-mode change so this is re-evaluated. */
     if (id == DRAWER_SEC_JS8SUB)
         return ft8 && ft8_op_mode_get() == FT8_OP_MODE_JS8;
+    /* FT8 and FT4 only: JS8 never hops (ft8_hop.c), so the control would
+     * do nothing there. Same sub-mode test as DRAWER_SEC_JS8SUB above. */
+    if (id == DRAWER_SEC_FT8HOP)   /* FT8_HOP_ENABLED: off for v2.1.2, settings.h */
+        return FT8_HOP_ENABLED && ft8 && ft8_op_mode_get() != FT8_OP_MODE_JS8;
     if (id == DRAWER_SEC_SIMMODE) return ft8;
     if (id == DRAWER_SEC_DISTANCE) return ft8;
     /* CW practice has its own flag and its own page: showing it anywhere else
@@ -4881,6 +4928,13 @@ static int     s_wf_stroll_off = 0;   /* the pan gesture's own offset, added on 
 
 static void wf_apply_x(void);    /* defined beside the row push, used from ui_init */
 static void wf_clear_all(void);
+/* Rows the canvas buffers hold now (T216 / Bryan N0LUF - see SPECTRUM_H). The
+ * waterfall buffer is 2 x s_wf_alloc_h rows (the double-buffer scroll). */
+static int s_spec_alloc_h = 0;
+static int s_wf_alloc_h   = 0;
+/* T216. Declared here because split_drag_cb (build_label_bar, far above the
+ * definition) calls it with final=false for the live drag. */
+static void ui_apply_spectrum_h(int h, bool final);
 static lv_obj_t *s_wf_cursor = NULL;  // cyan tune cursor OVERLAY over the waterfall (not drawn into the
                                       // bitmap — that trailed as rows scrolled); a single current-position line
 
@@ -5039,6 +5093,8 @@ static volatile uint32_t s_pi_wide;       /* area covered >= 2/3           */
 static volatile uint64_t s_pi_band_sum;   /* band height, for the mean     */
 static volatile uint32_t s_pi_band_n;
 static volatile uint64_t s_pi_cols_sum;   /* band WIDTH, for the mean      */
+static volatile uint32_t s_pi_strips;     /* wide, repainted as strips     */
+static volatile uint32_t s_pi_strips_nobuf; /* strips fitted, LVGL buffer did not */
 
 // "Breathing" opacity animation for edge-swipe grip handles: fades between
 // near-invisible and the normal resting opacity so the user notices the
@@ -6647,7 +6703,8 @@ static void build_spectrum(lv_obj_t *parent)
     lv_obj_set_style_pad_all(s_spectrum_obj, 0, 0);
     lv_obj_clear_flag(s_spectrum_obj, LV_OBJ_FLAG_SCROLLABLE);
 
-    // 1280 x 200 x 2 bytes = 512 KB in PSRAM
+    /* 1280 x SPECTRUM_H x 2 bytes in PSRAM, at the CURRENT split - see the
+     * note on SPECTRUM_H and split_canvases_resize(). */
     size_t buf_size = LV_CANVAS_BUF_SIZE(DISPLAY_H_RES, SPECTRUM_H, 16,
                                          LV_DRAW_BUF_STRIDE_ALIGN);
     s_spec_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
@@ -6656,6 +6713,7 @@ static void build_spectrum(lv_obj_t *parent)
         return;
     }
     memset(s_spec_canvas_buf, 0, buf_size);
+    s_spec_alloc_h = SPECTRUM_H;
 
     /* 2.5 KB in INTERNAL RAM: touched once per column per push on core 1, and
      * the whole point of it is to keep work off core 0. A failure here is not
@@ -6810,6 +6868,69 @@ static void draw_label_ticks(void)
     if (s_label_canvas) lv_obj_invalidate(s_label_canvas);
 }
 
+/* ==== T216: drag the spectrum/waterfall split from the frequency scale ====
+ *
+ * ⭐ WHY THE SCALE AND NOT EITHER PANE. The spectrum and the waterfall are both
+ * working surfaces - tap-to-tune, one-finger pan, pinch-zoom - so a long-press
+ * there would have to be told apart from a tune that paused. The 32 px scale
+ * between them had NO touch handler at all, so this gesture displaces nothing.
+ * The operator proposed the target; it was the right one.
+ *
+ * ⛔ PRESSED/PRESSING/RELEASED, NOT LV_EVENT_GESTURE. Same reason as
+ * freq_kp_swipe_cb above: lv_indev_scroll_handler() claims scroll_obj before
+ * gesture detection runs, and indev_gesture() then bails. That event never
+ * fires here.
+ *
+ * The long press is the arming step, so a stray graze on the scale cannot move
+ * the layout. While armed the whole scale lights up - the operator's own
+ * description of what should tell him the drag is live. */
+static lv_obj_t *s_split_glow    = NULL;   /* the "lit up" overlay, hidden when idle */
+static bool      s_split_armed   = false;
+static int       s_split_base_h  = 0;      /* SPECTRUM_H when the drag armed */
+static lv_coord_t s_split_base_y = 0;      /* finger y when the drag armed      */
+
+static void split_drag_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_get_act();
+    if (!indev) return;
+
+    if (code == LV_EVENT_LONG_PRESSED) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        s_split_armed  = true;
+        s_split_base_h = SPECTRUM_H;
+        s_split_base_y = p.y;
+        if (s_split_glow) lv_obj_clear_flag(s_split_glow, LV_OBJ_FLAG_HIDDEN);
+        ESP_LOGI(TAG, "split: armed at %d px", s_split_base_h);
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if (!s_split_armed) return;
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        /* Dragging DOWN grows the spectrum, which is what the finger is doing
+         * to the boundary - the scale follows the finger, it does not oppose
+         * it. Applied live so the operator sees the layout he is choosing. */
+        ui_apply_spectrum_h(s_split_base_h + (p.y - s_split_base_y), false);
+        return;
+    }
+
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (!s_split_armed) return;
+        s_split_armed = false;
+        if (s_split_glow) lv_obj_add_flag(s_split_glow, LV_OBJ_FLAG_HIDDEN);
+        /* The expensive half of the resize - waterfall clear and peak reset -
+         * runs exactly once, here. See ui_apply_spectrum_h's `final`. */
+        ui_apply_spectrum_h(SPECTRUM_H, true);
+        /* Persist on release only. Writing NVS on every PRESSING event would
+         * be a few hundred writes per drag. */
+        settings_set_spectrum_h((uint16_t)SPECTRUM_H);
+        ESP_LOGI(TAG, "split: saved %d px", SPECTRUM_H);
+    }
+}
+
 static void build_label_bar(lv_obj_t *parent)
 {
     lv_obj_t *bar = lv_obj_create(parent);
@@ -6851,6 +6972,30 @@ static void build_label_bar(lv_obj_t *parent)
             lv_obj_align(s_tick_labels[i], LV_ALIGN_BOTTOM_LEFT, tick_xs[i] - 28, -3);
         }
     }
+
+    /* T216. Created LAST so it draws over the tick canvas and the labels -
+     * "the whole scale lit up" has to be visible through whatever is already
+     * on the bar. Not clickable: the press belongs to the bar underneath. */
+    s_split_glow = lv_obj_create(bar);
+    lv_obj_set_size(s_split_glow, DISPLAY_H_RES, LABEL_BAR_H);
+    lv_obj_align(s_split_glow, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(s_split_glow, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_bg_opa(s_split_glow, LV_OPA_30, 0);
+    lv_obj_set_style_border_color(s_split_glow, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_border_width(s_split_glow, 2, 0);
+    lv_obj_set_style_radius(s_split_glow, 0, 0);
+    lv_obj_set_style_pad_all(s_split_glow, 0, 0);
+    lv_obj_clear_flag(s_split_glow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_split_glow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_split_glow, LV_OBJ_FLAG_HIDDEN);
+
+    /* The bar had no handler at all before this - see split_drag_cb. */
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(bar, UI_FLAG_NOT_HOT);
+    lv_obj_add_event_cb(bar, split_drag_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(bar, split_drag_cb, LV_EVENT_PRESSING,     NULL);
+    lv_obj_add_event_cb(bar, split_drag_cb, LV_EVENT_RELEASED,     NULL);
+    lv_obj_add_event_cb(bar, split_drag_cb, LV_EVENT_PRESS_LOST,   NULL);
 }
 
 // ==== Band-plan strip: coarse CW/Digi/Phone reference for the current band ====
@@ -7867,12 +8012,15 @@ static void build_waterfall(lv_obj_t *parent)
     // Allocate 2x WATERFALL_H so we can use the "double buffer" scroll trick:
     // new rows are written to both write_head and write_head+WATERFALL_H positions,
     // and the canvas view pointer moves through the buffer instead of memmove'ing.
+    /* At the CURRENT WATERFALL_H (1792 x 740 x 2 = 2.65 MB at the default
+     * split), not WATERFALL_H_MAX - see the note on SPECTRUM_H. */
     size_t buf_size = LV_CANVAS_BUF_SIZE(WF_CANVAS_W, WATERFALL_H * 2, 16, LV_DRAW_BUF_STRIDE_ALIGN);
     s_wf_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
     if (!s_wf_canvas_buf) {
         ESP_LOGE(TAG, "Failed to alloc waterfall canvas (%zu bytes)", buf_size);
         return;
     }
+    s_wf_alloc_h = WATERFALL_H;
 
     s_wf_canvas = lv_canvas_create(s_waterfall_obj);
     lv_obj_add_flag(s_waterfall_obj, LV_OBJ_FLAG_CLICKABLE);
@@ -7936,8 +8084,11 @@ static void build_waterfall(lv_obj_t *parent)
      * So the canvas now owns the ENTIRE 2x-height buffer for the whole session,
      * and the view window is chosen with lv_image_set_offset_y(), which is a
      * field write plus an invalidate - no cache drop, no set_src. */
+    /* The source height is 2 x the allocated rows. It is re-pointed only by
+     * split_canvases_resize() - twice per split drag, never per row, so the
+     * per-row blink described above cannot come back through it. */
     lv_canvas_set_buffer(s_wf_canvas, s_wf_canvas_buf,
-                         WF_CANVAS_W, WATERFALL_H * 2, LV_COLOR_FORMAT_RGB565);
+                         WF_CANVAS_W, s_wf_alloc_h * 2, LV_COLOR_FORMAT_RGB565);
     /* set_buffer sized the object to the SOURCE (2x tall). Clamp it back to one
      * screenful, which is what makes the offset a window rather than a scroll
      * of an oversized object. */
@@ -7952,7 +8103,7 @@ static void build_waterfall(lv_obj_t *parent)
     lv_obj_align(s_wf_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
 
     // Initialize entire 2x buffer to black (waterfall starts empty)
-    memset(s_wf_canvas_buf, 0, (size_t)WF_CANVAS_W * WATERFALL_H * 2 * 2);
+    memset(s_wf_canvas_buf, 0, (size_t)WF_CANVAS_W * s_wf_alloc_h * 2 * 2);
     wf_apply_x();   /* the view starts centred in the slack, not at column 0 */
     lv_obj_invalidate(s_wf_canvas);
 
@@ -8155,12 +8306,14 @@ static void build_bottom_bar(lv_obj_t *parent)
     lv_obj_align_to(s_bot_sd_slash, s_bot_diag_dot, LV_ALIGN_LEFT_MID, -4, 0);
     lv_obj_add_flag(s_bot_sd_slash, LV_OBJ_FLAG_HIDDEN);
 
-    // Firmware version, centered between the battery text and the UTC clock.
+    // Firmware version, centered between the "SD" label and the UTC clock -
+    // see reposition_bot_version().
     s_bot_version = lv_label_create(bar);
     lv_label_set_text(s_bot_version, "");
     lv_obj_set_style_text_color(s_bot_version, lv_color_hex(UI_COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(s_bot_version, &lv_font_montserrat_24, 0);
     lv_obj_align(s_bot_version, LV_ALIGN_CENTER, -250, 0);
+    reposition_bot_version();
 
 
     // WiFi status, left to right: strength fan, SSID, IP address.
@@ -8564,9 +8717,18 @@ static lv_obj_t *scrollable_at(lv_obj_t *parent, lv_coord_t x, lv_coord_t y)
     // BUTTON, scrolled its label a pixel or two inside itself, and the drawer
     // never moved - so scrolling appeared to jam until the pointer was moved off
     // the control. An OPEN dropdown still gets the wheel, and correctly so: its
-    // list lives on the top layer, which is searched first.
+    // list is the screen's topmost child while open, so it is searched first.
     if (lv_obj_check_type(parent, &lv_dropdown_class) && !lv_dropdown_is_open(parent))
         return NULL;
+    // An OPEN dropdown's list owns the wheel while the pointer is on it, even
+    // when every option fits and there is nothing to scroll. It is a child of
+    // the SCREEN, not of the drawer, so returning it ends the chain at the
+    // screen - otherwise the wheel fell through to the drawer and moved it
+    // behind the open list (operator, 2026-11-24). LVGL 9.2 puts the list on
+    // the screen (lv_dropdown_open), not on the top layer as an older note
+    // above once assumed; topmost-child-first still finds it before the drawer.
+    if (lv_obj_check_type(parent, &lv_dropdownlist_class))
+        return parent;
 
     if (lv_obj_has_flag(parent, LV_OBJ_FLAG_SCROLLABLE) &&
         lv_obj_get_scroll_bottom(parent) + lv_obj_get_scroll_top(parent) > 0)
@@ -8934,6 +9096,30 @@ static void wheel_tune_flush(void)
     ui_update_frequency(s_wheel_target_hz);
 }
 
+/* Wheel outcomes, COUNTED and summarised every 10 s - not logged per click.
+ *
+ * ⛔ A wheel turn is ~10 reports a second, and each one used to write 1-3
+ * lines here plus a hex line in bt_hid_mouse.c. Measured 2026-11-24 on
+ * bench1 (06fdab26): a 30 s wheel test put 1.5-5.6 kB/s on a console whose
+ * UART0 carries 11.5 kB/s, and in exactly that window the USB host missed
+ * transfers (8 short seconds vs 0 in the 60 s before), the speaker dropped to
+ * 35 k smp/s and CAT timed out. Whether the log volume is the mechanism is
+ * what this change tests; the per-click lines had no diagnostic job left
+ * either way - the summary still says what the wheel did. */
+static struct { int notpan, noscroll, limit, scrolled, chained; } s_wl;
+static int64_t s_wl_last_us;
+static void wheel_log_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - s_wl_last_us < 10000000) return;
+    s_wl_last_us = now;
+    if (!(s_wl.notpan | s_wl.noscroll | s_wl.limit | s_wl.scrolled | s_wl.chained)) return;
+    ESP_LOGI(TAG, "wheel (10 s): scrolled %d (chained %d), at limit %d, "
+                  "no scrollable %d, not over panadapter %d",
+             s_wl.scrolled, s_wl.chained, s_wl.limit, s_wl.noscroll, s_wl.notpan);
+    memset(&s_wl, 0, sizeof s_wl);
+}
+
 // True when the clicks were used for tuning, so the caller leaves scrolling
 // alone. Tunes only when the pointer is over the spectrum or the waterfall AND
 // nothing is on top of them: the walk answers the occlusion question the same
@@ -8954,9 +9140,7 @@ static bool wheel_tune_take(int clicks)
         // Logged because a wheel that does nothing is indistinguishable from a
         // wheel that is not wired up - which is precisely how the first version
         // of this went out. `hit` is the object LVGL would give the press to.
-        ESP_LOGI(TAG, "wheel %+d at (%d,%d): not over the panadapter (press target %p, spectrum %p, waterfall %p)",
-                 clicks, (int)s_mouse_pt.x, (int)s_mouse_pt.y,
-                 (void *)hit, (void *)s_spectrum_obj, (void *)s_waterfall_obj);
+        s_wl.notpan++;   // counted, see wheel_log_tick()
         return false;
     }
 
@@ -9146,6 +9330,7 @@ static void mouse_timer_cb(lv_timer_t *t)
      * see the note there. It had to run before the pan check, and leaving a
      * copy behind would be a second call per tick that only ever differs in a
      * case nobody would find again. */
+    wheel_log_tick();
     int clicks = hid_cursor_take_wheel();
     if (!clicks) return;
 
@@ -9161,8 +9346,7 @@ static void mouse_timer_cb(lv_timer_t *t)
         // Log it: a silent no-op here is exactly how the first version of this
         // was undiagnosable - the wheel clicks were arriving and being thrown
         // away with nothing to say so.
-        ESP_LOGI(TAG, "wheel %+d at (%d,%d): no scrollable under the cursor",
-                 clicks, (int)s_mouse_pt.x, (int)s_mouse_pt.y);
+        s_wl.noscroll++;   // counted, see wheel_log_tick()
         return;
     }
 
@@ -9196,14 +9380,12 @@ static void mouse_timer_cb(lv_timer_t *t)
         lv_obj_scroll_by(o, 0, dy, LV_ANIM_OFF);
         lv_coord_t after = lv_obj_get_scroll_y(o);
         if (after != before) {
-            ESP_LOGI(TAG, "wheel %+d at (%d,%d): scroll_y %d -> %d%s",
-                     clicks, (int)s_mouse_pt.x, (int)s_mouse_pt.y,
-                     (int)before, (int)after, (o == target) ? "" : " (chained to parent)");
+            s_wl.scrolled++;
+            if (o != target) s_wl.chained++;
             return;
         }
     }
-    ESP_LOGI(TAG, "wheel %+d at (%d,%d): nothing under the cursor could scroll further",
-             clicks, (int)s_mouse_pt.x, (int)s_mouse_pt.y);
+    s_wl.limit++;   // counted, see wheel_log_tick()
 }
 
 static void mouse_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
@@ -9345,6 +9527,18 @@ void ui_init(lv_display_t *disp)
     // for why).
     build_edge_swipe_strips(scr);
     build_resource_monitor(scr);
+
+    /* ⛔ T216: SEED THE SPLIT BEFORE ANY PANE IS BUILT, not with
+     * ui_set_spectrum_h() afterwards. Every build_* below reads SPECTRUM_H for
+     * its own size and position; building at 200 and then moving everything
+     * would do the same work twice and leave any pane that caches a height at
+     * build time (the spots lane did) pointing at the wrong one. */
+    {
+        int saved = (int)settings_get_spectrum_h();
+        if (saved < SPECTRUM_H_MIN) saved = SPECTRUM_H_MIN;
+        if (saved > SPECTRUM_H_MAX) saved = SPECTRUM_H_MAX;
+        s_spectrum_h = saved;
+    }
 
     build_top_bar(scr);
     build_spectrum(scr);
@@ -10625,7 +10819,14 @@ void ui_update_frequency(uint32_t freq_hz)
         // Band changed: flush decode list (stale signals from different band)
         if (current_band_idx != s_last_band_idx) {
             s_last_band_idx = current_band_idx;
-            ft8_screen_clear();
+            /* A band HOP keeps the list: the old band's rows stay, shown
+             * under a separator, until they age out. They cannot be acted
+             * on - ft8_screen_get_all() returns the current band only. Any
+             * other band change (the operator's) still clears it. */
+            if (ft8_hop_owns_band_change(freq_hz))
+                ESP_LOGI(TAG, "band hop: decode list kept");
+            else
+                ft8_screen_clear();
         }
     }
     uint32_t prev_freq_hz = s_last_qmx_freq_hz;
@@ -10921,7 +11122,16 @@ static void topbar_reconcile_cb(lv_timer_t *t)
     // nothing.
     if (s_band_changed_pending) {
         s_band_changed_pending = false;
-        ft8_band_change_stand_down("band changed");
+        /* ⭐ NOT FOR AN FT8/FT4 BAND HOP (operator, 2026-11-26). Hopping is
+         * meant to carry the CQ run, auto-answer and pileup work to each ticked
+         * band; ticking a band is the operator saying the antenna is fit for
+         * it, as WSPR hopping already is. The hop clears the pileup itself
+         * (ft8_hop_run) and never fires during a QSO. Any other band change
+         * still stands everything down (#144, Roy KI0ER). */
+        if (ft8_hop_owns_band_change(cat_get_frequency()))
+            ESP_LOGI(TAG, "band hop: CQ run and auto-answer kept");
+        else
+            ft8_band_change_stand_down("band changed");
         // General Output power is per-band and mode-agnostic (unlike WSPR's
         // own declared-power reapply, which only runs from that page's own
         // dial-push) - a band change from ANY source (tap, memory recall,
@@ -12037,6 +12247,9 @@ void ui_spec_frame_stats(ui_spec_frame_stats_t *out)
     out->pi_wide     = s_pi_wide;
     out->pi_band_mean_px = s_pi_band_n ? (unsigned)(s_pi_band_sum / s_pi_band_n) : 0;
     out->pi_cols_mean_px = s_pi_band_n ? (unsigned)(s_pi_cols_sum / s_pi_band_n) : 0;
+    out->pi_strips       = s_pi_strips;
+    out->pi_strips_nobuf = s_pi_strips_nobuf;
+    s_pi_strips = 0; s_pi_strips_nobuf = 0;
     s_pi_partial = 0; s_pi_no_array = 0; s_pi_stale = 0;
     s_pi_overlay = 0; s_pi_wide = 0;
     s_pi_band_sum = 0; s_pi_band_n = 0; s_pi_cols_sum = 0;
@@ -12633,6 +12846,26 @@ void ui_push_spectrum(const float *bins, int n_bins)
      * width, i.e. exactly today's behaviour. */
     int col_lo = DISPLAY_H_RES;  /* empty: lo > hi */
     int col_hi = -1;
+    /* ⭐ PER-STRIP BANDS - the fallback when the one rectangle above is still
+     * too big (Mark Hammond N8MH, a6832e6b, 2026-11-20).
+     *
+     * The rectangle fails on the most common live picture: a strong carrier
+     * makes it full HEIGHT, and a noise floor that moves a few pixels in every
+     * column makes it full WIDTH. Mark measured exactly that on WWV (65/65
+     * pushes wide, core 0 4-9 % idle, speaker audio starved) and 4 -> 25 %
+     * free with strips. Each SPEC_STRIP_W column strip keeps its own band, so
+     * only the strips under the carrier go tall. */
+#define SPEC_STRIP_W 80
+#define SPEC_STRIPS  ((DISPLAY_H_RES + SPEC_STRIP_W - 1) / SPEC_STRIP_W)
+    int strip_lo[SPEC_STRIPS], strip_hi[SPEC_STRIPS];
+    for (int i = 0; i < SPEC_STRIPS; i++) { strip_lo[i] = SPECTRUM_H; strip_hi[i] = -1; }
+#define SPEC_STRIP_ADD(xx, lo_, hi_) do {                                     \
+        int _s = (xx) / SPEC_STRIP_W;                                         \
+        if (_s >= 0 && _s < SPEC_STRIPS) {                                    \
+            if ((lo_) < strip_lo[_s]) strip_lo[_s] = (lo_);                   \
+            if ((hi_) > strip_hi[_s]) strip_hi[_s] = (hi_);                   \
+        }                                                                     \
+    } while (0)
     const uint16_t fg = 0x07E0;  // green in RGB565
     const uint16_t grid_color = 0x4208;  // dim grey grid lines
 
@@ -13219,6 +13452,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
                      * the band carries +/-1 in y. */
                     if (x - 1 < col_lo) col_lo = x - 1;
                     if (x     > col_hi) col_hi = x;
+                    SPEC_STRIP_ADD(x, lo3 - 1, hi3 + 1);
                 }
                 peak_prev_moved = (pprev != py);
                 peak_prev_old   = pprev;
@@ -13240,6 +13474,7 @@ void ui_push_spectrum(const float *bins, int n_bins)
                 if (hi2 + 1 > band_hi) band_hi = hi2 + 1;
                 if (x - 1 < col_lo) col_lo = x - 1;
                 if (x     > col_hi) col_hi = x;
+                SPEC_STRIP_ADD(x, lo2 - 1, hi2 + 1);
             }
             s_frame_ytop[x] = (int16_t)y_top;
         }
@@ -13606,6 +13841,40 @@ void ui_push_spectrum(const float *bins, int n_bins)
             s_pi_partial++;
         }
     }
+    /* Wide, but the per-column history is trustworthy (no overlay move, no
+     * gap): try the strips. Used only when their summed area is under 2/3 of
+     * the canvas - above that one full invalidate is cheaper. */
+    bool use_strips = false;
+    int  n_strips   = 0;
+    if (!have_band && s_frame_ytop && s_frame_ytop_valid && !overlay_moved) {
+        long area = 0;
+        for (int i = 0; i < SPEC_STRIPS; i++) {
+            if (strip_hi[i] < strip_lo[i]) continue;
+            if (strip_lo[i] < 0) strip_lo[i] = 0;
+            if (strip_hi[i] > SPECTRUM_H - 1) strip_hi[i] = SPECTRUM_H - 1;
+            area += (long)(strip_hi[i] - strip_lo[i] + 1) * (SPEC_STRIP_W + 2);
+            n_strips++;
+        }
+        use_strips = area * 3 < (long)SPECTRUM_H * DISPLAY_H_RES * 2;
+        /* ⛔ LVGL HOLDS AT MOST LV_INV_BUF_SIZE (32) INVALID AREAS between two
+         * refreshes, and when it runs out it invalidates the WHOLE SCREEN
+         * (lv_refr.c, lv_inv_area: "If no place for the area add the
+         * screen") - 1280 x 720, far worse than the 256 kpx canvas this path
+         * exists to avoid. Up to 16 strips land on top of the waterfall,
+         * labels and animations already queued, and nothing in Mark's version
+         * checked. So: only if they ALL fit, with room to spare; otherwise
+         * one canvas invalidate, which is exactly the behaviour before
+         * strips. The worst case is therefore never worse than before.
+         * Added in the port, not measured: s_pi_strips_nobuf counts it. */
+        if (use_strips) {
+            lv_display_t *d = lv_obj_get_display(s_spec_canvas);
+            if (d && (int)d->inv_p + n_strips > LV_INV_BUF_SIZE - 4) {
+                use_strips = false;
+                s_pi_strips_nobuf++;
+            }
+        }
+        if (use_strips) s_pi_strips++;
+    }
     if (have_band) {
         /* ⛔ SCREEN coordinates, built from the object's own coords - in x as
          * well as y. Getting x wrong leaves a vertical stripe of the spectrum
@@ -13617,10 +13886,28 @@ void ui_push_spectrum(const float *bins, int n_bins)
         a.y2 = a.y1 + band_hi;
         a.y1 = a.y1 + band_lo;
         lv_obj_invalidate_area(s_spec_canvas, &a);
+    } else if (use_strips) {
+        lv_area_t c;
+        lv_obj_get_coords(s_spec_canvas, &c);
+        for (int i = 0; i < SPEC_STRIPS; i++) {
+            if (strip_hi[i] < strip_lo[i]) continue;
+            lv_area_t a = c;
+            /* +-1 px: a column's joining line reaches into its neighbour. */
+            a.x1 = c.x1 + i * SPEC_STRIP_W - 1;
+            a.x2 = c.x1 + (i + 1) * SPEC_STRIP_W;
+            if (a.x1 < c.x1) a.x1 = c.x1;
+            if (a.x2 > c.x2) a.x2 = c.x2;
+            a.y1 = c.y1 + strip_lo[i];
+            a.y2 = c.y1 + strip_hi[i];
+            lv_obj_invalidate_area(s_spec_canvas, &a);
+        }
     } else {
         lv_obj_invalidate(s_spec_canvas);
     }
     if (s_frame_ytop) s_frame_ytop_valid = true;
+#undef SPEC_STRIP_ADD
+#undef SPEC_STRIPS
+#undef SPEC_STRIP_W
 #undef SPEC_SIG
 
     // Update freq axis labels every frame so zoom/pan changes are reflected.
@@ -13654,10 +13941,190 @@ static void wf_apply_x(void)
     if (s_wf_canvas) lv_obj_set_x(s_wf_canvas, s_wf_stroll_off - s_wf_view_x);
 }
 
+/* ⭐ MOVE THE SPECTRUM/WATERFALL BOUNDARY (T216, Robert VE7ZN).
+ *
+ * Geometry plus two invalidations, and the canvas buffers are re-sized at the
+ * first drag step and on release (split_canvases_resize, see the note on
+ * SPECTRUM_H). Safe from the drag handler because the render task's pushes
+ * take display_lock, which the LVGL task holds while it runs this.
+ *
+ * ⛔ THE WATERFALL IS CLEARED, DELIBERATELY. Its rows live in a ring whose
+ * modulus IS the old WATERFALL_H; reinterpreting them against a new modulus
+ * shows real history at wrong times, which is worse than showing none. The web
+ * UI keeps its image on a drag because a <canvas> has no such ring.
+ *
+ * ⛔ THE SPECTRUM TRACE CHANGES SHAPE, AND THAT IS CORRECT. SPECTRUM_H is the
+ * dB axis length (ui.c dB->y mapping), so a shorter spectrum compresses the
+ * same dB range into fewer pixels. Do not "fix" this by rescaling db_min/max:
+ * the operator set those, and silently moving them would change what the
+ * numbers on the axis mean.
+ *
+ * ⛔ `final` SPLITS THE CHEAP WORK FROM THE EXPENSIVE WORK, and it is not an
+ * optimisation to drop. LV_EVENT_PRESSING arrives per frame, and the full path
+ * memsets 3.37 MB of PSRAM in wf_clear_all() plus 10240 peak entries. Doing
+ * that 60 times a second during a drag would stall the render task on core 0,
+ * on the same bus the waterfall is being pushed over. The drag calls this with
+ * final=false (geometry only) and once with final=true on release. */
+void ui_set_spectrum_h(int h) { ui_apply_spectrum_h(h, true); }
+
+/* Re-size both canvas buffers to hold spec_rows / wf_rows (see the note on
+ * SPECTRUM_H). Caller holds display_lock - in practice the LVGL task. The new
+ * buffers are taken BEFORE the old are freed: a failure keeps the old ones
+ * and returns false, never leaves a canvas pointing at nothing. Contents are
+ * cleared; the callers clear them anyway. */
+static bool split_canvases_resize(int spec_rows, int wf_rows)
+{
+    if (spec_rows == s_spec_alloc_h && wf_rows == s_wf_alloc_h) return true;
+    if (!s_spec_canvas_buf || !s_wf_canvas_buf) return false;
+    const size_t spec_sz = LV_CANVAS_BUF_SIZE(DISPLAY_H_RES, spec_rows, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    const size_t wf_sz   = LV_CANVAS_BUF_SIZE(WF_CANVAS_W, wf_rows * 2, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    uint8_t *sp = heap_caps_malloc(spec_sz, MALLOC_CAP_SPIRAM);
+    uint8_t *wf = heap_caps_malloc(wf_sz, MALLOC_CAP_SPIRAM);
+    if (!sp || !wf) {
+        heap_caps_free(sp);
+        heap_caps_free(wf);
+        ESP_LOGW(TAG, "split: no PSRAM to re-size the canvases to %d/%d rows - kept %d/%d",
+                 spec_rows, wf_rows, s_spec_alloc_h, s_wf_alloc_h);
+        return false;
+    }
+    memset(sp, 0, spec_sz);
+    memset(wf, 0, wf_sz);
+
+    /* Re-point first, free second: nothing may draw from a freed buffer. */
+    uint8_t *old_sp = s_spec_canvas_buf, *old_wf = s_wf_canvas_buf;
+    s_spec_canvas_buf = sp;
+    s_wf_canvas_buf   = wf;
+    s_spec_alloc_h    = spec_rows;
+    s_wf_alloc_h      = wf_rows;
+    if (s_spec_canvas) {
+        lv_canvas_set_buffer(s_spec_canvas, s_spec_canvas_buf,
+                             DISPLAY_H_RES, SPECTRUM_H, LV_COLOR_FORMAT_RGB565);
+        lv_obj_align(s_spec_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+    }
+    if (s_wf_canvas) {
+        lv_canvas_set_buffer(s_wf_canvas, s_wf_canvas_buf,
+                             WF_CANVAS_W, s_wf_alloc_h * 2, LV_COLOR_FORMAT_RGB565);
+        lv_obj_set_size(s_wf_canvas, WF_CANVAS_W, WATERFALL_H);
+        lv_image_set_inner_align(s_wf_canvas, LV_IMAGE_ALIGN_TOP_LEFT);
+        s_wf_head = 0;
+        lv_image_set_offset_y(s_wf_canvas, 0);
+        wf_apply_x();
+        lv_obj_invalidate(s_wf_canvas);
+    }
+    s_frame_ytop_valid = false;
+    heap_caps_free(old_sp);
+    heap_caps_free(old_wf);
+    ESP_LOGI(TAG, "split: canvases now %d + 2x%d rows (%u KB)", spec_rows, wf_rows,
+             (unsigned)((spec_sz + wf_sz) / 1024));
+    return true;
+}
+
+static void ui_apply_spectrum_h(int h, bool final)
+{
+    if (h < SPECTRUM_H_MIN) h = SPECTRUM_H_MIN;
+    if (h > SPECTRUM_H_MAX) h = SPECTRUM_H_MAX;
+
+    /* A live drag step needs room for ANY height in the range: grow to the
+     * maximum once, at the first step that moves. If PSRAM cannot give it,
+     * the drag does not move - never a canvas taller than its buffer. */
+    if (!final && h != s_spectrum_h &&
+        (s_spec_alloc_h < SPECTRUM_H_MAX || s_wf_alloc_h < WATERFALL_H_MAX) &&
+        !split_canvases_resize(SPECTRUM_H_MAX, WATERFALL_H_MAX))
+        return;
+    /* A final call to a height the buffers cannot hold (a call that did not
+     * come through a drag): grow to exactly that height first. */
+    if (final && (h > s_spec_alloc_h || WF_H_OF(h) > s_wf_alloc_h) &&
+        !split_canvases_resize(h, WF_H_OF(h)))
+        return;
+
+    /* ⛔ A final call with the height UNCHANGED still has work to do - it is
+     * how the drag's release commits the clears it skipped per frame. Only the
+     * geometry is guarded by `changed`. Returning early on `h == s_spectrum_h`
+     * left every drag ending on a stale waterfall and a stale peak hold. */
+    const bool changed = (h != s_spectrum_h);
+    if (!changed && !final) return;
+
+    if (changed) {
+    s_spectrum_h = h;                       /* every SPECTRUM_H/WATERFALL_H site follows */
+
+    if (s_spectrum_obj) lv_obj_set_size(s_spectrum_obj, DISPLAY_H_RES, SPECTRUM_H);
+    if (s_spec_canvas && s_spec_canvas_buf) {
+        /* The canvas is a plain one with no offset window, so this really does
+         * have to re-point. Once per drag-release, not per row - the blink the
+         * waterfall was cured of is not reachable at this rate. */
+        lv_canvas_set_buffer(s_spec_canvas, s_spec_canvas_buf,
+                             DISPLAY_H_RES, SPECTRUM_H, LV_COLOR_FORMAT_RGB565);
+        lv_obj_align(s_spec_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
+        memset(s_spec_canvas_buf, 0, (size_t)DISPLAY_H_RES * SPECTRUM_H * 2);
+    }
+
+    if (s_label_bar)
+        lv_obj_align(s_label_bar, LV_ALIGN_TOP_LEFT, 0, TOP_BAR_H + SPECTRUM_H);
+
+    if (s_waterfall_obj) {
+        lv_obj_align(s_waterfall_obj, LV_ALIGN_TOP_LEFT, 0,
+                     TOP_BAR_H + SPECTRUM_H + LABEL_BAR_H);
+        lv_obj_set_size(s_waterfall_obj, DISPLAY_H_RES, WATERFALL_H);
+    }
+    if (s_wf_canvas) {
+        lv_obj_set_size(s_wf_canvas, WF_CANVAS_W, WATERFALL_H);
+        s_wf_head = 0;                      /* ring restarts with the new modulus */
+        lv_image_set_offset_y(s_wf_canvas, 0);
+    }
+    if (s_wf_cursor)     lv_obj_set_size(s_wf_cursor, 2, WATERFALL_H);
+    if (s_rit_wf_marker) lv_obj_set_size(s_rit_wf_marker, 2, WATERFALL_H);
+
+    /* The RTTY/CW log button is placed 30 px into the waterfall - see the note
+     * at its creation. It is a fixed offset from the boundary, so it moves. */
+    if (s_log_btn)
+        lv_obj_set_pos(s_log_btn, 1088, TOP_BAR_H + SPECTRUM_H + LABEL_BAR_H + 30);
+
+    /* Spot callsigns are centred on the middle of the spectrum. */
+    spots_lane_set_geometry(TOP_BAR_H, SPECTRUM_H);
+
+    /* ⛔ THE PEAK HOLD HOLDS PIXEL Y VALUES, NOT dB. After a shrink every
+     * stored y can be past the bottom of the shorter canvas, so the next push
+     * would draw outside it. Reset to the floor rather than rescale: a rescale
+     * would invent peaks at heights they were never measured at.
+     *
+     * Clamping (not resetting) would be wrong too - it would pin a row of
+     * false peaks along the new bottom edge.
+     *
+     * This is deferred to `final` because a stale peak y is not a memory
+     * fault: during a drag the canvas buffer is grown to SPECTRUM_H_MAX rows
+     * (split_canvases_resize), so a write past the current height lands in
+     * allocated-but-unseen memory; the final call resets the peaks in the
+     * same locked call that cuts the buffer back. It is a
+     * visual artefact for the length of the drag and nothing more. */
+    s_frame_ytop_valid = false;             /* partial invalidate has no valid previous frame */
+
+    if (s_spec_canvas) lv_obj_invalidate(s_spec_canvas);
+
+    /* The tick canvas is LABEL_BAR_H tall and is a CHILD of the bar, so it
+     * travelled with it above - no redraw is needed for a move. */
+    }   /* end if (changed) */
+
+    if (final) {
+        /* Back to exactly what this split needs (see the note on SPECTRUM_H).
+         * A failure keeps the larger buffers, which is safe, only wasteful. */
+        split_canvases_resize(SPECTRUM_H, WATERFALL_H);
+        if (s_peak_buk)
+            for (int i = 0; i < PEAK_BUCKETS * DISPLAY_H_RES; i++)
+                s_peak_buk[i] = (int16_t)SPECTRUM_H;
+        if (s_peak_show)
+            for (int i = 0; i < DISPLAY_H_RES; i++)
+                s_peak_show[i] = (int16_t)SPECTRUM_H;
+        wf_clear_all();
+        ESP_LOGI(TAG, "split: spectrum %d px, waterfall %d px", SPECTRUM_H, WATERFALL_H);
+    }
+}
+
+int ui_get_spectrum_h(void) { return s_spectrum_h; }
+
 static void wf_clear_all(void)
 {
     if (!s_wf_canvas_buf) return;
-    memset(s_wf_canvas_buf, 0, (size_t)WF_CANVAS_W * WATERFALL_H * 2 * 2);
+    memset(s_wf_canvas_buf, 0, (size_t)WF_CANVAS_W * s_wf_alloc_h * 2 * 2);
     s_wf_view_x    = WF_MARGIN;
     s_wf_anchor_ok = false;          /* re-anchored on the next row */
     wf_apply_x();
@@ -14057,6 +14524,28 @@ void ui_push_waterfall_row(const uint8_t *rgb565_row)
     display_unlock();
 }
 
+// Centre the version line on the midpoint between the right edge of the "SD"
+// label and the left edge of the clock.
+//
+// It was a fixed centre at x = 390 (LV_ALIGN_CENTER, -250). The SD label moves
+// with the battery text, so the gaps were unequal: 90/108 px on a Tab5 showing
+// "80% (limit)", 140/61 px with "--%". The update offer "v2.0.2 -> v2.1.0
+// tap?" is ~300 px wide; at x = 390 it ran into the clock (operator,
+// 2026-11-22: centre the whole sentence, space on both sides).
+//
+// LV_ALIGN_CENTER is kept, so a text change re-centres on the same midpoint
+// without a call here; only a move of the SD label needs one, which is why
+// reposition_diag_dot() calls this.
+static void reposition_bot_version(void)
+{
+    if (!s_bot_version || !s_bot_diag_label || s_bot_clock_x0 < 0) return;
+    lv_obj_t *bar = lv_obj_get_parent(s_bot_version);
+    lv_obj_update_layout(s_bot_diag_label);
+    lv_coord_t sd_x2 = lv_obj_get_x2(s_bot_diag_label);
+    lv_coord_t mid   = (sd_x2 + s_bot_clock_x0) / 2;
+    lv_obj_align(s_bot_version, LV_ALIGN_CENTER, mid - lv_obj_get_content_width(bar) / 2, 0);
+}
+
 // Re-anchor the diag-log dot to the right edge of the battery voltage text
 // (s_bot_left), whose width changes with its content ("82%", "82% (4.1V)",
 // "82% (4.1V)  [charge glyph]", ...). Called after every s_bot_left update
@@ -14076,6 +14565,7 @@ static void reposition_diag_dot(void)
     // The GPS symbol is not part of this group either: it belongs to
     // the right-hand chain instead - see its creation block, and
     // ui_set_bottom_wifi() which lays that chain out from the edge.
+    reposition_bot_version();       // the SD label moved, so the midpoint did
 }
 
 void ui_set_bottom_left(const char *text)
@@ -16003,6 +16493,12 @@ static void drawer_check_wspr_net_cb(lv_event_t *e)
     settings_set_wspr_net_en(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void drawer_btn_ft8_hop_cb(lv_event_t *e)
+{
+    (void)e;
+    ft8_screen_view_open_hop_picker();   /* parents to lv_layer_top() */
+}
+
 static void drawer_btn_wspr_hop_cb(lv_event_t *e)
 {
     (void)e;
@@ -16353,11 +16849,13 @@ static void wspr_dbm_area_refresh(void)
     if (n_ach == 0) {
         /* Not calibrated (or no swept point classifies as ANY standard
          * step - power_cal_voltage_for_dbm()'s own header). The STORED
-         * declared power (whatever it was) is left alone - WSPR still
-         * transmits declaring it, this only gates offering a NEW pick
-         * until there is real data to pick from. */
+         * declared power is left alone. ⚠ This used to say "WSPR still
+         * transmits declaring it" - no longer true: wspr_tx.c REFUSES a burst
+         * on an uncalibrated band (the declared dBm is published worldwide),
+         * so the label says that is what calibrating unlocks. Worst case
+         * "Calibrate to transmit WSPR on 160M" = 443 px of 488 (montserrat_24). */
         char nc_txt[64];
-        snprintf(nc_txt, sizeof(nc_txt), "Not calibrated for %s",
+        snprintf(nc_txt, sizeof(nc_txt), "Calibrate to transmit WSPR on %s",
                  (band && band[0]) ? band : "this band");
         lv_label_set_text(s_wspr_dbm_nc_lbl, nc_txt);
         lv_obj_clear_flag(s_wspr_dbm_nc_lbl, LV_OBJ_FLAG_HIDDEN);
@@ -19398,6 +19896,27 @@ static void drawer_build(void)
 
         y += 190;
     }
+    /* FT8/FT4 band hopping. One button that opens the picker - the WSPR
+     * section's shape (DRAWER_SEC_WSPRHOP) and the same rule: ticking a second
+     * band IS turning hopping on, so there is no separate switch. */
+    {
+        lv_obj_t *sec = drawer_section(DRAWER_SEC_FT8HOP, y, 104);
+        lv_obj_t *hdr = lv_label_create(sec);
+        lv_label_set_text(hdr, "Band hopping (FT8/FT4)");
+        lv_obj_set_style_text_color(hdr, lv_color_hex(0xA0E0A0), 0);
+        lv_obj_set_style_text_font(hdr, &lv_font_montserrat_28, 0);
+        lv_obj_align(hdr, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_t *btn = lv_btn_create(sec);
+        lv_obj_set_size(btn, DRAWER_W - 32, 50);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 44);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_add_event_cb(btn, drawer_btn_ft8_hop_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *bl = lv_label_create(btn);
+        lv_label_set_text(bl, "Choose bands...");
+        lv_obj_set_style_text_font(bl, &lv_font_montserrat_28, 0);
+        lv_obj_center(bl);
+        y += 104;
+    }
     // FT8 simulation mode: phantom-station practice partner, real radio
     // never keyed (see ft8_sim.h). FT8-only - same exclusive-to-FT8-mode
     // pattern as DRAWER_SEC_DISTANCE above, not a Panadapter-mode setting.
@@ -21165,12 +21684,11 @@ static void drawer_dropdown_cmap_open_cb(lv_event_t *e)
          * height cap - including the WSPR "Declared power" one, which now
          * offers up to WSPR_STD_DBM_N (12) rows once a band's calibration
          * gets that granular. Operator, 2026-09-16: wanted every choice
-         * visible without scrolling. LVGL keeps the list on-screen by
-         * flipping it to open upward when there is not enough room below,
-         * so this is safe regardless of where in the drawer a dropdown
-         * sits. */
-        lv_obj_set_style_max_height(list, LV_COORD_MAX, 0);  // no cap -> no scroll
-        lv_obj_set_height(list, LV_SIZE_CONTENT);            // fit all options
+         * visible without scrolling. ⚠ It was NOT safe anywhere in the
+         * drawer, as this comment once claimed: LVGL's own fit runs before
+         * this handler, so a list taller than the room ran off the screen.
+         * ui_dropdown_list_unfold() now does the fit afterwards. */
+        ui_dropdown_list_unfold(list);
     }
 }
 
@@ -21184,8 +21702,51 @@ static void drawer_dropdown_sleep_open_cb(lv_event_t *e)
     lv_obj_t *list = lv_dropdown_get_list(dd);
     if (!list) return;
     lv_obj_set_style_text_font(list, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_max_height(list, LV_COORD_MAX, 0);  // no cap -> no scroll
-    lv_obj_set_height(list, LV_SIZE_CONTENT);            // fit all options
+    ui_dropdown_list_unfold(list);
+}
+
+/* Show every option of an OPEN dropdown list when they fit on the screen,
+ * and a scrollable list that stays on the screen when they do not.
+ *
+ * ⛔ WHY THIS EXISTS (operator, 2026-11-24: "in every dropdown menu I am not
+ * able to scroll with the mouse wheel ... the wheel will scroll the drawer
+ * behind it"). The "fully unfolded" recipe - max height uncapped, height =
+ * content - runs on LV_EVENT_CLICKED, which LVGL sends AFTER lv_dropdown_open()
+ * has already clipped the list to the room on screen. So it undid that clip:
+ * a list longer than the screen (PA voltage limit, 15 rows at montserrat_28)
+ * ran off the bottom edge, had nothing left to scroll, and the wheel - which
+ * looks for the deepest object that CAN scroll - fell through to the drawer.
+ * Measured: wheel over the open list moved the drawer
+ * 0 -> 6 px, the list not at all. The rows past the edge were unreachable
+ * with a finger too. Here the list keeps its full height when it fits, is
+ * moved up when only its position is wrong, and is cut to the screen (and
+ * so becomes scrollable) only when it is taller than the screen. */
+#define DD_LIST_MARGIN_PX 8
+void ui_dropdown_list_unfold(lv_obj_t *list)
+{
+    if (!list) return;
+    lv_obj_set_style_max_height(list, LV_COORD_MAX, 0);  // no cap -> every option shown
+    lv_obj_set_height(list, LV_SIZE_CONTENT);
+    lv_obj_update_layout(list);
+
+    const int32_t scr_h = lv_obj_get_height(lv_screen_active());
+    const int32_t room  = scr_h - 2 * DD_LIST_MARGIN_PX;
+    int32_t h = lv_obj_get_height(list);
+    lv_area_t a;
+    lv_obj_get_coords(list, &a);
+    int32_t y = a.y1;
+    if (h > room) {                       // cannot fit at all: cut it, it scrolls
+        h = room;
+        lv_obj_set_height(list, h);
+        y = DD_LIST_MARGIN_PX;
+    } else if (y + h > scr_h - DD_LIST_MARGIN_PX) {
+        y = scr_h - DD_LIST_MARGIN_PX - h;  // fits, but hangs off the bottom
+    } else if (y < DD_LIST_MARGIN_PX) {
+        y = DD_LIST_MARGIN_PX;              // fits, but hangs off the top
+    }
+    /* The list is a child of the screen (lv_dropdown_open), so its y is in
+     * screen coordinates. */
+    if (y != a.y1) lv_obj_set_y(list, y);
 }
 
 // Applies immediately, but only takes effect on the NEXT boot: NimBLE must be

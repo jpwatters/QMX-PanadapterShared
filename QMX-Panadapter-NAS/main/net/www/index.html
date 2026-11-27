@@ -286,6 +286,9 @@
     -webkit-tap-highlight-color: transparent;
   }
   #listenbtn.on  { background: var(--accent); color: var(--bg); }
+  /* Stereo (binaural CW) - see listenPaint(). Small, so the button grows by
+     about one character and the full top bar keeps its fit. */
+  #listenbtn sup.st { font-size: 0.6em; margin-left: 0.2em; vertical-align: super; line-height: 0; }
   /* Asked for and not yet arriving - the device may be in a mode it does not
      demodulate, so the button must not claim to be playing. */
   #listenbtn.wait { background: #1f2937; color: var(--warn, #fbbf24); }
@@ -1409,6 +1412,9 @@
       <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:4px;">
         <strong id="dec-title" style="color:#ffa040">Decode list</strong>
         <span id="dec-count"></span>
+        <!-- FT8/FT4 band hopping: the same line the Tab5 shows inside its
+             Preset button. Empty unless two or more bands are ticked. -->
+        <span id="dec-hop" style="margin-left:12px"></span>
         <!-- The receive status - "RX: capturing..." / "RX: 11 decoded" - moved
              down here from the top status box (operator, 2026-09-02). It belongs
              beside the count of what has been heard, and it leaves the top line
@@ -5241,9 +5247,40 @@ function pskRenderTable() {
        ", last " + winTxt +
        ", updated " + (d.age_s >= 0 ? d.age_s + " s ago" : "never"))
     : "";
+  /* ⛔ AN EMPTY LIST IS ONLY "NOBODY HEARD YOU" IF A QUERY ACTUALLY RAN.
+     Randy N4OPI, 2026-11-26: one unit "never shows who has heard me". Its log
+     had no query in 27 min, yet this said "Nobody has reported hearing you -
+     it is not an error". The device now says whether it queried and, if not,
+     what held it (d.held), and whether the last query failed (d.fail_status). */
+  const why = [];
+  if (d.held) why.push("Not asking PSK Reporter at the moment: " + d.held + ".");
+  if (d.fail_status) why.push("The last query to PSK Reporter failed (" +
+      (d.fail_status < 0 ? "no answer" : "HTTP " + d.fail_status) + ").");
+  const whyHtml = why.length
+    ? '<p style="color:#ffa040">' + why.join(" ") + '</p>' : "";
+  /* ⛔ PSK REPORTER SERVES ONLY ABOUT THE LAST HOUR (measured 2026-11-26,
+     Randy N4OPI: 396 reports on the map, 0 here). The device keeps what each
+     query returns; covered_from is where its record becomes complete. A
+     window reaching further back than that must say so, never read as
+     "nobody heard you". */
+  const cov = d.covered_from || 0;
+  const covShort = cov > 0 && cov > (nowS - winSec) + 60;
+  const covTxt = covShort ? new Date(cov * 1000).toISOString().substr(11, 5) + " UTC" : "";
+  const covHtml = covShort
+    ? '<p style="color:#ffa040">This device has the complete list only since ' + covTxt +
+      '. PSK Reporter answers each query with about the last hour, so the device keeps ' +
+      'the reports itself, and it has not been asking for the whole ' + winTxt +
+      ' yet. pskreporter.info has the full list.</p>' : "";
   if (!reps.length) {
-    body.innerHTML = '<p style="color:var(--dim)">Nobody has reported hearing you in the last ' + winTxt + '. ' +
-                     'That is the normal answer if you have not transmitted - it is not an error.</p>';
+    if (d.age_s < 0) {
+      body.innerHTML = '<p style="color:#ffa040">This device has not had an answer from PSK Reporter ' +
+                       'yet, so it cannot say who has heard you.</p>' + whyHtml;
+      return;
+    }
+    body.innerHTML = '<p style="color:var(--dim)">Nobody has reported hearing you ' +
+                     (covShort ? 'since ' + covTxt : 'in the last ' + winTxt) + '. ' +
+                     'That is the normal answer if you have not transmitted - it is not an error. ' +
+                     '(Checked ' + Math.round(d.age_s / 60) + ' min ago.)</p>' + covHtml + whyHtml;
     return;
   }
   let notice = "";
@@ -5253,8 +5290,8 @@ function pskRenderTable() {
      fits inside what WAS read cannot be missing anything of its own. */
   if (d.truncated && pskState.windowMin >= 1440) {
     notice = '<p style="color:#ffa040">Showing ' + reps.length +
-             ' reports - the collector had more for the last ' + winTxt +
-             ' than this device could read in one query, so older ones may be missing. ' +
+             ' entries - this device keeps the newest report per receiver, band and mode, ' +
+             'and the oldest had to make room, so older ones may be missing. ' +
              'pskreporter.info has the complete list.</p>';
   }
   const col = PSK_COLS[pskState.sortKey];
@@ -5271,7 +5308,7 @@ function pskRenderTable() {
     ? '<span class="arrow">' + (pskState.sortDir === "asc" ? "▲" : "▼") + '</span>' : "";
   const th = key => '<th class="sortable" onclick="pskSetSort(\'' + key + '\')">' +
                      PSK_COLS[key].label + arrow(key) + '</th>';
-  body.innerHTML = notice +
+  body.innerHTML = notice + covHtml + whyHtml +
     '<table style="width:100%; border-collapse:collapse;">' +
     '<tr style="color:#ffa040; text-align:left;">' +
     th("call") + th("dxcc") + th("km") + th("brg") + th("snr") + th("f") + th("mode") + th("age") +
@@ -5383,6 +5420,8 @@ const SET_FIELDS = [
      promised the broad thing would be wrong about continents. */
   ["FT8 filters", "filters.robot_skip_directed_cq", "bool", "Auto-answer: skip CQs not aimed at me",
    "While Auto-answer CQ (robot) is running, pass over a CQ that was clearly meant for someone else: CQ DX from a station in your own country, and a US state call when you are not in the USA. Continent calls (CQ EU, CQ NA) and contest or activity calls are always answered - deciding those needs data the Tab5 does not carry, and a wrong skip costs you a contact. Needs your callsign set"],
+  ["FT8 filters", "filters.tap_auto_work",      "bool", "Tap to Auto-work (Tab5 screen)",
+   "A tap on a decode row on the Tab5 starts the automatic QSO at once, as a long press does, instead of opening the Confirm window. A click on this page already works that way"],
   ["FT8 filters", "filters.excl_plain_cq",      "bool", "Hide plain CQ calls", ""],
   ["FT8 filters", "filters.incl_cq_only",       "bool", "Show only CQ calls", ""],
   ["FT8 filters", "filters.cq_show_others",     "bool", "Show other CQs while I call CQ",
@@ -5565,8 +5604,28 @@ const SET_FIELDS = [
   /* Band NAMES, not the bitmask the setting stores: the device converts, so
      nobody has to know the encoding. Hopping is on whenever more than one band
      is listed - the same rule the Tab5 uses, not a second switch. */
+  /* Same rule and the same name format as WSPR's row below. FT8 and FT4 share
+     the list; FT4 skips 160 and 60, which have no FT4 frequency. */
+  ["FT8 filters", "ft8_hop_bands", "text", "FT8/FT4 band hopping",
+     "Comma-separated, e.g. 20,40,15. Two or more turns hopping on. CQ, auto-answer and auto-work go with it, so it transmits on every listed band. A QSO finishes before a hop. Leave empty to stay on one band"],
+  ["FT8 filters", "ft8_hop_minutes", "sel", "Hop: stay on each band",
+     "Minutes on each band before the next hop. The hop is on a UTC multiple of this time",
+     [["1","1 min"],["2","2 min"],["4","4 min"],["6","6 min"],["10","10 min"],["15","15 min"],["30","30 min"]]],
+  ["FT8 filters", "ft8_hop_cq_split", "bool", "Hop: CQ EVEN in the 1st half of each stay, ODD in the 2nd",
+     "Off: the TX CQ period below decides for the whole stay"],
+  /* The same setting as the TXCQ button on the FT8 page (saved across reboot
+     since 2026-11-26). setSave() posts it only when changed here, so a Save
+     does not undo a press of that button made while this form was open. */
+  ["FT8 filters", "ft8_cq_period", "sel", "TX CQ period",
+     "Which 15 s period a CQ goes out in. A reply always takes the other station's opposite period",
+     [["-1","Any"],["0","Even (1st)"],["1","Odd (2nd)"]]],
   ["WSPR", "wspr_hop_bands", "text", "Band hopping",
      "Comma-separated, e.g. 40,30,20. One band means stay there; two or more turns hopping on. Leave empty to stay on the band you picked"],
+  /* Labelled in CYCLES (operator, 2026-11-26): "2 min" first read as a fixed
+     2-minute step. The value stays minutes - it is the wire format. */
+  ["WSPR", "wspr_hop_minutes", "sel", "Hop: stay on each band",
+     "WSPR cycles on each band before the next hop. One cycle is 2 minutes",
+     Array.from({length: 30}, (_, i) => [String(2 * (i + 1)), (i + 1) + (i ? " cycles (" : " cycle (") + (2 * (i + 1)) + " min)"])],
   ["WSPR", "wspr_tx_dbm", "sel",  "Declared power",
      "What your transmitter really produces - it is published worldwide",
      [["0","0 dBm (1 mW)"],["3","3 dBm (2 mW)"],["7","7 dBm (5 mW)"],
@@ -6077,6 +6136,9 @@ function setBuildForm(cfg, ft8Opts) {
   for (const [grp, path, type, label, hint, opts] of SET_FIELDS) {
     const inFt8Opts = FT8_OPTS_GROUPS.includes(grp);
     if (ft8Opts ? !inFt8Opts : inFt8Opts) continue;
+    /* FT8/FT4 hopping rows only when the device sends them - it does not while
+       hopping is switched off in the firmware (FT8_HOP_ENABLED, settings.h). */
+    if (path.startsWith("ft8_hop_") && setGet(cfg, path) === undefined) continue;
     if (grp !== group) {
       if (group !== null) html += "</div>";
       html += '<div style="margin:14px 0 6px"><strong style="color:#ffa040">' + grp + "</strong></div><div>";
@@ -6362,6 +6424,8 @@ async function setSave() {
     // A blank password means "keep the stored one" - the GET never returns it,
     // so sending "" would look like an instruction to erase it.
     if (path === "wifi_pass" && !v) continue;
+    /* Live elsewhere (the FT8 page's TXCQ button): send only a change made here. */
+    if (path === "ft8_cq_period" && setLoaded && v === setLoaded.ft8_cq_period) continue;
     setPut(patch, path, v);
   }
   /* CW profiles ride along with the ordinary Save. Only when the block is on
@@ -7051,11 +7115,16 @@ function decRenderTable() {
     + (c[0] === "km" ? decState.unit : c[1]) + arrow(c[0]) + "</th>").join("");
   document.getElementById("dec-order-reset").style.display = decState.sortKey === null ? "none" : "";
 
-  let rows = decState.rows;
-  if (decState.sortKey !== null) {
+  /* Band hopping: rows heard on the band before a hop come with ob:true and
+     their band. They are kept apart - the current band first, then each other
+     band under its own separator - and a column sort sorts inside each group,
+     never across them. An ob row has no data-call, so it cannot be clicked:
+     the device would refuse it anyway (its reply path reads the current band). */
+  const sortRows = (list) => {
+    if (decState.sortKey === null) return list;
     const col = DEC_SORT[decState.sortKey];
     const dir = decState.sortDir === "asc" ? 1 : -1;
-    rows = rows.slice().sort((a, b) => {
+    return list.slice().sort((a, b) => {
       const va = col.get(a), vb = col.get(b);
       if (va === null && vb === null) return 0;
       if (va === null) return 1;   // missing values always sink to the bottom
@@ -7063,9 +7132,27 @@ function decRenderTable() {
       if (col.type === "str") return dir * String(va).localeCompare(String(vb));
       return dir * (va - vb);
     });
-  }
+  };
+  const curRows = sortRows(decState.rows.filter(r => !r.ob));
+  const obBands = [];
+  decState.rows.forEach(r => { if (r.ob && !obBands.includes(r.band || "?")) obBands.push(r.band || "?"); });
+  const sepRow = (band, list) => {
+    const newest = Math.min(...list.map(r => r.age || 0));
+    const t = new Date(Date.now() - newest * 1000);
+    const hhmm = String(t.getUTCHours()).padStart(2, "0") + ":" + String(t.getUTCMinutes()).padStart(2, "0");
+    return '<tr><td colspan="' + DEC_COLS.length + '" style="text-align:center;color:#9a9a9a;'
+      + 'border-top:1px solid #555;border-bottom:1px solid #555;padding:3px 6px">'
+      + String(band).toLowerCase() + " - before the hop - " + hhmm + " UTC</td></tr>";
+  };
   const decBody = document.getElementById("dec-body");
-  decBody.innerHTML = rows.map(r => {
+  const rowHtml = r => {
+    if (r.ob) {
+      const tip = "Heard on " + String(r.band || "another band").toLowerCase() + " - not on this band";
+      return "<tr title='" + tip + "' style='color:#5a5a5a'>" + DEC_COLS.map(c =>
+        '<td style="border-bottom:1px solid #222;padding:3px 6px;white-space:nowrap">'
+        + String(decFmt(c[0], r)).replace(/[&<>]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[m]))
+        + "</td>").join("") + "</tr>";
+    }
     // Same emphasis the Tab5 uses: the station being worked held at the top,
     // and anything carrying your own callsign in reverse video.
     /* Emphasis, highest priority first. Worked-before is DIMMED rather than
@@ -7084,7 +7171,12 @@ function decRenderTable() {
       '<td style="border-bottom:1px solid #222;padding:3px 6px;white-space:nowrap">'
       + String(decFmt(c[0], r)).replace(/[&<>]/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[m]))
       + "</td>").join("") + "</tr>";
-  }).join("");
+  };
+  decBody.innerHTML = curRows.map(rowHtml).join("")
+    + obBands.map(b => {
+        const list = sortRows(decState.rows.filter(r => r.ob && (r.band || "?") === b));
+        return sepRow(b, list) + list.map(rowHtml).join("");
+      }).join("");
 }
 document.getElementById("dec-order-reset").addEventListener("click", (ev) => {
   ev.preventDefault();
@@ -9665,6 +9757,20 @@ async function tick() {
         el.classList.toggle("webr-done", /QSO complete$/.test(txt));
         el.classList.toggle("webr-warn", !wr && !!stuck);
       }
+      /* Band hopping - same wording and colours as the Tab5's Preset button. */
+      {
+        const h = s.ft8.hop, el = document.getElementById("dec-hop");
+        if (el) {
+          let t = "", c = "#a0e0a0";
+          if (h && h.blocked) { t = "Hop paused: " + h.blocked; c = "#ffa040"; }
+          else if (h && h.next && h.secs >= 0)
+            t = "Hop: next " + h.next + "m in " + Math.floor(h.secs / 60) + ":" + String(h.secs % 60).padStart(2, "0") +
+                (h.cq ? ", CQ " + h.cq : "");
+          else if (h) t = "Hop: " + h.bands;
+          el.textContent = t;
+          el.style.color = c;
+        }
+      }
       if (typeof s.ft8.cq_parity === "number") renderCqParity(s.ft8.cq_parity, true);
       /* The occupancy strip and the slot clock. Redrawn only when the picture
          actually changes - the masks move once a slot, not ten times a second. */
@@ -10868,7 +10974,10 @@ function drawSpotPreview(ctx, box, pxW, pxH, col) {
 /* Tune to a spot: frequency AND mode, the way the Tab5 does it. */
 function tuneToSpot(box) {
   if (!box || !box.hz) return;
-  sendCmd({ action: "set_freq", hz: box.hz });
+  /* jump:true - the Tab5 re-frames on a picked spot (ui_note_frequency_jump);
+     without it a pick is ordinary tuning, the view pages, and the VFO lands
+     at the opposite edge. Only spot picks send it, as on the Tab5. */
+  sendCmd({ action: "set_freq", hz: box.hz, jump: true });
   if (box.mode) sendCmd({ action: "set_mode", mode: box.mode });
   holdLocalFreq(box.hz);
 }
@@ -11515,7 +11624,7 @@ function updateOutPwrPill() {
     sl.hidden = true;
     if (!saying) {
       val.classList.add("say");
-      val.textContent = (outPwrInfo && sameBand) ? "not calibrated - run Calibrate Power on the Tab5" : "--";
+      val.textContent = (outPwrInfo && sameBand) ? "calibrate this band on the Tab5 to set output power (W)" : "--";
     }
     return;
   }
@@ -12129,6 +12238,9 @@ const FRAME_TYPE_TAKEOVER = 0x02;
    first, and a page that read an audio frame as "you were displaced" would
    disconnect itself on the first one. */
 const FRAME_TYPE_AUDIO = 0x03;
+/* The same, stereo: interleaved left-ear, right-ear pairs. Sent only while
+   the binaural CW split is on (webserver_ws.c WS_FRAME_TYPE_AUDIO_ST). */
+const FRAME_TYPE_AUDIO_ST = 0x04;
 const AUDIO_HDR_LEN = 6;
 let wsDisplaced = false;
 /* When the current socket opened, and the last few close codes - see ws.onclose. */
@@ -15247,6 +15359,10 @@ let audioLatePainted = 0, audioDroppedPainted = 0;
    interpolate across the join; audioPhase is the fractional read position
    within [tail, chunk]. */
 let audioTail = new Float32Array(2);
+/* The right ear's tail, for stereo frames (binaural CW, 0x04). A mono frame
+   copies audioTail here, so a switch to stereo starts from the same join. */
+let audioTailR = new Float32Array(2);
+let audioStereo = false;   /* the last frame was 0x04 - drives the ST mark */
 let audioPhase = 0;
 /* ⛔ 0.9 s OF BUFFER, AND IT IS NOT A GUESS. The first version held 0.18 s and
    the operator heard it break up within a minute. The instrument said why, and
@@ -15398,14 +15514,30 @@ function audioFrame(buf) {
   audioSeq = seq;
   audioFrames++;
 
-  const n = buf.length - AUDIO_HDR_LEN;
+  /* 0x04 is the binaural CW split: interleaved left-ear, right-ear pairs,
+     already in the order the Tab5's own jack plays them (rx_audio.c crosses
+     the slots). src is then the LEFT ear and srcR the right; for 0x03 srcR
+     stays null and everything below runs exactly as it did in mono. */
+  const st = buf[0] === FRAME_TYPE_AUDIO_ST;
+  if (st !== audioStereo) { audioStereo = st; listenPaint(); }   /* the ST mark */
+  const n = st ? (buf.length - AUDIO_HDR_LEN) >> 1 : buf.length - AUDIO_HDR_LEN;
 
   /* [previous chunk's tail][this chunk], so the first output sample can
      interpolate across the join instead of starting again from zero. */
   const T   = audioTail.length;
   const src = new Float32Array(T + n);
   src.set(audioTail, 0);
-  for (let i = 0; i < n; i++) src[T + i] = ULAW[buf[AUDIO_HDR_LEN + i]];
+  let srcR = null;
+  if (st) {
+    srcR = new Float32Array(T + n);
+    srcR.set(audioTailR, 0);
+    for (let i = 0; i < n; i++) {
+      src[T + i]  = ULAW[buf[AUDIO_HDR_LEN + 2 * i]];
+      srcR[T + i] = ULAW[buf[AUDIO_HDR_LEN + 2 * i + 1]];
+    }
+  } else {
+    for (let i = 0; i < n; i++) src[T + i] = ULAW[buf[AUDIO_HDR_LEN + i]];
+  }
 
   /* T18 / T184 noise reduction and auto-notch, on the decoded 12 kHz samples
      and before the resampler. Same sample count in and out, so nothing below
@@ -15419,10 +15551,11 @@ function audioFrame(buf) {
     if ((eng || notch) && rate === 12000) {
       /* A new start, another mode, another engine: begin from nothing, so no
          noise estimate and no notch is carried from one signal to the next. */
-      const key = eng + "|" + lastMode + "|" + (notch ? 1 : 0);
+      const key = eng + "|" + lastMode + "|" + (notch ? 1 : 0) + "|" + (st ? 2 : 1);
       if (key !== nrRunKey) {
         if (eng === 1) nrReset(nrInst);
         if (eng === 2) snInst = snInst ? snReset(snInst) : snCreate();
+        if (eng === 2 && st) snInstR = snInstR ? snReset(snInstR) : snCreate();
         if (notch) anInst = anInst ? anReset(anInst) : anCreate();
         nrRunKey = key;
       }
@@ -15430,10 +15563,19 @@ function audioFrame(buf) {
       if (eng === 1) src.set(nrProcess(nrInst, seg, lv.wet, an), T);
       else if (eng === 2) src.set(snProcess(snInst, seg, lv.floor, an), T);
       else anProcess(an, seg);                           /* notch alone: in place, no delay */
+      /* The right ear gets its OWN spectral state: each ear has its own
+         stations and its own noise. Stereo only arises in CW, where the
+         spectral NR is the only engine and the notch is never offered
+         (anWanted is voice-only), so nothing else needs a second copy. */
+      if (srcR && eng === 2) srcR.set(snProcess(snInstR, srcR.subarray(T), lv.floor, null), T);
       /* T194 make-up gain - see NR_LEVELS. Here, not in the NR block, because
          the harnesses check that block's own output level. */
       const mk = eng === 1 ? lv.mkRn : (eng === 2 && !nrCw() ? lv.mkSn : 0);
-      if (mk) { const g = Math.pow(10, mk / 20); for (let i = T; i < src.length; i++) src[i] *= g; }
+      if (mk) {
+        const g = Math.pow(10, mk / 20);
+        for (let i = T; i < src.length; i++) src[i] *= g;
+        if (srcR) for (let i = T; i < srcR.length; i++) srcR[i] *= g;
+      }
     } else nrRunKey = "";
   }
 
@@ -15477,19 +15619,23 @@ function audioFrame(buf) {
   const outN = Math.max(0, Math.ceil((src.length - 1 - audioPhase) / ratio));
   if (outN <= 0) return;
 
-  const ab = audioCtx.createBuffer(1, outN, audioCtx.sampleRate);
+  /* A mono buffer plays in both ears; a 2-channel one plays channel 0 LEFT. */
+  const ab = audioCtx.createBuffer(srcR ? 2 : 1, outN, audioCtx.sampleRate);
   const ch = ab.getChannelData(0);
+  const chR = srcR ? ab.getChannelData(1) : null;
   let pos = audioPhase;
   let produced = 0;
   for (let i = 0; i < outN && pos < src.length - 1; i++) {
     const k = pos | 0, f = pos - k;
     ch[i] = src[k] * (1 - f) + src[k + 1] * f;
+    if (chR) chR[i] = srcR[k] * (1 - f) + srcR[k + 1] * f;
     pos += ratio;
     produced++;
   }
   /* Carry: keep the last T input samples, and express the read position
      relative to where they will sit at the front of the next chunk. */
   audioTail = src.slice(src.length - T);
+  audioTailR = srcR ? srcR.slice(srcR.length - T) : audioTail.slice();
   audioPhase = pos - (src.length - T);
   if (audioPhase < 0) audioPhase = 0;
   if (produced === 0) return;
@@ -15545,7 +15691,13 @@ function listenPaint() {
   /* The word, not only the glyph - see the #listenbtn CSS note. "Stop" rather
      than a square for the same reason: a square is only obvious once you
      already know what it does. */
-  b.innerHTML = audioWantOn ? "&#9632; Stop" : "&#9654; Listen";
+  /* ST: the frames ARRIVING are stereo (0x04) - binaural CW. Driven by what is
+     received, not by the mode or the setting, so it cannot claim a stereo
+     image the listener is not hearing. A superscript inside this button, not
+     a control of its own: the top bar has no room for one. */
+  b.innerHTML = audioWantOn
+    ? "&#9632; Stop" + (audioStereo && audioFrames > 0 ? '<sup class="st">ST</sup>' : "")
+    : "&#9654; Listen";
   b.title = !audioWantOn
     ? "Listen to the receiver here (the Tab5's own demodulated audio)"
     : (audioFrames === 0
@@ -15630,6 +15782,7 @@ let nrOn = false, nrLevel = 2, nrInst = null, nrLoading = false, nrLoadErr = "";
    spectral NR. CW always uses the spectral one. anOn: the auto-notch, its own
    switch. nrRunKey names what audioFrame() is running, "" when nothing is. */
 let nrType = 0, anOn = false, snInst = null, anInst = null, nrRunKey = "";
+let snInstR = null;   /* the right ear's spectral NR, binaural CW only */
 try {
   nrOn = localStorage.getItem("nrOn") === "1";
   const v = parseInt(localStorage.getItem("nrLevel"), 10);
@@ -15744,7 +15897,7 @@ function connectWs() {
   ws.onmessage=(ev)=>{
     const buf=new Uint8Array(ev.data);
     if (buf.length && buf[0]===FRAME_TYPE_TAKEOVER) { wsTakenOver(); return; }
-    if (buf.length && buf[0]===FRAME_TYPE_AUDIO) { audioFrame(buf); return; }
+    if (buf.length && (buf[0]===FRAME_TYPE_AUDIO || buf[0]===FRAME_TYPE_AUDIO_ST)) { audioFrame(buf); return; }
     if (buf.length<HEADER_LEN+SPEC_W) return;
     if (buf[0]!==FRAME_TYPE_SPECTRUM) return;
     // byte[1] = zoom-FFT decimation factor (1 = base spectrum, 2/4/8/16 = zoom-FFT active)

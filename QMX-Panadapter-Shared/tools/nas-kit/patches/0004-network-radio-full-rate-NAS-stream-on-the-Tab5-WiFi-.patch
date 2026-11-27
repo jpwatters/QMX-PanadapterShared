@@ -1,4 +1,4 @@
-From a76b72851ba1991108ab92ab97f44ca1dcfc4845 Mon Sep 17 00:00:00 2001
+From e3913040d216371048f6d92417e8b2a30b8168ed Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 18:31:15 +0000
 Subject: [PATCH 04/54] network-radio: full-rate NAS stream on the Tab5 - WiFi
@@ -168,7 +168,7 @@ index 95d5a4e4..1a1fac07 100644
  CONFIG_TCP_OVERSIZE_MSS=y
  # CONFIG_TCP_OVERSIZE_QUARTER_MSS is not set
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 5c4c9e95..5c8ece74 100644
+index 7549df3e..383e9cd4 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -87,6 +87,22 @@ PATCHES = [

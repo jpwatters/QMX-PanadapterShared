@@ -1,4 +1,4 @@
-From 485f74053d9cbf534ad7761cd723957fb9c7c280 Mon Sep 17 00:00:00 2001
+From 93233ec0b1e4a5482b609cf92bd9877e5734e7ff Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Wed, 28 Oct 2026 12:00:00 -0500
 Subject: [PATCH 40/54] Ethernet through the M5Stack W5500 PoE base, alongside
@@ -62,7 +62,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 main/net/eth_w5500.h
 
 diff --git a/README.md b/README.md
-index c416e18c..ac250472 100644
+index adb2fb6a..f153030e 100644
 --- a/README.md
 +++ b/README.md
 @@ -17,7 +17,8 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -113,10 +113,10 @@ index c416e18c..ac250472 100644
  * TCI bridge for the Mac (tools/mac-serial-bridge): WS (formerly WSJT-X Improved), WSJT-X 3 and JTDX use the NAS-shared QMX as a TCI network radio, with receive audio (from the I/Q), CAT and transmit (FT8/FT4/JS8/WSPR tones) in one connection; no serial port or virtual audio device. The Tab5 keeps its own connection; while a TCI program is connected the relay keeps the Tab5 off the transmitter, and the Tab5 shows “TX locked: Another Device has the transmitter” (and the Mac is kept off while the Tab5 transmits). Bench-tested against the relay's fake radio; not yet tested with WS on the air.
  * Build and flash from a Mac (tools/mac-build-flash.sh), and record the Tab5’s serial log (tools/mac-capture-serial.sh).
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index bf05ead8..074ef50e 100644
+index 84002023..50cedfbc 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -136,6 +136,7 @@ idf_component_register(
+@@ -137,6 +137,7 @@ idf_component_register(
          "usb_hid_mouse.c"
          "net/rigctld_server.c"
          "net/radio_relay.c"
@@ -124,7 +124,7 @@ index bf05ead8..074ef50e 100644
          "net/reader_net.c"
          "net/manual_embed.c"
          "net/update_check.c"
-@@ -238,6 +239,7 @@ idf_component_register(
+@@ -241,6 +242,7 @@ idf_component_register(
          nvs_flash
          esp_wifi
          esp_netif
@@ -486,7 +486,7 @@ index 19720a2b..e612170f 100644
          return false;
      }
 diff --git a/main/net/psk_rx.c b/main/net/psk_rx.c
-index 5430a7bc..900a8a82 100644
+index 2946b27e..e6ba5994 100644
 --- a/main/net/psk_rx.c
 +++ b/main/net/psk_rx.c
 @@ -35,6 +35,7 @@
@@ -497,17 +497,17 @@ index 5430a7bc..900a8a82 100644
  
  static const char *TAG = "psk_rx";
  
-@@ -335,7 +336,7 @@ static void psk_rx_task(void *arg)
-         /* Narrow, same reason as parse_body() above. */
-         char my_call[16] = {0};
+@@ -470,7 +471,7 @@ static void psk_rx_task(void *arg)
          settings_get_my_callsign(my_call, sizeof(my_call));
--        if (!settings_get_psk_rx_en() || !my_call[0] || !wifi_is_connected()) continue;
-+        if (!settings_get_psk_rx_en() || !my_call[0] || !net_is_up()) continue;
+         if (!settings_get_psk_rx_en()) { s_hold = "switched off"; continue; }
+         if (!my_call[0])               { s_hold = "no callsign set"; continue; }
+-        if (!wifi_is_connected())      { s_hold = "WiFi not connected"; continue; }
++        if (!net_is_up())              { s_hold = "network not connected"; continue; }
          // net_quiet: this query's response cap is 64 KB and it comes over TLS -
          // by far the largest periodic allocation on the device. Not during an
          // update, where internal free has been measured at 5 KB. See net_quiet.h.
 diff --git a/main/net/pskr_self.c b/main/net/pskr_self.c
-index 11aa9673..9ef3bc66 100644
+index 3aafd99b..e74b3c72 100644
 --- a/main/net/pskr_self.c
 +++ b/main/net/pskr_self.c
 @@ -29,6 +29,7 @@
@@ -630,10 +630,10 @@ index 0a6b51dd..0bee174e 100644
  
          /* ⛔ THE QUIET BACKGROUND DOWNLOAD IS GONE (2026-09-17). It was #239's
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index f72711be..9bd25c87 100644
+index 118ce3ed..55e7e476 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -111,6 +111,7 @@
+@@ -112,6 +112,7 @@
  #include "net/manual_embed.h"  // manual_embed_get - /api/manual serves the built-in manual
  #include "config_io.h"         // config_io_export / config_io_import
  #include "radio_relay.h"       // network radio source (QMX on a NAS)
@@ -641,7 +641,7 @@ index f72711be..9bd25c87 100644
  #include "usb_replug.h"        // usb_replug (hidden /api/cmd recovery action)
  #include "gpio_relay.h"        // gpio_pulse - remote relay for a QMX power cycle
  #include "unit_gps/unit_gps.h" // /api/status port.gps - the PORT.A pipeline state
-@@ -798,6 +799,18 @@ static esp_err_t status_handler(httpd_req_t *req)
+@@ -822,6 +823,18 @@ static esp_err_t status_handler(httpd_req_t *req)
      // checking from another room as it is looking at the Tab5 itself.
      cJSON_AddBoolToObject  (batt, "limit",    status_charge_limit_active());
  
@@ -691,10 +691,10 @@ index 8d4be507..1bfee73a 100644
      }
  }
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 1598f45b..34e1b01b 100644
+index 0675c67b..5c9196b9 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -9822,13 +9822,21 @@ async function tick() {
+@@ -9928,13 +9928,21 @@ async function tick() {
        }
      }
  
@@ -900,10 +900,10 @@ index b3f68261..c187ee11 100644
  #if BENCH_WIFI_BAR
          // Bench hook (see BENCH_WIFI_BAR at the top of this file): fakes a
 diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
-index f0fde63b..73d3c238 100644
+index be2949d4..86369e67 100644
 --- a/main/wifi/wifi.c
 +++ b/main/wifi/wifi.c
-@@ -904,6 +904,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,
+@@ -941,6 +941,35 @@ static void on_wifi_event(void *arg, esp_event_base_t base,
      }
  }
  
@@ -939,7 +939,7 @@ index f0fde63b..73d3c238 100644
  static void on_ip_event(void *arg, esp_event_base_t base,
                          int32_t id, void *data)
  {
-@@ -964,11 +993,6 @@ static void on_ip_event(void *arg, esp_event_base_t base,
+@@ -1001,11 +1030,6 @@ static void on_ip_event(void *arg, esp_event_base_t base,
              }
          }
  
@@ -951,7 +951,7 @@ index f0fde63b..73d3c238 100644
          {
              // Count only - never a WIFI_KNOWN_MAX buffer here. This runs on the
              // system event task, whose stack is under 3 KB; a 588-byte array on it
-@@ -979,23 +1003,7 @@ static void on_ip_event(void *arg, esp_event_base_t base,
+@@ -1016,23 +1040,7 @@ static void on_ip_event(void *arg, esp_event_base_t base,
                       s_ssid, kn_n, kn_n == 1 ? "" : "s");
          }
  
@@ -976,7 +976,7 @@ index f0fde63b..73d3c238 100644
      }
  }
  
-@@ -1142,6 +1150,12 @@ static volatile bool s_tcpip_up = false;
+@@ -1179,6 +1187,12 @@ static volatile bool s_tcpip_up = false;
  
  bool wifi_tcpip_stack_up(void) { return s_tcpip_up; }
  
@@ -989,7 +989,7 @@ index f0fde63b..73d3c238 100644
  static void wifi_task(void *arg)
  {
      ESP_LOGI(TAG, "calling esp_hosted_init() explicitly (constructor not running)");
-@@ -1167,7 +1181,12 @@ static void wifi_task(void *arg)
+@@ -1204,7 +1218,12 @@ static void wifi_task(void *arg)
       * anywhere in the firmware can be made without aborting the board. See
       * wifi_tcpip_stack_up() in wifi.h for the measurement. */
      s_tcpip_up = true;

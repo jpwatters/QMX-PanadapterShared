@@ -91,6 +91,10 @@ static rxaud_mode_t mode_from_cat_str(const char *m)
      * chain below already produces the complex baseband an envelope detector
      * needs. Only the detector was missing. See am_demod.h. */
     if (strcmp(m, "AM") == 0)  return RXAUD_MODE_AM;
+    /* ⛔ DiGi / DiGi-R stay SILENT - operator decision 2026-11-24, reverting
+     * 63a606a4 ("DiGi plays as USB", 2026-11-22). Data tones are not for
+     * listening, and on the FT8 page the running audio chain adds load on a
+     * busy band. A silent web Listen on a DiGi dial is by design, not broken. */
     return RXAUD_MODE_NONE;
 }
 
@@ -1568,11 +1572,19 @@ _Static_assert(WEBAUD_RATE_HZ == RX_AUDIO_WEB_RATE_HZ,
                "the rate the browser is told and the rate it is sent must be one number");
 
 static volatile bool s_web_en = false;
-static int16_t      *s_web_ring = NULL;        /* PSRAM, mono, WEBAUD_RATE_HZ */
+/* PSRAM, WEBAUD_RATE_HZ, one (slot0, slot1) PAIR per entry - both output
+ * slots, so the reader can send stereo when the panoramic CW split is on and
+ * the average otherwise. Each slot has its own decimator: the filter is
+ * linear, so the average of the two outputs is exactly the old mono stream. */
+static int16_t      *s_web_ring = NULL;
+/* What the task is producing NOW: true while the panoramic CW split is on.
+ * The reader asks this per frame; at a switch, one frame may carry the other
+ * form, which is a 150 ms blip and not worth a per-sample flag. */
+static volatile bool s_web_panoramic = false;
 static volatile uint32_t s_web_w = 0;          /* write index, producer only  */
 static volatile uint32_t s_web_r = 0;          /* read index, consumer only   */
 static volatile uint32_t s_web_dropped = 0;    /* samples lost to a slow reader */
-static webaud_decim_t s_web_dec;
+static webaud_decim_t s_web_dec[2];    /* slot 0, slot 1 */
 
 /* Producer. Called from rx_audio_task beside rxcap_push, with the frame that
  * is about to be played (or that would be, when no codec was ever opened). */
@@ -1580,12 +1592,13 @@ static inline void webaud_push(const int16_t *out, int pairs)
 {
     if (!s_web_en || !s_web_ring) return;
     for (int i = 0; i < pairs; i++) {
-        /* ⚠ AVERAGE, do not take L like rxcap_push does. The two channels are
-           NOT always identical - panoramic CW pans them hard L/R, so taking one
-           ear would drop whichever station sat on the other side of the dial. */
-        float mono = 0.5f * ((float)out[2 * i] + (float)out[2 * i + 1]);
-        int16_t v;
-        if (!webaud_decim_push(&s_web_dec, mono, &v)) continue;
+        /* Both slots, always. The reader averages them for mono - NOT one
+           slot, as rxcap_push takes: panoramic CW pans hard L/R, so one slot
+           would drop whichever station sat on the other side of the dial. */
+        int16_t v0, v1;
+        bool got = webaud_decim_push(&s_web_dec[0], (float)out[2 * i], &v0);
+        (void)webaud_decim_push(&s_web_dec[1], (float)out[2 * i + 1], &v1);
+        if (!got) continue;          /* the two run in lockstep: same phase */
 
         /* ⛔ ONE WRITER EACH. The producer only ever moves s_web_w and the
          * consumer only ever moves s_web_r - that is the whole reason this
@@ -1600,7 +1613,8 @@ static inline void webaud_push(const int16_t *out, int pairs)
         if (nw == s_web_r) { s_web_dropped++; continue; }  /* full: no reader.
            continue, not return: the FIR history has to keep running or the
            first sample after the reader comes back is a discontinuity. */
-        s_web_ring[w] = v;
+        s_web_ring[2 * w]     = v0;
+        s_web_ring[2 * w + 1] = v1;
         s_web_w = nw;
     }
 }
@@ -1612,7 +1626,8 @@ void rx_audio_web_set_enabled(bool en)
         /* Start from empty and from a clean filter: whatever is in the ring is
            from the last listener and is stale by definition. */
         s_web_r = s_web_w;
-        webaud_decim_reset(&s_web_dec);
+        webaud_decim_reset(&s_web_dec[0]);
+        webaud_decim_reset(&s_web_dec[1]);
         s_web_dropped = 0;
     }
     s_web_en = en;
@@ -1623,7 +1638,9 @@ void rx_audio_web_set_enabled(bool en)
 
 bool rx_audio_web_is_enabled(void) { return s_web_en; }
 
-int rx_audio_web_read(int16_t *dst, int max)
+bool rx_audio_web_stereo(void) { return s_web_panoramic; }
+
+int rx_audio_web_read(int16_t *dst, int max, bool stereo)
 {
     if (!s_web_en || !s_web_ring || max <= 0) return 0;
     uint32_t r = s_web_r, w = s_web_w;
@@ -1650,9 +1667,22 @@ int rx_audio_web_read(int16_t *dst, int max)
     }
 
     int n = 0;
-    while (r != w && n < max) {
-        dst[n++] = s_web_ring[r];
-        r = (r + 1) % WEBAUD_RING_N;
+    if (stereo) {
+        /* ⛔ SLOT 1 IS THE LEFT EAR. The Tab5's output plays slot 0 in the
+         * RIGHT ear, and rx_audio's panoramic split was set by ear on that
+         * output (2026-09-20, f8d79751): the lower half of the passband is in
+         * slot 1. A browser plays the first channel LEFT, so the slots cross
+         * here, and the browser hears what the Tab5's own jack plays. */
+        while (r != w && n + 2 <= max) {
+            dst[n++] = s_web_ring[2 * r + 1];
+            dst[n++] = s_web_ring[2 * r];
+            r = (r + 1) % WEBAUD_RING_N;
+        }
+    } else {
+        while (r != w && n < max) {
+            dst[n++] = (int16_t)(((int32_t)s_web_ring[2 * r] + s_web_ring[2 * r + 1]) / 2);
+            r = (r + 1) % WEBAUD_RING_N;
+        }
     }
     s_web_r = r;
     return n;
@@ -2091,6 +2121,7 @@ static void rx_audio_task(void *arg)
         bool  agc_off      = s_agc_off;
         float out_clamp    = s_out_clamp;
         bool  panoramic_now = (mode == RXAUD_MODE_CW) && s_binaural_en;
+        s_web_panoramic = panoramic_now;   /* the browser's stereo/mono choice */
         bool  am_now        = (mode == RXAUD_MODE_AM);
 
         // Stereo width, BANDWIDTH-COMPENSATED: the two half-band filters'
@@ -2915,8 +2946,9 @@ void rx_audio_init(void)
     s_volume  = cfg.rx_audio_vol;
     rx_audio_apply_settings();   // gain ceiling, the three pan controls, binaural on/off
     // NOT net_quiet - that stays OTA-only (see net_quiet.h). Standing
-    // feeds that should hold off while RX audio is on (SelfSpotter, RBN,
-    // DX cluster, PSK Reporter RX) check rx_audio_is_enabled() directly
+    // feeds that should hold off while RX audio is on (SelfSpotter and
+    // PSK Reporter RX; RBN and DX cluster until 110dad07 moved them to a
+    // periodic poll) check rx_audio_holds_off_feeds() directly
     // instead, added 2026-09-20 - net_quiet was too blunt: it held off
     // POTA/SOTA and PSK Reporter TX too, which are periodic/batched, own no
     // standing task, and the operator specifically asked to keep running
@@ -2943,10 +2975,11 @@ void rx_audio_init(void)
     // of the runway/growing-crackle bug (2026-09-23): see the note by
     // RX_OUT_HEADROOM's use in the upsample loop for the mechanism.
     s_out       = heap_caps_malloc((DSP_FFT_SIZE + RX_OUT_HEADROOM) * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    /* The browser's 1 s mono ring - 24 KB, PSRAM, touched once per output
-       sample by this task and once per 100 ms by ws_push_task. */
-    s_web_ring  = heap_caps_malloc(WEBAUD_RING_N * sizeof(int16_t),   MALLOC_CAP_SPIRAM);
-    webaud_decim_init(&s_web_dec, DSP_SAMPLE_RATE_HZ);
+    /* The browser's 3 s ring of slot pairs - 144 KB, PSRAM, touched once per
+       output sample by this task and once per 100 ms by ws_push_task. */
+    s_web_ring  = heap_caps_malloc(WEBAUD_RING_N * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    webaud_decim_init(&s_web_dec[0], DSP_SAMPLE_RATE_HZ);
+    webaud_decim_init(&s_web_dec[1], DSP_SAMPLE_RATE_HZ);
     /* Deliberately NOT in the fatal list below: the speaker must not be
        lost because the browser's ring could not be allocated. */
     if (!s_web_ring) ESP_LOGW(TAG, "web-audio ring alloc failed; "
@@ -3322,6 +3355,16 @@ bool rx_audio_is_enabled(void) { return s_enabled; }
  * pause the WebSocket for 300-716 ms EVERY ~31 SECONDS, which a web listener
  * hears as a break-up twice a minute. Same cost, same answer. */
 bool rx_audio_any_listener(void) { return s_enabled || s_web_en; }
+
+/* See rx_audio.h at RX_AUDIO_HOLDS_OFF_FEEDS for why this is separate. */
+bool rx_audio_holds_off_feeds(void)
+{
+#if RX_AUDIO_HOLDS_OFF_FEEDS
+    return rx_audio_any_listener();
+#else
+    return false;
+#endif
+}
 
 /* On, but the codec was never opened for this session - see rx_audio.h. */
 bool rx_audio_restart_pending(void) { return s_enabled && !s_codec_ready; }

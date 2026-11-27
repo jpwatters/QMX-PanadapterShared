@@ -4,6 +4,7 @@
 // synthesis + envelope shaping; we just feed it tone frequencies).
 
 #include "ft8_tx.h"
+#include "ft8_hop.h"   // ft8_hop_dial_now - the dial the guard checks after a hop
 #include "ft8_hash.h"
 #include "ft8_msg_guard.h"
 #include "ft8_status.h"
@@ -969,6 +970,11 @@ bool ft8_tx_arm(const ft8_tx_request_t *req, char *out_err, size_t out_err_len)
         return false;
     }
     s_armed = *req;
+    /* ⛔ STAMPED HERE, CHECKED IN ft8_tx_run(). A request armed in sim mode
+     * must never key the radio for real: sim was read when the burst RAN, so a
+     * reply to a phantom armed just before sim went OFF went out on 40 m into
+     * a 20 m antenna (shack sim, 2026-11-26, SWR latch). `sim` is read above. */
+    s_armed.armed_in_sim = sim;
     s_state = FT8_TX_ARMED;
     unlock();
 
@@ -1285,6 +1291,15 @@ void ft8_tx_run(const ft8_tx_request_t *req)
      * most - checked, because a dial at the top band edge puts the top tone
      * outside while the base is inside. */
     char band_err[160] = "";
+    /* ⛔ A HOP AT THE BOUNDARY KEYED 8 ms AFTER ITS FA WRITE (sim, 2026-11-26).
+     * Whether a real QMX had retuned by then was never measured, so key-down
+     * now waits until the radio itself reports the hop's band (FA poll, every
+     * 150 ms), up to 1 s, and skips the slot otherwise. A late start shifts
+     * the whole burst, as the hold-for-decode late fire already does. The FA
+     * answer proves the radio took the write; it is not an RF measurement.
+     * After that, cat_get_frequency() is the radio's own report, and the band
+     * guard judges it, not the hop's target. No-op when no hop is pending. */
+    const bool hop_confirmed = sim || ft8_hop_wait_confirmed(1000);
     char lock_why[128];
     const uint32_t tx_dial = sim ? 0u : cat_get_frequency();
     const bool band_ok = sim ? true
@@ -1292,7 +1307,22 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                                tx_dial + (uint32_t)req->audio_freq_hz + 50u,
                                ftx_protocol_name(req->protocol),
                                band_err, sizeof band_err);
-    if (!band_ok) {
+    if (!hop_confirmed) {
+        ESP_LOGW(TAG, "TX skipped before key-down: the radio did not confirm the band hop within 1 s");
+        ft8_status_set("TX skipped: band hop not confirmed");
+    } else if (req->armed_in_sim && !sim) {
+        /* See the stamp in ft8_tx_arm(). Sim went OFF after this was armed. */
+        ESP_LOGW(TAG, "TX refused before key-down: '%s' was armed in simulation mode, "
+                      "which is now off - not keyed", req->display_text);
+        ft8_status_set("TX refused: armed in simulation");
+    } else if (!sim && FT8_TX_SEND_LIVE && !cat_is_ready()) {
+        /* ⛔ NO RADIO, NO BURST (2026-11-26, sibling of the WSPR fix). The
+         * mode string and dial are CACHED, so with the QMX gone they still
+         * pass, the key-down fails silently and the stop's force-RX then logs
+         * "the radio may still be transmitting" for a radio that is absent. */
+        ESP_LOGW(TAG, "TX skipped before key-down: no radio (CAT link down)");
+        ft8_status_set("TX skipped: no radio");
+    } else if (!band_ok) {
         ESP_LOGE(TAG, "TX aborted before key-up: %s", band_err);
         ui_toast_alert_ms(band_err, 15000);
         ft8_status_set("%s", band_err);

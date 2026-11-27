@@ -1,4 +1,4 @@
-From e4f7c39ade55529fcd004897f7aed7661de9d26b Mon Sep 17 00:00:00 2001
+From 6a142ac7c34a1a11367713b53b4e165fa01862cb Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 19:11:26 -0500
 Subject: [PATCH 18/54] FT8/FT4 over the NAS: the relay times the transmit
@@ -41,10 +41,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  7 files changed, 310 insertions(+), 20 deletions(-)
 
 diff --git a/main/ft8_tx.c b/main/ft8_tx.c
-index 5da56d18..cc881da7 100644
+index 98ad5694..bcd2d61e 100644
 --- a/main/ft8_tx.c
 +++ b/main/ft8_tx.c
-@@ -31,6 +31,7 @@
+@@ -32,6 +32,7 @@
  #include "ft8/js8_text.h"
  
  #include "cat/cat.h"
@@ -52,7 +52,7 @@ index 5da56d18..cc881da7 100644
  #include "storage/settings.h"
  
  static const char *TAG = "ft8_tx";
-@@ -1336,7 +1337,36 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1366,7 +1367,36 @@ void ft8_tx_run(const ft8_tx_request_t *req)
              ESP_LOGI(TAG, "key down at +%lld ms into the slot", 
                       (long long)(key_ms % per_ms));
          }
@@ -90,7 +90,7 @@ index 5da56d18..cc881da7 100644
  
          // Live power/SWR: fire ONE non-blocking PC;SW; once the PA has settled
          // (symbol 6 ≈ 1 s in), then read the async response a few symbols later
-@@ -1386,7 +1416,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1416,7 +1446,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
              }
              float freq = (float)req->audio_freq_hz + (float)req->tones[i] * tone_spacing_hz;
              sleep_until(t0, (int64_t)i * symbol_period_us);
@@ -99,7 +99,7 @@ index 5da56d18..cc881da7 100644
              // Live power/SWR mid-burst query is FT8-only timing (tuned to FT8's
              // 160 ms symbol slack at symbols 6/14) and is skipped for FT4 on
              // those grounds alone - see the note on the branch below. This
-@@ -1525,10 +1555,29 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1555,10 +1585,29 @@ void ft8_tx_run(const ft8_tx_request_t *req)
              // up - otherwise we'd truncate the last tone for receivers.
              sleep_until(t0, (int64_t)nn * symbol_period_us);
          }

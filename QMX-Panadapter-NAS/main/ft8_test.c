@@ -37,6 +37,7 @@
 // only way to hear the station we're working (they transmit opposite us).
 
 #include "ft8_test.h"
+#include "ft8_hop.h"
 #include "esp_attr.h"   // EXT_RAM_BSS_ATTR
 #include "ft8_slot_gate.h"
 #include "ft8_subtract.h"
@@ -2430,6 +2431,15 @@ static bool decode_msg_to_text(const ftx_message_t *msg, ftx_protocol_t proto,
 // concurrently against one shared monitor. The shared wall-clock budget
 // (t_start_us) bounds the busiest slots; candidates are strongest-first so only
 // the weakest tail is dropped.
+/* The dial a spot is published at: the one the slot was CAPTURED on (see
+ * ft8_slot_dial_latch() in ft8_task). Falls back to the current dial for a
+ * slot older than the latch ring, which is what every spot did before. */
+static uint32_t spot_dial(int64_t slot_sec)
+{
+    uint32_t hz = ft8_slot_dial(slot_sec);
+    return hz ? hz : cat_get_frequency();
+}
+
 static void decode_candidate_range(monitor_t *mon, const decode_ctx_t *dc,
                                    const ftx_candidate_t *cands,
                                    int n_cand, int start, int step,
@@ -2843,6 +2853,7 @@ static void decode_candidate_range(monitor_t *mon, const decode_ctx_t *dc,
                  * early advance keeps its reply latency; it no longer also
                  * spends the slot's only look at the band. */
                 if (may_early_advance && !out->early_advanced &&
+                    ft8_hop_slot_on_current_band(slot_sec) &&
                     ft8_qso_msg_is_for_us(text)) {
                     out->early_advanced = true;
                     ESP_LOGI(TAG, "early advance: '%s' is for us - advancing now "
@@ -2860,12 +2871,14 @@ static void decode_candidate_range(monitor_t *mon, const decode_ctx_t *dc,
              * nothing has confirmed puts our mistakes into somebody else's
              * database, where they cannot be withdrawn. When the alternate
              * path has been proven on air this is the line to revisit. */
-            if (!dc->rx_only) {
+            /* ft8_screen_slot_is_current(): a slot captured before a band
+             * change must not be spotted at the NEW dial (see ft8_screen.c). */
+            if (!dc->rx_only && ft8_screen_slot_is_current(slot_sec)) {
                 char sp_call[16], sp_grid[8];
                 if (ft8_screen_extract_call(text, sp_call, sizeof(sp_call))) {
                     ft8_screen_extract_grid(text, sp_grid, sizeof(sp_grid));
                     pskreporter_spot(sp_call, sp_grid,
-                                     cat_get_frequency() + (uint32_t)freq_hz, snr_db,
+                                     spot_dial(slot_sec) + (uint32_t)freq_hz, snr_db,
                                      ftx_protocol_name((ftx_protocol_t)s_pool_proto),
                                      slot_sec);
                 }
@@ -3077,17 +3090,18 @@ static void wsx_on_decode(void *vctx, float sync, int snr, float dt, float freq,
     if (!k->sim_suppresses_real && !k->rx_only) {
         ft8_screen_record_decode(text, (int)lroundf(sync), snr, freq_hz, k->slot_sec,
                                  (int)lroundf(dt_ms));
-        if (k->may_early_advance && !out->early_advanced && ft8_qso_msg_is_for_us(text)) {
+        if (k->may_early_advance && !out->early_advanced &&
+            ft8_hop_slot_on_current_band(k->slot_sec) && ft8_qso_msg_is_for_us(text)) {
             out->early_advanced = true;
             ESP_LOGI(TAG, "early advance: '%s' is for us - advancing now", text);
             ft8_qso_advance(k->slot_sec);
         }
     }
-    if (!k->rx_only) {
+    if (!k->rx_only && ft8_screen_slot_is_current(k->slot_sec)) {   /* old band: no spot */
         char sp_call[16], sp_grid[8];
         if (ft8_screen_extract_call(text, sp_call, sizeof(sp_call))) {
             ft8_screen_extract_grid(text, sp_grid, sizeof(sp_grid));
-            pskreporter_spot(sp_call, sp_grid, cat_get_frequency() + (uint32_t)freq_hz, snr,
+            pskreporter_spot(sp_call, sp_grid, spot_dial(k->slot_sec) + (uint32_t)freq_hz, snr,
                              ftx_protocol_name((ftx_protocol_t)s_pool_proto), k->slot_sec);
         }
     }
@@ -3428,9 +3442,10 @@ static void wsx_piece_pass(int64_t job_slot_sec)
         if (!sim_mode) {
             ft8_screen_record_decode(text, 0, snr_db, freq_hz, pl->slot_sec, dt_ms);
             char sp_call[16], sp_grid[8];
-            if (ft8_screen_extract_call(text, sp_call, sizeof(sp_call))) {
+            if (ft8_screen_slot_is_current(pl->slot_sec) &&      /* old band: no spot */
+                ft8_screen_extract_call(text, sp_call, sizeof(sp_call))) {
                 ft8_screen_extract_grid(text, sp_grid, sizeof(sp_grid));
-                pskreporter_spot(sp_call, sp_grid, cat_get_frequency() + (uint32_t)freq_hz,
+                pskreporter_spot(sp_call, sp_grid, spot_dial(pl->slot_sec) + (uint32_t)freq_hz,
                                  snr_db, ftx_protocol_name(FTX_PROTOCOL_FT8), pl->slot_sec);
             }
         }
@@ -3897,8 +3912,10 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon,
          * second time costs a few microseconds per structured frame per slot
          * and no memory at all. It is outside the candidate loop and outside
          * FT8_DECODE_BUDGET_MS, which is what the "ONE call, deliberately"
-         * note in that loop is protecting. */
-        if (js8_chat_init()) {
+         * note in that loop is protecting.
+         * Not for a slot captured before a band/mode change: its frames
+         * would be stamped with the NEW band below (ft8_screen.c). */
+        if (ft8_screen_slot_is_current(slot_sec) && js8_chat_init()) {
             /* ⛔ STAMP THE BAND AT CREATION, not at render time. The pane and
              * the API both draw from this store minutes later, by which point
              * the dial may have moved - so the band has to be captured in the
@@ -4447,6 +4464,19 @@ static void decode_slot(worker_ctx_t *wctx, monitor_t *mon,
 #else
     const bool sub_early = false;
 #endif
+    /* ⛔ NOT FROM THE OLD BAND. The last slot before a band hop is decoded
+     * after the hop, and since 2026-11-26 the hop runs under a CQ run and
+     * auto-answer. A caller heard there would be answered on the NEW band.
+     * So that slot is shown and spotted (at its latched dial) but drives no
+     * QSO, no robot and no Hound. The hop marks the new band before its CAT
+     * write (ft8_hop.c s_own_us), microseconds after this slot's decode is
+     * queued; the first decoded message takes far longer, so this check
+     * cannot see the old band as current. */
+    if (!ft8_hop_slot_on_current_band(slot_sec)) {
+        ESP_LOGI(TAG, "slot %lld: heard before a band hop - no QSO action", (long long)slot_sec);
+        ft8_screen_view_request_refresh();
+        return;
+    }
     if (!r_main.early_advanced && !r_worker.early_advanced && !sub_early) {
         ft8_qso_advance(slot_sec);
     } else {
@@ -4946,6 +4976,17 @@ static void ft8_task(void *arg)
         int64_t boundary_ms = wait_for_slot_boundary_ms(last_boundary_ms, period_ms);
         last_boundary_ms = boundary_ms;
         int64_t slot_sec = boundary_ms / 1000;   // whole-second slot id (record/aging)
+        /* A band hop the gap before this boundary could not take (our own CQ
+         * ended too late): take it now, before the latch and the TX check, so
+         * this slot's CQ and capture are on the new band. No-op otherwise. */
+        ft8_hop_run_at_boundary(boundary_ms);
+        /* The dial THIS slot is captured on. Decodes land after the boundary,
+         * and after a band hop the radio is already elsewhere - every spot and
+         * band lookup for this slot reads the latch, not cat_get_frequency().
+         * ft8_hop_dial_now(), not cat_get_frequency(): the FA poll confirms a
+         * hop about a second later, so the first slot after a hop would be
+         * latched on the OLD band. */
+        ft8_slot_dial_latch(slot_sec, ft8_hop_dial_now());
 
         /* ⭐ TWO MARKS, ONE CLOCK - so a late key-down can be ATTRIBUTED.
          *
@@ -5091,6 +5132,12 @@ static void ft8_task(void *arg)
             } else {
                 ft8_status_set("TX done - waiting for next slot");
             }
+            /* Band hop after a TX slot. Since 2026-11-26 the hop runs under a
+             * CQ run, and with CQ on ODD the last slot of a stay is our own
+             * burst: no capture follows, so the call after the capture below
+             * never runs for it. The burst has ended (ft8_tx_run returned) and
+             * RX is restored; the lead check in ft8_hop_run() still applies. */
+            if (slot_used_by_tx) ft8_hop_run(boundary_ms + period_ms);
         }
         if (!slot_used_by_tx) {
             // RX this slot. We capture every non-TX slot, including the
@@ -5189,7 +5236,11 @@ static void ft8_task(void *arg)
             settings_load_all(&cut_cfg);
             bool want_early_cut = ft8_qso_is_busy(NULL, 0) ||
                                   (ft8_tx_get_status(NULL, 0, NULL) == FT8_TX_ARMED) ||
-                                  cut_cfg.ft8_early_decode;
+                                  cut_cfg.ft8_early_decode ||
+                                  /* A band hop at the end of this slot needs
+                                   * the gap the early cut makes: the burst
+                                   * ends at 12.64 s, so nothing is lost. */
+                                  ft8_hop_due(boundary_ms + period_ms);
             if (want_early_cut) {
                 /* ⛔ FT4 WAS EXCLUDED FOR NO STATED REASON, and it needed this
                  * MORE than FT8 did.
@@ -5429,6 +5480,11 @@ static void ft8_task(void *arg)
                     s_decode_jobs_queued++;   // hold-for-decode gate bookkeeping
                 }
 
+                /* Band hop: the capture is done and the decode is queued, so
+                 * this is the gap before the next boundary. No-op unless the
+                 * next boundary ends a 2 min dwell and the page is idle. */
+                ft8_hop_run(boundary_ms + period_ms);
+
                 /* ---- T132: the alternate sub-mode, on a duty cycle --------
                  *
                  * AFTER the primary job, always. The primary decode carries
@@ -5511,7 +5567,8 @@ static void ft8_task(void *arg)
                     ESP_LOGI(TAG, "slot %d UTC %lld: no audio (sim) - running QSO advance%s",
                              slot_idx, (long long)slot_sec,
                              sim_chk.ft8_early_decode ? "" : " (late, early-decode OFF)");
-                    ft8_qso_advance(slot_sec);
+                    if (ft8_hop_slot_on_current_band(slot_sec))   /* see decode_slot() */
+                        ft8_qso_advance(slot_sec);
                     // Robot auto-answer must tick here too - it normally runs
                     // from decode_slot() after a successful capture, which a
                     // no-audio sim slot never reaches, so "Auto-answer CQ"
@@ -5524,8 +5581,10 @@ static void ft8_task(void *arg)
                     // Fox/Hound learned this the hard way on 2026-08-10: the
                     // phantom Fox was decoded perfectly and ft8_hound_tick() was
                     // never called, so it looked like detection was broken.
-                    ft8_hound_tick(slot_sec);
-                    ft8_robot_tick(slot_sec);
+                    if (ft8_hop_slot_on_current_band(slot_sec)) {
+                        ft8_hound_tick(slot_sec);
+                        ft8_robot_tick(slot_sec);
+                    }
                     ft8_screen_view_request_refresh();
                 } else {
                     ft8_status_set("RX: capture error");

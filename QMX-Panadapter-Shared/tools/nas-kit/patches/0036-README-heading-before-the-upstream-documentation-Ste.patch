@@ -1,4 +1,4 @@
-From 1be286a55d18c587533406828e49959141c9f7b5 Mon Sep 17 00:00:00 2001
+From 1c0670510efd441e6489f59ab6765e0cb0118fd2 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 14:00:00 -0500
 Subject: [PATCH 36/54] README: heading before the upstream documentation
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 4 insertions(+)
 
 diff --git a/README.md b/README.md
-index bc2e76df..b7434932 100644
+index 1f4f8400..feb214fb 100644
 --- a/README.md
 +++ b/README.md
 @@ -108,6 +108,10 @@ Mac: qmx_serial_bridge.py --tci  ──  ws://127.0.0.1:40001 (TCI)  ◀──

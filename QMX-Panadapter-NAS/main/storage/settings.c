@@ -56,6 +56,7 @@ static const char *TAG = "settings";
 #define KEY_FT8_FREQ   "ft8_freq"
 #define KEY_CW_PITCH   "cw_pitch"
 #define KEY_COLORMAP   "colormap"
+#define KEY_SPECTRUM_H "spec_h"   /* T216: spectrum height in px; waterfall takes the rest */
 #define KEY_CW_CAL     "cw_cal"
 #define KEY_SB_LOWCUT  "sb_lowcut"
 #define KEY_FT4_FREQ   "ft4_freq"
@@ -182,6 +183,7 @@ static const char *TAG = "settings";
 #define KEY_WSPR_DBM       "wspr_dbm"
 #define KEY_WSPR_PARED     "wspr_pared"
 #define KEY_WSPR_PASAVE    "wspr_pasave"
+#define KEY_WSPR_DCLRST    "wspr_dclrst"   /* T219: pre-WSPR PA voltage owed on leave */
 #define KEY_PWR_CAL        "pwrcal"
 #define KEY_RADIO_UID      "radiouid"   /* UI; of the radio the table above belongs to */
 #define KEY_PWR_TARGET     "pwrtarget"
@@ -190,6 +192,11 @@ static const char *TAG = "settings";
 #define KEY_WSPR_DUMP      "wspr_dump"
 #define KEY_WSPR_HOPM      "wspr_hopm"
 #define KEY_WSPR_HOPE      "wspr_hope"
+#define KEY_FT8_HOPM       "ft8_hopm"
+#define KEY_FT8_HOPDW      "ft8_hopdw"
+#define KEY_FT8_CQPAR      "ft8_cqpar"
+#define KEY_FT8_HOPSPL     "ft8_hopspl"
+#define KEY_WSPR_HOPST     "wspr_hopst"
 #define KEY_WSPR_EN        "wspr_en"
 #define KEY_WSPR_NET       "wspr_net"
 #define KEY_FT8_OP_MODE    "ft8_op_mode"
@@ -229,6 +236,9 @@ static const char *TAG = "settings";
 #define DEF_CW_CAL      (0)
 #define DEF_ZOOM        (1.0f)
 #define DEF_COLORMAP    (0)  // Thermal
+/* T216. 200 is what every device shipped with before the split could move,
+ * so an upgrade keeps the layout people already have. */
+#define DEF_SPECTRUM_H  (200)
 #define DEF_BRIGHTNESS  (100)
 #define DEF_LAST_MODE     (0)
 #define DEF_WIFI_ENABLED  (true)
@@ -286,7 +296,7 @@ static const char *TAG = "settings";
  * taken every one of them while the comment still said 62. Bumped to 5 words
  * rather than land the next person on a full bitmap behind a wrong number.
  * Cost is 4 bytes. Recount before trusting this figure again. */
-#define DIRTY_WORDS      6                        /* 192 bits; highest used 163, 28 spare */
+#define DIRTY_WORDS      6                        /* 192 bits; highest used 169, 22 spare */
 #define DIRTY_BITS_MAX   (DIRTY_WORDS * 32)
 
 typedef struct { uint32_t w[DIRTY_WORDS]; } dirty_t;
@@ -505,6 +515,12 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_ROWS         142  /* rows of decoded CW drawn */
 #define DIRTY_TXBAND_OFF      143  /* TX band guard disabled (T48) */
 #define DIRTY_TXSUBNET        162  /* TX subnet interlock (T206) */
+#define DIRTY_SPECTRUM_H      163  /* T216 spectrum/waterfall split height, px */
+#define DIRTY_FT8_HOPM        164  /* FT8/FT4 receive band-hop mask */
+#define DIRTY_FT8_HOPDW       165  /* FT8/FT4 hop stay, minutes */
+#define DIRTY_FT8_CQPAR       166  /* TXCQ period: any / even / odd */
+#define DIRTY_FT8_HOPSPL      167  /* hop CQ split: EVEN 1st half, ODD 2nd */
+#define DIRTY_WSPR_HOPST      168  /* WSPR hop stay, 2-min cycles */
 #define DIRTY_MY_STATE        144  /* US state, for the directed-CQ filter */
 #define DIRTY_SPEC_PEAK       145  /* spectrum peak-hold window (A4) */
 #define DIRTY_CW_PEAK         146  /* CW audio peak filter width (A4) */
@@ -528,7 +544,7 @@ static inline bool dirty_test_any(const dirty_t *d, const uint8_t *bits, size_t 
 #define DIRTY_CW_CONTEST       159  /* contest name/ID */
 #define DIRTY_RTTY             160  /* R019 RTTY receive settings blob - first bit of word 6 */
 #define DIRTY_RTTY_CONTEST     161  /* R030 RTTY contest blob */
-#define DIRTY_RELAY           163  /* network radio: relay_host + relay_port (142-162 are upstream's) */
+#define DIRTY_RELAY           169  /* network radio: relay_host + relay_port (142-168 are upstream's) */
 
 // Bits that actually affect config_io_export()'s output (storage/config_io.c).
 // Bookkeeping bits like DIRTY_LAST_TIME (rewritten by the continuous time-sync
@@ -546,7 +562,7 @@ static const uint8_t s_config_export_bits[] = {
     DIRTY_OTA_AUTODL,
     DIRTY_DB_MIN, DIRTY_DB_MAX, DIRTY_EMA_ALPHA, DIRTY_IQ_ENABLED,
     DIRTY_FLAT_MODE, DIRTY_WIFI_SSID, DIRTY_WIFI_PASS, DIRTY_CW_PITCH,
-    DIRTY_COLORMAP, DIRTY_MY_CALL, DIRTY_MY_GRID, DIRTY_MY_STATE, DIRTY_CW_CAL,
+    DIRTY_COLORMAP, DIRTY_SPECTRUM_H, DIRTY_MY_CALL, DIRTY_MY_GRID, DIRTY_MY_STATE, DIRTY_CW_CAL,
     DIRTY_ZOOM, DIRTY_BRIGHTNESS, DIRTY_CQ_MSG0, DIRTY_CQ_MSG1,
     DIRTY_CQ_MSG2, DIRTY_CQ_SEL, DIRTY_ONBOARDED, DIRTY_FT8_FILT,
     DIRTY_WIFI_ENABLED, DIRTY_QMX_GPS, DIRTY_FREQ_KP_CALC,
@@ -581,6 +597,10 @@ static const uint8_t s_config_export_bits[] = {
      * A config file that silently moved a board back to the QMX would look
      * like the jack had stopped working. */
     DIRTY_RX_SOURCE, DIRTY_LINEIN_GAIN,
+    /* config_io_export() prints these three. FT8_HOPM was missing from this
+     * list when it was added (2026-11-25), so a hop-band change did not
+     * re-mirror the file. */
+    DIRTY_FT8_HOPM, DIRTY_FT8_HOPDW, DIRTY_FT8_CQPAR, DIRTY_FT8_HOPSPL, DIRTY_WSPR_HOPST,
     /* ⛔ DIRTY_LOG_VIEW_ALL is deliberately NOT here, and neither are
      * DIRTY_CW_DECODE / DIRTY_CW_ROWS, although config_io_export() prints all
      * three. They are one-tap view preferences, and an SD mirror write per tap
@@ -621,6 +641,29 @@ static dirty_t          s_dirty          = {0};
 static qmx_settings_t   s_pending;       // staged values awaiting flush
 static TickType_t       s_last_change_tick = 0;
 static TaskHandle_t     s_flush_task     = NULL;
+
+/* ---- Urgent writes: flush_task commits them, the caller never does -------
+ * Two values must reach NVS at once, not after the 500 ms debounce, because a
+ * reset inside that window strands the radio at a reduced Max. PA voltage:
+ * wspr_pa_saved_x10 (the retired guard) and wspr_dclrst (T219). Both used to
+ * call nvs_set + nvs_commit in the CALLER, and some callers run on "cat_poll",
+ * a 4 KB internal-RAM stack (cat.c): wspr_pa_decl_note_prior(),
+ * wspr_pa_decl_restore_check(), wspr_pa_guard_periodic_check() and
+ * wspr_pa_guard_reclaim_on_link(). An NVS write is one of the deepest paths in
+ * the firmware (-fstack-usage, IDF 5.4.4: Page::writeItem 112, cmpItem 128,
+ * findItem 112, esp_flash_write 112 ...), and stack overflows have cost this
+ * project several crash loops - settings_flush itself twice, see below.
+ * So the setters only stage the value and wake flush_task, which has a 7.5 KB
+ * stack and is already the NVS writer. settings_urgent_sync() lets a caller
+ * that must not race the radio write wait for the commit (T219, 2026-11-25). */
+#define URG_WSPR_PASAVE  (1u << 0)
+#define URG_WSPR_DCLRST  (1u << 1)
+static uint32_t s_urgent          = 0;   /* bits still to write; under s_mutex */
+static uint32_t s_urgent_req_gen  = 0;   /* bumped per request; under s_mutex */
+static volatile uint32_t s_urgent_done_gen = 0;   /* last gen committed */
+
+/* T219 record, see settings_get_wspr_decl_restore(). Loaded in settings_init. */
+static uint32_t s_wspr_dclrst     = 0;
 
 // ---- Internal helpers --------------------------------------------------
 static float u32_to_float(uint32_t u)
@@ -680,8 +723,36 @@ static void flush_task(void *arg)
         return;
     }
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(100));
+        /* 100 ms poll as before; an urgent write wakes it at once. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
         if (!s_ready) continue;
+
+        uint32_t urg = 0, urg_gen = 0, dclrst = 0;
+        uint16_t pasave = 0;
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        urg = s_urgent;  s_urgent = 0;
+        urg_gen = s_urgent_req_gen;
+        dclrst  = s_wspr_dclrst;
+        pasave  = s_pending.wspr_pa_saved_x10;
+        xSemaphoreGive(s_mutex);
+        if (urg) {
+            esp_err_t e = ESP_OK, e2;
+            if (urg & URG_WSPR_PASAVE) e = nvs_set_u16(s_nvs, KEY_WSPR_PASAVE, pasave);
+            if (urg & URG_WSPR_DCLRST) {
+                e2 = dclrst ? nvs_set_u32(s_nvs, KEY_WSPR_DCLRST, dclrst)
+                            : nvs_erase_key(s_nvs, KEY_WSPR_DCLRST);
+                if (e2 == ESP_ERR_NVS_NOT_FOUND) e2 = ESP_OK;  /* erasing what was never there */
+                if (e == ESP_OK) e = e2;
+            }
+            panic_hook_crumb_enter("nvs:settings-commit");
+            e2 = nvs_commit(s_nvs);
+            panic_hook_crumb_exit();
+            if (e == ESP_OK) e = e2;
+            if (e != ESP_OK) ESP_LOGW(TAG, "nvs (urgent %02lx) failed: 0x%x", (unsigned long)urg, e);
+            s_urgent_done_gen = urg_gen;
+        } else {
+            s_urgent_done_gen = urg_gen;   /* nothing staged: every request is done */
+        }
 
         dirty_t dirty_local = {0};
         bool do_flush = false;
@@ -724,6 +795,7 @@ static void flush_task(void *arg)
             nvs_set_u32(s_nvs, KEY_ZOOM, bits);
         }
         if (dirty_test(&dirty_local, DIRTY_COLORMAP))  nvs_set_u8(s_nvs, KEY_COLORMAP, snap->colormap_idx);
+        if (dirty_test(&dirty_local, DIRTY_SPECTRUM_H)) nvs_set_u16(s_nvs, KEY_SPECTRUM_H, snap->spectrum_h);
         if (dirty_test(&dirty_local, DIRTY_BRIGHTNESS)) nvs_set_u8(s_nvs, KEY_BRIGHTNESS, snap->brightness_pct);
         if (dirty_test(&dirty_local, DIRTY_LAST_MODE))  nvs_set_u8(s_nvs, KEY_LAST_MODE,  snap->last_ui_mode);
         if (dirty_test(&dirty_local, DIRTY_LAST_TIME))  nvs_set_u32(s_nvs, KEY_LAST_TIME, snap->last_unix_time);
@@ -904,6 +976,11 @@ static void flush_task(void *arg)
         if (dirty_test(&dirty_local, DIRTY_WSPR_DUMP))    nvs_set_u8(s_nvs, KEY_WSPR_DUMP, snap->wspr_dump_cycles);
         if (dirty_test(&dirty_local, DIRTY_WSPR_HOPM))    nvs_set_u16(s_nvs, KEY_WSPR_HOPM, snap->wspr_hop_mask);
         if (dirty_test(&dirty_local, DIRTY_WSPR_HOPE))    nvs_set_u8(s_nvs, KEY_WSPR_HOPE, snap->wspr_hop_en ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_FT8_HOPM))     nvs_set_u16(s_nvs, KEY_FT8_HOPM, snap->ft8_hop_mask);
+        if (dirty_test(&dirty_local, DIRTY_FT8_HOPDW))    nvs_set_u8(s_nvs, KEY_FT8_HOPDW, snap->ft8_hop_dwell_min);
+        if (dirty_test(&dirty_local, DIRTY_FT8_CQPAR))    nvs_set_i8(s_nvs, KEY_FT8_CQPAR, snap->ft8_cq_parity);
+        if (dirty_test(&dirty_local, DIRTY_FT8_HOPSPL))   nvs_set_u8(s_nvs, KEY_FT8_HOPSPL, snap->ft8_hop_cq_split ? 1 : 0);
+        if (dirty_test(&dirty_local, DIRTY_WSPR_HOPST))   nvs_set_u8(s_nvs, KEY_WSPR_HOPST, snap->wspr_hop_stay_cycles);
         if (dirty_test(&dirty_local, DIRTY_WSPR_EN))      nvs_set_u8(s_nvs, KEY_WSPR_EN,   snap->wspr_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_WSPR_NET))     nvs_set_u8(s_nvs, KEY_WSPR_NET,  snap->wspr_net_en ? 1 : 0);
         if (dirty_test(&dirty_local, DIRTY_FT8_OP_MODE))  nvs_set_u8(s_nvs, KEY_FT8_OP_MODE, snap->ft8_op_mode);
@@ -973,6 +1050,29 @@ static void flush_task(void *arg)
     }
 }
 
+/* Stage done by the caller under s_mutex; this marks it and wakes the writer. */
+static void urgent_kick_locked(uint32_t bit)
+{
+    s_urgent |= bit;
+    s_urgent_req_gen++;
+}
+
+bool settings_urgent_sync(uint32_t timeout_ms)
+{
+    if (!s_ready || !s_flush_task) return false;
+    if (xTaskGetCurrentTaskHandle() == s_flush_task) return true;   /* would wait on itself */
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint32_t want = s_urgent_req_gen;
+    xSemaphoreGive(s_mutex);
+    TickType_t t0 = xTaskGetTickCount();
+    while ((int32_t)(s_urgent_done_gen - want) < 0) {
+        if (xTaskGetTickCount() - t0 >= pdMS_TO_TICKS(timeout_ms)) return false;
+        xTaskNotifyGive(s_flush_task);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return true;
+}
+
 // ---- Public API --------------------------------------------------------
 void settings_init(void)
 {
@@ -1005,6 +1105,10 @@ void settings_init(void)
     // match the zero/default value (e.g. settings_set_last_ui_mode(0) when
     // NVS already holds 1) is wrongly treated as a no-op and never written.
     load_from_nvs(&s_pending);
+    {   /* T219 record: read here, never lazily - its readers run on cat_poll. */
+        uint32_t raw = 0;
+        if (nvs_get_u32(s_nvs, KEY_WSPR_DCLRST, &raw) == ESP_OK) s_wspr_dclrst = raw;
+    }
 
     // Spawn the debounced flush task. Low priority — IO, not real-time.
     /* 3072 -> 4608: measured 2026-09-06 with only 232 BYTES of headroom left
@@ -1067,6 +1171,7 @@ static void load_from_nvs(qmx_settings_t *out)
     out->spur_mode = 0;
     out->zoom_factor = DEF_ZOOM;
     out->colormap_idx = DEF_COLORMAP;
+    out->spectrum_h   = DEF_SPECTRUM_H;
     out->brightness_pct = DEF_BRIGHTNESS;
     out->last_ui_mode = DEF_LAST_MODE;
     out->last_unix_time = 0;
@@ -1248,6 +1353,11 @@ static void load_from_nvs(qmx_settings_t *out)
     out->wspr_dump_cycles = 0;        /* never dump unless asked */
     out->wspr_hop_mask = 0;           /* nothing ticked until the operator does */
     out->wspr_hop_en   = false;
+    out->ft8_hop_mask  = 0;           /* FT8 hopping off until bands are ticked */
+    out->ft8_hop_dwell_min = 2;       /* WSJT-X improved's period */
+    out->ft8_cq_parity = -1;          /* TXCQ ANY */
+    out->ft8_hop_cq_split = false;    /* ANY: the TXCQ setting for the whole stay */
+    out->wspr_hop_stay_cycles = 1;    /* one 2-min cycle per band, as before */
     /* LAUNCHED 2026-08-28: the WSPR page is in the swipe cycle by default.
      * It shipped dark behind a seven-tap unlock while the bug rate had not
      * flattened; that is over. Transmitting is still opt-in (wspr_tx_en). */
@@ -1317,6 +1427,7 @@ static void load_from_nvs(qmx_settings_t *out)
     nvs_get_u16(s_nvs, KEY_SB_LOWCUT, &out->sb_lowcut_hz);
     { uint32_t bits = 0; if (nvs_get_u32(s_nvs, KEY_ZOOM, &bits) == ESP_OK) memcpy(&out->zoom_factor, &bits, 4); }
     nvs_get_u8(s_nvs, KEY_COLORMAP, &out->colormap_idx);
+    nvs_get_u16(s_nvs, KEY_SPECTRUM_H, &out->spectrum_h);
     nvs_get_u8(s_nvs, KEY_BRIGHTNESS, &out->brightness_pct);
     nvs_get_u8(s_nvs, KEY_LAST_MODE, &out->last_ui_mode);
     nvs_get_u32(s_nvs, KEY_LAST_TIME, &out->last_unix_time);
@@ -1684,6 +1795,11 @@ static void load_from_nvs(qmx_settings_t *out)
     { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_WSPR_DUMP, &u8v) == ESP_OK) out->wspr_dump_cycles = u8v; }
     { uint16_t u16v; if (nvs_get_u16(s_nvs, KEY_WSPR_HOPM, &u16v) == ESP_OK) out->wspr_hop_mask = u16v; }
     { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_WSPR_HOPE, &u8v) == ESP_OK) out->wspr_hop_en = (u8v != 0); }
+    { uint16_t u16v; if (nvs_get_u16(s_nvs, KEY_FT8_HOPM, &u16v) == ESP_OK) out->ft8_hop_mask = u16v; }
+    { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_FT8_HOPDW, &u8v) == ESP_OK) out->ft8_hop_dwell_min = u8v; }
+    { int8_t i8v; if (nvs_get_i8(s_nvs, KEY_FT8_CQPAR, &i8v) == ESP_OK) out->ft8_cq_parity = (i8v == 0 || i8v == 1) ? i8v : -1; }
+    { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_FT8_HOPSPL, &u8v) == ESP_OK) out->ft8_hop_cq_split = (u8v != 0); }
+    { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_WSPR_HOPST, &u8v) == ESP_OK) out->wspr_hop_stay_cycles = (u8v >= 1 && u8v <= 30) ? u8v : 1; }
     { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_WSPR_EN,   &u8v) == ESP_OK) out->wspr_en   = (u8v != 0); }
     { uint8_t u8v; if (nvs_get_u8(s_nvs, KEY_WSPR_NET,  &u8v) == ESP_OK) out->wspr_net_en = (u8v != 0); }
     if (nvs_get_u8(s_nvs, KEY_FT8_OP_MODE, &u8v) == ESP_OK) out->ft8_op_mode = u8v;
@@ -1937,6 +2053,19 @@ void settings_set_colormap_idx(uint8_t idx)
     s_pending.colormap_idx = idx;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_COLORMAP);
+}
+
+void settings_set_spectrum_h(uint16_t px)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.spectrum_h == px) {
+        xSemaphoreGive(s_mutex);
+        return;
+    }
+    s_pending.spectrum_h = px;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_SPECTRUM_H);
 }
 
 void settings_set_brightness_pct(uint8_t pct)
@@ -2401,10 +2530,89 @@ void settings_set_ft8_filters(const ft8_filters_t *f)
     mark_dirty(DIRTY_FT8_FILT);
 }
 
+// Narrow accessor for the decode-row tap (ft8_screen_view.c row_activate),
+// on taskLVGL - same reason as settings_get_ft8_skip_tx1() below.
+bool settings_get_ft8_tap_auto_work(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.ft8_filters.tap_auto_work;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
 // Narrow accessor: ft8_qso_build_manual_reply() reads this on taskLVGL (it's
 // called directly from both ft8_screen_view.c's row touch handler and
 // ft8_pileup_modal.c's), where a full qmx_settings_t is the stack-overflow
 // class fixed elsewhere in this release.
+/* Narrow, for ft8_hop.c: it runs on httpd (/api/status) and taskLVGL (the
+ * Preset button, 1 Hz). A settings_load_all() there put a 4268 B
+ * qmx_settings_t on the stack and crashed httpd (Stack protection fault,
+ * bench1 2026-11-25, 7005d57a). */
+uint16_t settings_get_ft8_hop_mask(void)
+{
+    if (!FT8_HOP_ENABLED) return 0;   /* switched off for v2.1.2 - settings.h */
+    if (!s_ready) return 0;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t v = s_pending.ft8_hop_mask;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+uint8_t settings_get_ft8_hop_dwell_min(void)
+{
+    if (!s_ready) return 2;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint8_t v = s_pending.ft8_hop_dwell_min;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+bool settings_get_ft8_hop_cq_split(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.ft8_hop_cq_split;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+bool settings_get_ft8_auto_pileup(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.ft8_filters.auto_pileup;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+uint8_t settings_get_wspr_hop_stay_cycles(void)
+{
+    if (!s_ready) return 1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint8_t v = s_pending.wspr_hop_stay_cycles;
+    xSemaphoreGive(s_mutex);
+    return (v >= 1 && v <= 30) ? v : 1;
+}
+
+int settings_get_ft8_cq_parity(void)
+{
+    if (!s_ready) return -1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    int v = s_pending.ft8_cq_parity;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+bool settings_get_ft8_robot_en(void)
+{
+    if (!s_ready) return false;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool v = s_pending.ft8_filters.robot_en;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
 bool settings_get_ft8_skip_tx1(void)
 {
     if (!s_ready) return false;
@@ -2968,6 +3176,15 @@ float settings_get_ema_alpha(void)
     if (!s_ready) return DEF_EMA_ALPHA;
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     float v = s_pending.ema_alpha;
+    xSemaphoreGive(s_mutex);
+    return v;
+}
+
+uint16_t settings_get_spectrum_h(void)
+{
+    if (!s_ready) return DEF_SPECTRUM_H;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint16_t v = s_pending.spectrum_h;
     xSemaphoreGive(s_mutex);
     return v;
 }
@@ -3995,6 +4212,11 @@ void settings_set_tx_subnet_interlock(bool v)
     s_pending.tx_subnet_interlock = v;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_TXSUBNET);
+    /* Logged because a user who ticks this box and still transmits has to be
+     * answerable from the diag alone - see tx_subnet.c. The guard logs its
+     * decisions; this logs the moment the switch moved, which is the other
+     * half of the same question. */
+    ESP_LOGW(TAG, "TX interlock setting -> %s", v ? "ON" : "OFF");
 }
 
 // Narrow accessor: row_activate_ex() (ft8_screen_view.c) reads this on the
@@ -4394,6 +4616,10 @@ void settings_set_fd_section(const char *section)
     mark_dirty(DIRTY_FD_SECTION);
 }
 
+static void (*s_sim_off_cb)(void);
+
+void settings_on_sim_off(void (*cb)(void)) { s_sim_off_cb = cb; }
+
 void settings_set_sim_mode_en(bool v)
 {
     if (!s_ready) return;
@@ -4402,6 +4628,9 @@ void settings_set_sim_mode_en(bool v)
     s_pending.sim_mode_en = v;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_SIM_MODE);
+    /* AFTER the write: anything that re-arms from here on reads sim OFF and
+     * finds nothing phantom left to answer. */
+    if (!v && s_sim_off_cb) s_sim_off_cb();
 }
 
 void settings_set_wspr_dial_hz(uint32_t v)
@@ -4465,6 +4694,59 @@ void settings_set_wspr_hop_mask(uint16_t v)
     s_pending.wspr_hop_mask = v;
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_WSPR_HOPM);
+}
+
+void settings_set_ft8_hop_mask(uint16_t v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.ft8_hop_mask == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.ft8_hop_mask = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_FT8_HOPM);
+}
+
+void settings_set_ft8_hop_dwell_min(uint8_t v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.ft8_hop_dwell_min == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.ft8_hop_dwell_min = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_FT8_HOPDW);
+}
+
+void settings_set_ft8_hop_cq_split(bool v)
+{
+    if (!s_ready) return;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.ft8_hop_cq_split == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.ft8_hop_cq_split = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_FT8_HOPSPL);
+}
+
+void settings_set_wspr_hop_stay_cycles(uint8_t v)
+{
+    if (!s_ready) return;
+    if (v < 1) v = 1;
+    if (v > 30) v = 30;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.wspr_hop_stay_cycles == v) { xSemaphoreGive(s_mutex); return; }
+    s_pending.wspr_hop_stay_cycles = v;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_WSPR_HOPST);
+}
+
+void settings_set_ft8_cq_parity(int v)
+{
+    if (!s_ready) return;
+    int8_t p = (v == 0 || v == 1) ? (int8_t)v : -1;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_pending.ft8_cq_parity == p) { xSemaphoreGive(s_mutex); return; }
+    s_pending.ft8_cq_parity = p;
+    xSemaphoreGive(s_mutex);
+    mark_dirty(DIRTY_FT8_CQPAR);
 }
 
 void settings_set_wspr_hop_en(bool v)
@@ -4555,34 +4837,66 @@ void settings_set_wspr_pa_saved_x10(uint16_t v)
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     if (s_pending.wspr_pa_saved_x10 == v) { xSemaphoreGive(s_mutex); return; }
     s_pending.wspr_pa_saved_x10 = v;
+    urgent_kick_locked(URG_WSPR_PASAVE);
     xSemaphoreGive(s_mutex);
     mark_dirty(DIRTY_WSPR_PA);
+    if (s_flush_task) xTaskNotifyGive(s_flush_task);
 
-    /* ⛔ ALSO WRITE IMMEDIATELY, not just via the debounced flush task -
-     * same reasoning and same fix shape as settings_set_last_ui_mode()'s own
-     * comment: this value can be followed within the DEBOUNCE_MS (500 ms)
-     * window by a reset, and losing it there is not a cosmetic annoyance the
-     * way a wrong boot page is - it strands the radio at the reduced PA
-     * voltage with nothing left to remember what to restore it to.
+    /* ⛔ WRITTEN AT ONCE, not after the debounce: a reset inside the 500 ms
+     * DEBOUNCE_MS window strands the radio at the reduced PA voltage with
+     * nothing left to remember what to restore it to. Hardware-confirmed
+     * 2026-09-14: a 12.0 -> 6.0 V reduction was captured here, a firmware
+     * flash (a warm reset) landed inside the window, and NVS still held 0 on
+     * the next boot - the radio stayed at 6.0 V with no record.
      *
-     * Hardware-confirmed 2026-09-14: a WSPR reduction (12.0 -> 6.0 V) was
-     * captured in wspr_pa_saved_x10, and a firmware flash (a warm reset)
-     * landed inside that window before the debounced flush ever ran. NVS
-     * still held wspr_pa_saved_x10=0 on the next boot - the radio came back
-     * up still at 6.0 V with no record it had ever been anything else, and
-     * every later "already at target, leaving it alone" log line was
-     * correct-by-its-own-logic and permanently wrong for this radio.
+     * The write itself is flush_task's, woken above (see the "Urgent writes"
+     * block at the top of this file for why it is no longer done here: two
+     * callers run on the 4 KB cat_poll stack). A NON-zero value is the
+     * "remember before writing the radio" case, so wait for its commit: the
+     * window that 2026-09-14 hit goes from 500 ms to zero, not to "small".
+     * Zero (a clear) does not wait - a lost clear is re-done on the next link
+     * by wspr_pa_guard_reclaim_on_link(), which reads the radio first.
      *
-     * Left marked dirty above too, deliberately: DIRTY_WSPR_PA is shared
-     * with wspr_pa_reduce, and clearing it here (the way
-     * settings_set_last_ui_mode() clears its own dirty bit) could drop an
-     * unrelated pending write to THAT field. A redundant identical write
-     * from flush_task afterwards costs nothing. */
-    nvs_set_u16(s_nvs, KEY_WSPR_PASAVE, v);
-    esp_err_t err = nvs_commit(s_nvs);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_commit (wspr_pa_saved_x10) failed: 0x%x", err);
+     * Left marked dirty too: DIRTY_WSPR_PA is shared with wspr_pa_reduce, and
+     * a redundant identical write from the debounced flush costs nothing. */
+    if (v && !settings_urgent_sync(500)) {
+        ESP_LOGW(TAG, "wspr_pa_saved_x10=%u not yet committed after 500 ms", v);
     }
+}
+
+/* T219: the Max. PA voltage the radio had before WSPR's declared-power write
+ * (before_x10), and the value WSPR itself wrote last (ours_x10). Packed into
+ * one u32 so the pair commits atomically. 0/0 = nothing owed.
+ *
+ * Kept OUT of qmx_settings_t on purpose: it is radio state, not a preference,
+ * so it must not travel in a config export, an import or the debounced
+ * snapshot flush. Read once in settings_init(); written as an urgent write by
+ * flush_task (see "Urgent writes" at the top of this file) - its callers run
+ * on cat_poll, so neither the getter nor the setter may touch NVS itself.
+ * The caller that must not race the radio write (cat.c, before WSPR's first
+ * declared-power MM) calls settings_urgent_sync(). */
+bool settings_get_wspr_decl_restore(uint16_t *before_x10, uint16_t *ours_x10)
+{
+    if (!s_ready) { if (before_x10) *before_x10 = 0; if (ours_x10) *ours_x10 = 0; return false; }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    uint32_t v = s_wspr_dclrst;
+    xSemaphoreGive(s_mutex);
+    uint16_t b = (uint16_t)(v >> 16), o = (uint16_t)(v & 0xFFFFu);
+    if (before_x10) *before_x10 = b;
+    if (ours_x10)   *ours_x10   = o;
+    return b != 0;
+}
+
+void settings_set_wspr_decl_restore(uint16_t before_x10, uint16_t ours_x10)
+{
+    if (!s_ready) return;
+    uint32_t v = before_x10 ? (((uint32_t)before_x10 << 16) | ours_x10) : 0;
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_wspr_dclrst == v) { xSemaphoreGive(s_mutex); return; }
+    s_wspr_dclrst = v;
+    urgent_kick_locked(URG_WSPR_DCLRST);
+    xSemaphoreGive(s_mutex);
+    if (s_flush_task) xTaskNotifyGive(s_flush_task);
 }
 
 void settings_set_ft8_op_mode(uint8_t v)

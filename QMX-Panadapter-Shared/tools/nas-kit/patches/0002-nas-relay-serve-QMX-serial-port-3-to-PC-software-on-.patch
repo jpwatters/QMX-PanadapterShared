@@ -1,4 +1,4 @@
-From 5522afba319e518eb692621bded05e0634738e81 Mon Sep 17 00:00:00 2001
+From ee5b911ffef99b1088bf427e38bd68dce6150dd3 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 14:46:23 +0000
 Subject: [PATCH 02/54] nas-relay: serve QMX serial port 3 to PC software on

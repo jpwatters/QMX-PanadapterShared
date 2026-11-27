@@ -1,4 +1,4 @@
-From 5cf4459164af8efba9e7706b765fd997218db556 Mon Sep 17 00:00:00 2001
+From 15a806e3f679ac3068db7dc5fbff78ecd82c57cb Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 22 Nov 2026 00:01:30 +0000
 Subject: [PATCH 52/54] web: Power on the radio and Power off the radio in the
@@ -31,10 +31,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  5 files changed, 130 insertions(+), 14 deletions(-)
 
 diff --git a/README.md b/README.md
-index 3dcffc6f..68d03ea5 100644
+index 9f91aa64..697751a0 100644
 --- a/README.md
 +++ b/README.md
-@@ -60,6 +60,7 @@ The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-chec
+@@ -61,6 +61,7 @@ The NAS patches were last ported on 2026-11-26, to upstream v2.1.2 (compile-chec
  * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
  * Power on the radio in the drawer (under Radio source): asks the NAS relay to press the QMX's power button through its FTDI cable (Remote Power-ON). Built and compile-checked; the relay side tested against its fake radio; not yet tested with the cable.
  * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
@@ -43,10 +43,10 @@ index 3dcffc6f..68d03ea5 100644
  
  **On the relay**
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 9bd25c87..947261cb 100644
+index 55e7e476..0d7d0d8d 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -4410,6 +4410,54 @@ static esp_err_t cmd_handler(httpd_req_t *req)
+@@ -4446,6 +4446,54 @@ static esp_err_t cmd_handler(httpd_req_t *req)
          vTaskDelay(pdMS_TO_TICKS(150));
          ui_power_off_safely();
          return ESP_OK;
@@ -102,10 +102,10 @@ index 9bd25c87..947261cb 100644
          /* Dev action: write the next N captured windows to the SD card as WAV,
           * so the same audio can be run through real wsprd on a PC. That is the
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index 34e1b01b..5d1cbc0f 100644
+index 5c9196b9..260bd035 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -1777,6 +1777,8 @@
+@@ -1783,6 +1783,8 @@
          <a href="/ss.bmp" id="ss-link" target="_blank" title="Opens in a new tab straight away - quickest way to just look at the screen">Tab5 screenshot</a> <a href="#" id="ss-save" title="Saves a PNG file - slower, but the format forums and apps accept">(save PNG)</a>
          <a href="#" id="server-mode-link" title="Stop the Tab5 drawing its screen and running its speaker, and keep serving this page. Measured: it hands back about half of core 0 and a fifth of core 1. A touch on the Tab5 ends it.">Server mode: <span id="server-mode-state">off</span></a>
          <a href="#" id="reboot-link" title="Restart the Tab5 now. Receiving stops for about ten seconds. Until now this was only reachable after a firmware update.">Reboot the Tab5</a>
@@ -114,7 +114,7 @@ index 34e1b01b..5d1cbc0f 100644
          <a href="#" id="poweroff-link" class="danger" title="Shut the Tab5 down. The radio is put back into receive FIRST, so a transmission in progress cannot be left keyed. It does NOT come back on its own - someone has to press the button, or cut and restore its power.">Power off the Tab5</a>
          <a href="#" id="reset-settings-link" class="danger" title="Reset all app settings + memory channels to defaults (keeps the QSO log and WiFi). Clears a stuck stored value without an esptool full-erase. Reboots.">Reset settings</a>
          <a href="#" id="reset-network-link" class="danger" title="Clear stored WiFi/network state (keeps app settings). Clears a stuck WiFi/link state a normal reflash leaves in place. Reboots.">Reset WiFi</a>
-@@ -3881,6 +3883,50 @@ function adifImportMessage(j) {
+@@ -3887,6 +3889,50 @@ function adifImportMessage(j) {
        }
      }); }
  
@@ -166,10 +166,10 @@ index 34e1b01b..5d1cbc0f 100644
      "Reset ALL app settings and memory channels to defaults?\n\n" +
      "• KEEPS your QSO log (ADIF) and WiFi.\n" +
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index fd31f053..d2344ad4 100644
+index 4a65802f..c2ed2388 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -21884,19 +21884,14 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+@@ -22445,19 +22445,14 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
      lv_obj_t *lbl = lv_obj_get_child(btn, 0);
      static bool armed = false;
  
@@ -194,7 +194,7 @@ index fd31f053..d2344ad4 100644
          return;
      }
      if (!armed) {
-@@ -21910,6 +21905,23 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+@@ -22471,6 +22466,23 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
      lv_obj_set_style_bg_color(btn, lv_color_hex(0x8A3030), 0);
  
      ESP_LOGW(TAG, "operator asked to power the radio off from the drawer");
@@ -218,7 +218,7 @@ index fd31f053..d2344ad4 100644
      ft8_robot_stand_down(NULL);
      ft8_tx_disarm();
      ft8_tx_request_abort();
-@@ -21919,15 +21931,16 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
+@@ -22480,15 +22492,16 @@ static void drawer_radiopwr_btn_cb(lv_event_t *e)
      vTaskDelay(pdMS_TO_TICKS(120));
      cat_send_raw_cmd("PS0;");
  
@@ -240,10 +240,10 @@ index fd31f053..d2344ad4 100644
  
  static void drawer_usedhcp_btn_cb(lv_event_t *e)
 diff --git a/main/ui/ui.h b/main/ui/ui.h
-index 038b2cf6..573680a3 100644
+index 7626a29d..26bb8a76 100644
 --- a/main/ui/ui.h
 +++ b/main/ui/ui.h
-@@ -457,6 +457,14 @@ void ui_drawer_relayout(void);
+@@ -459,6 +459,14 @@ void ui_drawer_relayout(void);
   * not return. */
  void ui_power_off_safely(void);
  

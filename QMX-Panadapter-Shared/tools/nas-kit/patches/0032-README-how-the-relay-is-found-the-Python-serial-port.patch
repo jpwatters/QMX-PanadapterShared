@@ -1,4 +1,4 @@
-From c6759ef9864397b2b94014ff4117e820d17a5a9a Mon Sep 17 00:00:00 2001
+From 9a5bc7f3138adc1d393c601a897cc759b83cde01 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 10:00:00 -0500
 Subject: [PATCH 32/54] README: how the relay is found, the Python serial port,
@@ -18,7 +18,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 25 insertions(+)
 
 diff --git a/README.md b/README.md
-index c4fc6b43..26f0c07f 100644
+index ae9050fb..ca557da9 100644
 --- a/README.md
 +++ b/README.md
 @@ -75,6 +75,31 @@ Flash with nothing plugged into the Tab5’s USB-A port, then power it off and o

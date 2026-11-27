@@ -362,6 +362,8 @@ typedef struct {
     unsigned pi_partial, pi_no_array, pi_stale, pi_overlay, pi_wide;
     unsigned pi_band_mean_px;
     unsigned pi_cols_mean_px;   /* mean WIDTH of the changed region */
+    unsigned pi_strips;         /* wide pushes repainted as per-strip bands */
+    unsigned pi_strips_nobuf;   /* strips would fit, LVGL area buffer would not */
     /* Carpet: rows written into the buffer, and how many of those actually
      * moved the view. rows/shifts should equal the shift batch. */
     unsigned wf_shifts, wf_rows_written;
@@ -731,6 +733,11 @@ void ui_kbd_set_buttons(lv_obj_t *save_btn, lv_obj_t *cancel_btn);
 // is the visible one. Register once at build time; deletion deregisters.
 void ui_kbd_add_scrollable(lv_obj_t *obj);
 
+/* An open dropdown's list: every option when it fits on screen, otherwise cut
+ * to the screen and scrollable (finger and mouse wheel). Call from the
+ * dropdown's LV_EVENT_CLICKED handler, after any font change. */
+void ui_dropdown_list_unfold(lv_obj_t *list);
+
 // User-defined keyboard shortcuts (#233). Bindings store an ACTION ID, so the
 // numbering in ui.c's k_kbd_actions[] is a persisted contract: append freely,
 // never renumber. ui_kbd_bindings_set() validates and persists in one step.
@@ -767,3 +774,17 @@ void ui_drawer_map_masks(uint64_t *basic, uint64_t *adv);
  * or reboot your QMX/+" prompt stays hidden: obeying it mid-boot starves
  * internal RAM for the whole session. */
 void ui_notify_boot_complete(void);
+
+/* ---- T216: the spectrum/waterfall split (Robert VE7ZN) -------------------
+ * Long-press the frequency scale between the two panes, then drag. Shared by
+ * the panadapter, CW and RTTY pages because all three show the SAME spectrum
+ * and waterfall objects - there is one of each, hidden and slid per mode.
+ * ui_set_spectrum_h() clamps to 100..400 px, persists, and must run on the
+ * LVGL thread.
+ *
+ * ⚠ A config IMPORT (qmx-config.txt "spectrum_h") writes the setting but does
+ * NOT move the panes - config_io runs off the LVGL thread and nothing here
+ * polls. The imported split appears at the next boot. There is no web control
+ * for the same reason; the gesture is the only live path. */
+void ui_set_spectrum_h(int h);
+int  ui_get_spectrum_h(void);

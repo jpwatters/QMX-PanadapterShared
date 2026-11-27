@@ -1,4 +1,4 @@
-From 1e9b119147f9fa0caf47d01e3ba66018b308bad5 Mon Sep 17 00:00:00 2001
+From 65538568cd90e48ff1fcb3da315f7f1ef625912e Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 17:00:00 -0500
 Subject: [PATCH 39/54] cat: notice when the radio refuses a frequency, and put
@@ -32,11 +32,11 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 41 insertions(+)
 
 diff --git a/main/cat/cat.c b/main/cat/cat.c
-index a81a3424..13713d9b 100644
+index 5cea3f90..64c28e1c 100644
 --- a/main/cat/cat.c
 +++ b/main/cat/cat.c
-@@ -181,6 +181,11 @@ static uint64_t s_diag_poll_hb_us = 0;  // last diag poll-heartbeat timestamp
- static uint64_t s_wspr_pa_check_us = 0; // last non-blocking WSPR PA-guard check
+@@ -183,6 +183,11 @@ static uint64_t s_wspr_decl_check_us = 0; // last T219 pre-WSPR voltage restore
+ #define CAT_POLL_STACK 4096         // internal RAM; high-water logged in poll_task
  
  static uint32_t s_last_freq_hz = 0;
 +/* A frequency write waiting for the radio to confirm it (see the FA reply
@@ -47,7 +47,7 @@ index a81a3424..13713d9b 100644
  static char s_last_mode_digit = 0;  // Phase 5.10: cached Kenwood mode digit
  
  /* ⭐ T129 (Bryan N0LUF): IS THE RADIO TRANSMITTING, WHOEVER KEYED IT.
-@@ -1341,6 +1346,36 @@ static void process_cat_message(const char *msg, size_t len)
+@@ -1381,6 +1386,36 @@ static void process_cat_message(const char *msg, size_t len)
              }
              freq_hz = freq_hz * 10 + (d - '0');
          }
@@ -84,7 +84,7 @@ index a81a3424..13713d9b 100644
          if (freq_hz != s_last_freq_hz) {
              s_last_freq_hz = freq_hz;
              ESP_LOGI(TAG, "Freq = %lu Hz (%lu.%03lu MHz)",
-@@ -4139,6 +4174,12 @@ static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller)
+@@ -4227,6 +4262,12 @@ static esp_err_t set_frequency_from(uint32_t freq_hz, const void *caller)
          return err;
      }
      ESP_LOGI(TAG, "Sent: %s (target %lu Hz) from %p", cmd, (unsigned long)freq_hz, caller);

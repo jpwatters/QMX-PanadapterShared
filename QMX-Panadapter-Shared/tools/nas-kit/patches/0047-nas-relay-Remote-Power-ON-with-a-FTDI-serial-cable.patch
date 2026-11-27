@@ -1,4 +1,4 @@
-From ebb4e41fe8bcd9405fbe554255ace811cd6e9829 Mon Sep 17 00:00:00 2001
+From 38a7881c9c24a1ff5b517b624e134e10cbd53065 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 21 Nov 2026 18:05:36 +0000
 Subject: [PATCH 47/54] nas-relay: Remote Power-ON with a FTDI serial cable
@@ -20346,10 +20346,10 @@ z$1i4I%lYwialPBmx5wT2FrA10{7F`~i`@nHjO#`7PqMk&oi4a1Z{ELJU;jP-=lP>-
 Z_RsM&KAiq}BuN>@rT!BP-q%Zi{s(qS$D{xN
 
 diff --git a/README.md b/README.md
-index 91c50e82..05971ea2 100644
+index d9ea7bc1..170486eb 100644
 --- a/README.md
 +++ b/README.md
-@@ -37,8 +37,9 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+@@ -38,8 +38,9 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
  5. QMX Bridge, a native Mac app: Discover, Probe, the serial port and the TCI server in one window, with a virtual USB serial port driver
  6. M5Stack Tab5 discovery with the web browser at http://qmx.local
  7. One transmitter at a time: the Tab5 shows “TX locked: Another Device has the transmitter” while the Mac has it
@@ -20359,9 +20359,9 @@ index 91c50e82..05971ea2 100644
 +9. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +10. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.0; not yet flashed). The last build marked tested was v2.0.2-NAS (2026-11-18).
+ The NAS patches were last ported on 2026-11-26, to upstream v2.1.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.2; not yet flashed). The last build marked tested was v2.0.2-NAS (2026-11-18).
  
-@@ -95,6 +96,31 @@ The QMX firmware version, the radio settings the Tab5 needs, the power-up order
+@@ -96,6 +97,31 @@ The QMX firmware version, the radio settings the Tab5 needs, the power-up order
  5. Optional: calibrate power for WSPR. If you use WSPR with Declared power, run Calibrate Power on a dummy load for each band you use.
  6. If you used the Tab5’s Radio menus to change any of these, close the menu session afterwards. The Tab5 then turns IQ mode back on and returns the radio to the frequency and mode you were on.
  

@@ -61,6 +61,7 @@
 #include "ui/power_cal_modal.h"  // power_cal_list_watts - the SAME calibrated
                                  // ladder the Tab5 slider walks (out_power)
 #include "adif/adif_log.h"    // adif_log_count / adif_log_file_path / adif_log_clear
+#include "ft8_hop.h"          // FT8/FT4 band hopping: band names, state
 #include "adif/adif_check.h"  // #263 "check my log" - completeness pass
 #include "util/dma_owners.h"
 #include "util/task_stacks.h"   // on-demand stack headroom (#329)
@@ -267,6 +268,25 @@ static void add_ft8_tx_status(cJSON *root)
     // not just set it - a toggle that cannot read the current value is a second
     // source of truth waiting to drift from the Tab5's own button.
     cJSON_AddNumberToObject(f, "cq_parity", ft8_screen_view_get_cq_parity());
+
+    /* FT8/FT4 band hopping - the browser's band line, same source as the
+     * Tab5's. Present only while two or more of the radio's bands are ticked. */
+    {
+        ft8_hop_state_t hs;
+        ft8_hop_get_state(&hs);
+        if (hs.hopping) {
+            cJSON *h = cJSON_AddObjectToObject(f, "hop");
+            if (h) {
+                cJSON_AddStringToObject(h, "bands", hs.bands);
+                if (hs.blocked) cJSON_AddStringToObject(h, "blocked", hs.blocked);
+                if (hs.next_band[0]) cJSON_AddStringToObject(h, "next", hs.next_band);
+                cJSON_AddNumberToObject(h, "secs", hs.secs_to_hop);
+                /* The CQ split's period, while a CQ run is calling. */
+                if (hs.cq_period >= 0 && ft8_qso_get_state() == FT8_QSO_CQ)
+                    cJSON_AddStringToObject(h, "cq", hs.cq_period == 0 ? "EVEN" : "ODD");
+            }
+        }
+    }
 
     /* ⛔ THE SAME WARNING THE TAB5 TOASTS (Randy N4OPI, 2026-10-27). The
      * "no decodes for over N min" notice reached the glass only, so a
@@ -554,7 +574,11 @@ static void add_ft8_tx_status(cJSON *root)
         st = "done";
         char target[FT8_CALL_MAX_LEN];
         ft8_qso_get_target(target, sizeof(target));
-        snprintf(b, sizeof(b), "QSO %s: complete!", target);
+        // Held for their report (ft8_rcvd_hold.h) is not "complete".
+        if (ft8_qso_done_log_held())
+            snprintf(b, sizeof(b), "QSO %s: done - no report yet, log held", target);
+        else
+            snprintf(b, sizeof(b), "QSO %s: complete!", target);
     } else if (qso_st == FT8_QSO_TIMEOUT) {
         st = "timeout";
         char target[FT8_CALL_MAX_LEN];
@@ -1962,6 +1986,18 @@ static esp_err_t cmd_handler(httpd_req_t *req)
              * spot could send the RX "far outside the band plan" from the
              * browser (operator, 2026-11-09). */
             uint32_t hz = ui_cw_tune_clamp_hz((uint32_t)argv);
+            /* "jump":true - the browser's SPOT PICK, and only that. The Tab5's
+             * own spot tap calls ui_note_frequency_jump() before it tunes
+             * (spots_lane.c tune_to_spot), so the still display re-frames on
+             * the picked station. This endpoint never did: the browser's pick
+             * arrived as ordinary tuning, the still display PAGED instead, and
+             * the VFO landed at the OPPOSITE edge of the new view (operator,
+             * 2026-11-23, web UI edge counter; the Tab5 screen was right).
+             * Before the tune - the flag is consumed by the update it causes. */
+            {
+                const cJSON *jj = cJSON_GetObjectItem(root, "jump");
+                if (cJSON_IsTrue(jj)) ui_note_frequency_jump();
+            }
             /* FORCED, because every caller of this action is a COMMIT.
              *
              * It used to be the rate-limited cat_set_frequency(), whose return
@@ -7482,6 +7518,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(f, "cq_show_others",     c.ft8_filters.cq_show_others);
     cJSON_AddBoolToObject(f, "hide_worked_before", c.ft8_filters.hide_worked_before);
     cJSON_AddBoolToObject(f, "robot_skip_directed_cq", c.ft8_filters.robot_skip_directed_cq);
+    cJSON_AddBoolToObject(f, "tap_auto_work",      c.ft8_filters.tap_auto_work);
     cJSON_AddBoolToObject(f, "skip_tx1",           c.ft8_filters.skip_tx1);
     cJSON_AddBoolToObject(f, "auto_pileup",        c.ft8_filters.auto_pileup);
     cJSON_AddBoolToObject(f, "cq_manual_pick",     c.ft8_filters.cq_manual_pick);
@@ -7687,6 +7724,28 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
         }
         cJSON_AddStringToObject(root, "wspr_hop_bands", hops);
     }
+    /* FT8/FT4 band hopping: band names, same rule as wspr_hop_bands above.
+     * Not sent while FT8_HOP_ENABLED is 0 (settings.h): the page hides a row
+     * whose value is absent, so the three hop rows disappear with it. */
+    if (FT8_HOP_ENABLED) {
+        char hops[64]; int hn = 0; hops[0] = 0;
+        for (int i = 0; i < ft8_hop_band_count(); i++) {
+            if (!(c.ft8_hop_mask & (1u << i))) continue;
+            hn += snprintf(hops + hn, sizeof(hops) - hn, "%s%s", hn ? "," : "",
+                           ft8_hop_band_name(i));
+            if (hn >= (int)sizeof(hops)) break;
+        }
+        cJSON_AddStringToObject(root, "ft8_hop_bands", hops);
+    }
+    /* Operator 2026-11-26: the stay per band and the TXCQ period sit with the
+     * hop bands. Unknown stay values read as 2, as ft8_hop.c does. */
+    if (FT8_HOP_ENABLED)
+        cJSON_AddNumberToObject(root, "ft8_hop_minutes",
+            ft8_hop_dwell_valid(c.ft8_hop_dwell_min) ? c.ft8_hop_dwell_min : 2);
+    cJSON_AddNumberToObject(root, "ft8_cq_period", c.ft8_cq_parity);
+    if (FT8_HOP_ENABLED)
+        cJSON_AddBoolToObject(root, "ft8_hop_cq_split", c.ft8_hop_cq_split);
+    cJSON_AddNumberToObject(root, "wspr_hop_minutes", 2 * (c.wspr_hop_stay_cycles ? c.wspr_hop_stay_cycles : 1));
     // ARRL Field Day (#210, Randy N4OPI wanted the Filter modal reachable from the
     // browser). Everything else in that modal was already here; this was the gap.
     cJSON_AddBoolToObject(root,   "field_day_en", c.field_day_en);
@@ -8175,11 +8234,19 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         const uint32_t dial = (uint32_t)it->valuedouble;
         const bool changed = (dial != settings_get_wspr_dial_hz());
         settings_set_wspr_dial_hz(dial);
-        if (changed && dial) {
+        /* ⛔ ONLY WHILE THE WSPR RECEIVER RUNS (operator, 2026-11-26; the sim
+         * test retuned the radio with the FT8 page open). The same rule as the
+         * WSPR hop, which had this exact fault (Dirk DK7CVD, 2026-09-10:
+         * WSPR frequencies set during FT8). Otherwise the dial is only stored;
+         * the WSPR page's own dial push applies it when the page is entered. */
+        if (changed && dial && wspr_rx_running()) {
             wspr_rx_wf_floor_reset();      /* the new band has its own noise floor */
             cat_set_frequency_forced(dial);
             ui_update_frequency(dial);
             ESP_LOGW(TAG, "WSPR dial set to %lu Hz from the web - radio retuned",
+                     (unsigned long)dial);
+        } else if (changed && dial) {
+            ESP_LOGI(TAG, "WSPR dial set to %lu Hz from the web - stored; WSPR is not running, radio not retuned",
                      (unsigned long)dial);
         }
     }
@@ -8247,6 +8314,38 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         settings_set_wspr_hop_mask(mask);
         settings_set_wspr_hop_en(__builtin_popcount(mask) > 1);
     }
+    /* "20,40,15" -> FT8 hop mask. Same parsing and the same radio check as
+       wspr_hop_bands: a band the radio does not have is ignored, not set. */
+    if (cJSON_IsString(it = cJSON_GetObjectItem(root, "ft8_hop_bands"))) {
+        const char *txt = cJSON_GetStringValue(it);
+        uint16_t mask = 0;
+        char tmp[96];
+        snprintf(tmp, sizeof(tmp), "%s", txt ? txt : "");
+        for (char *tok = strtok(tmp, ","); tok; tok = strtok(NULL, ",")) {
+            while (*tok == ' ') tok++;
+            char *e = tok + strlen(tok);
+            while (e > tok && (e[-1] == ' ' || e[-1] == 'm' || e[-1] == 'M')) *--e = 0;
+            for (int i = 0; i < ft8_hop_band_count(); i++)
+                if (strcasecmp(tok, ft8_hop_band_name(i)) == 0) {
+                    if (cat_radio_has_band(ft8_hop_band_name(i))) mask |= (uint16_t)(1u << i);
+                    break;
+                }
+        }
+        settings_set_ft8_hop_mask(mask);
+    }
+    if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "ft8_hop_minutes"))
+        && ft8_hop_dwell_valid(it->valueint))
+        settings_set_ft8_hop_dwell_min((uint8_t)it->valueint);
+    /* Through the page's setter, not settings_ directly: it also repaints the
+     * Tab5's TXCQ button. */
+    if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "ft8_cq_period")))
+        ft8_screen_view_set_cq_parity(it->valueint);
+    if (cJSON_IsBool(it = cJSON_GetObjectItem(root, "ft8_hop_cq_split")))
+        settings_set_ft8_hop_cq_split(cJSON_IsTrue(it));
+    /* WSPR stay in minutes, even, 2..60; stored as 2-minute cycles. */
+    if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "wspr_hop_minutes"))
+        && it->valueint >= 2 && it->valueint <= 60 && (it->valueint % 2) == 0)
+        settings_set_wspr_hop_stay_cycles((uint8_t)(it->valueint / 2));
     if (cJSON_IsNumber(it = cJSON_GetObjectItem(root, "wspr_tx_dbm"))) {
         int v = it->valueint;
         /* Clamped to 0..37, which is what BOTH dropdowns can display - not
@@ -8328,6 +8427,7 @@ static esp_err_t settings_post_handler(httpd_req_t *req)
         BOOLF("cq_show_others",     cq_show_others);
         BOOLF("hide_worked_before", hide_worked_before);
         BOOLF("robot_skip_directed_cq", robot_skip_directed_cq);
+        BOOLF("tap_auto_work",      tap_auto_work);
         BOOLF("skip_tx1",           skip_tx1);
         BOOLF("auto_pileup",        auto_pileup);
         BOOLF("cq_manual_pick",     cq_manual_pick);
@@ -8967,10 +9067,16 @@ static esp_err_t psk_rx_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     if (!root) { heap_caps_free(rep); return httpd_resp_send_500(req); }
-    qmx_settings_t qs;
-    settings_load_all(&qs);
-    cJSON_AddBoolToObject(root,   "enabled",   qs.psk_rx_en);
+    /* Narrow getters, not a qmx_settings_t: 4268 B on the httpd stack is the
+     * class that crashed httpd in a1fee563. */
+    cJSON_AddBoolToObject(root,   "enabled",   settings_get_psk_rx_en());
     cJSON_AddNumberToObject(root, "age_s",     psk_rx_age_s());
+    {
+        const char *held = psk_rx_hold_reason();
+        if (held) cJSON_AddStringToObject(root, "held", held);
+        int fs = psk_rx_last_fail_status();
+        if (fs) cJSON_AddNumberToObject(root, "fail_status", fs);
+    }
     cJSON_AddNumberToObject(root, "receivers", psk_rx_unique_receivers());
     cJSON_AddNumberToObject(root, "max_km",    psk_rx_max_distance_km());
     // Randy N4OPI: "Who Is Hearing Me: Distance is shown in km when it is
@@ -8980,7 +9086,7 @@ static esp_err_t psk_rx_handler(httpd_req_t *req)
     // because this endpoint never had it. Sent rather than converted here so the
     // raw km stay authoritative and the browser does one conversion, exactly as
     // the decode list already does.
-    cJSON_AddBoolToObject(root,   "miles",     qs.distance_in_miles);
+    cJSON_AddBoolToObject(root,   "miles",     settings_get_distance_in_miles());
     // The set may be the part that fit rather than the whole answer - see
     // psk_rx_is_truncated(). The browser must be able to say so, because a
     // partial list and a quiet band look identical on screen.
@@ -8989,6 +9095,9 @@ static esp_err_t psk_rx_handler(httpd_req_t *req)
     // "I'm not sure how long the history window is" was a fair question to be
     // left with (Randy N4OPI).
     cJSON_AddNumberToObject(root, "window_h",  PSK_RX_WINDOW_S / 3600);
+    // The collector serves only about the last hour, so the device builds the
+    // day itself; this is where its record becomes complete (0 = not yet).
+    cJSON_AddNumberToObject(root, "covered_from", (double)psk_rx_covered_from());
 
     cJSON *arr = cJSON_AddArrayToObject(root, "reports");
     for (int i = 0; i < n && arr; i++) {
@@ -9353,7 +9462,12 @@ static esp_err_t decodes_handler(httpd_req_t *req)
     if (!snap) return httpd_resp_send_500(req);
 
     int n = 0;
-    ft8_screen_get_all(snap, FT8_CALL_TABLE_SIZE, &n);
+    /* ALL bands: after a band hop the previous band's rows are kept until they
+     * age out, and the browser shows them under a separator like the Tab5.
+     * Each row says its band ("band") and whether it is the radio's band now
+     * ("ob" = other band). A reply to an "ob" row is refused by the reply path,
+     * which reads ft8_screen_get_all() - current band only. */
+    ft8_screen_get_all_bands(snap, FT8_CALL_TABLE_SIZE, &n);
 
     qmx_settings_t qs;
     settings_load_all(&qs);
@@ -9419,9 +9533,16 @@ static esp_err_t decodes_handler(httpd_req_t *req)
     ft8_qso_get_working_target(working, sizeof(working));
     // Hoisted: the worked-before test is band-scoped, and the band comes from the
     // dial - not from r->last_freq, which is the station's AUDIO tone.
-    const uint32_t dial_hz = cat_get_frequency();
+    const uint32_t cur_dial_hz = cat_get_frequency();
+    /* Two passes over the sorted rows: the current band first, then every
+     * other band - the order the separator needs. */
+    for (int pass = 0; pass < 2; pass++)
     for (int i = 0; i < n; i++) {
         const ft8_call_t *r = &snap[i];
+        const bool on_cur = ft8_screen_row_on_current_band(r);
+        if (on_cur != (pass == 0)) continue;
+        /* The band the row was HEARD on, for worked-before. */
+        const uint32_t dial_hz = r->dial_hz ? r->dial_hz : cur_dial_hz;
         bool is_partner = working[0] && strcasecmp(r->call, working) == 0;
         /* And anyone talking to US - the same exemption the Tab5 list makes,
          * swept here at the same time because the two lists filter separately
@@ -9489,6 +9610,11 @@ static esp_err_t decodes_handler(httpd_req_t *req)
         // worked-before filter uses, so the browser cannot disagree with it.
         cJSON_AddBoolToObject(o, "wk",  dial_hz ? adif_log_contains_call_on_band(r->call, dial_hz) : false);
         cJSON_AddBoolToObject(o, "pin", pin[0] && strcmp(r->call, pin) == 0);
+        {
+            const char *bn = adif_log_band_for_freq(dial_hz);
+            if (bn[0]) cJSON_AddStringToObject(o, "band", bn);
+            if (!on_cur) cJSON_AddBoolToObject(o, "ob", true);
+        }
         cJSON_AddItemToArray(arr, o);
     }
     heap_caps_free(snap);

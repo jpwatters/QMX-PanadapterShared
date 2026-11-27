@@ -1,4 +1,4 @@
-From 26b9910d3861e69965766f6d2b11f10f297aad46 Mon Sep 17 00:00:00 2001
+From c5adc919401a617b94a4968544966598443d0cab Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 08:16:58 -0600
 Subject: [PATCH 44/54] patches: sdio recovery re-applies the other sdio

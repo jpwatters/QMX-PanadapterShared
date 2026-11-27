@@ -1,4 +1,4 @@
-From 3b539b8ec70fbb3c58a55dd1e7745dc48064700f Mon Sep 17 00:00:00 2001
+From 13a947e12d59475240c9c0c57f3b4a482ed5b320 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sat, 21 Nov 2026 20:54:36 +0000
 Subject: [PATCH 51/54] README: setup picture marks the opto board's wires on
@@ -17,12 +17,12 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  2 files changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 111f7f6c..3dcffc6f 100644
+index 0646d648..9f91aa64 100644
 --- a/README.md
 +++ b/README.md
-@@ -27,7 +27,7 @@ Each new upstream release can stop the patches applying: new settings take the s
- | v2.0.2 (2026-11-18) | Upstream took bits 161 (RTTY contest) and 162 (TX subnet interlock); the README’s licence section, where the NAS appendix follows, changed; the web radio’s MP3 decoder was replaced | Relay setting bit 163; the appendix kept after upstream’s new licence text; nothing to carry for the MP3 decoder |
+@@ -28,7 +28,7 @@ Each new upstream release can stop the patches applying: new settings take the s
  | v2.1.0 (2026-11-22) | No conflicting change, but the patches added on the Mac since v2.0.2 could not be merged by the kit, which had no matching base to merge from | Series rebased onto v2.1.0; the "TX locked" refusals use upstream’s new red alert toast |
+ | v2.1.2 (2026-11-26) | Bits 163-168 (FT8/FT4 band hopping and spectrum height); drawer section 57 (band hopping); the PSK reporter and FT8 key-down checks changed next to NAS lines | Relay setting bit 169; Radio source section 58, Power off 59, Power on 60; both checks keep upstream’s new code and accept Ethernet or Wi-Fi |
  
 -<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, with an optional PC817 opto board on the QMX+ power-on pins driven from the NAS by an FTDI TTL-232R-5V cable; the NAS is wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 +<p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, with an optional PC817 opto board on the QMX+ power-on pins driven from the NAS by an FTDI TTL-232R-5V cable (its red wire goes to the ungrounded side of the VOL switch, its black wire to QMX ground); the NAS is wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>

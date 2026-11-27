@@ -1,4 +1,4 @@
-From 6f0cd2df5ff2d4a9e035cf76a1fbd0a1769ed75a Mon Sep 17 00:00:00 2001
+From 834d60f96ece4c8f1c7cc38bf37afc26d41cfb5f Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Thu, 8 Oct 2026 15:41:53 +0000
 Subject: [PATCH 09/54] network radio: Find NAS - the Tab5 asks the network for
@@ -124,10 +124,10 @@ index 2dfd794e..66a7a9bc 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 70378b59..97eac2cd 100644
+index d6abc43c..5d523905 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -21330,6 +21330,67 @@ static lv_obj_t *s_radiosrc_state;
+@@ -21891,6 +21891,67 @@ static lv_obj_t *s_radiosrc_state;
  static lv_obj_t *s_radiosrc_kb;
  static uint16_t  s_radiosrc_port = RADIO_RELAY_DEFAULT_PORT;
  
@@ -195,7 +195,7 @@ index 70378b59..97eac2cd 100644
  static void radiosrc_label_timer_cb(lv_timer_t *t)
  {
      (void)t;
-@@ -21490,11 +21551,25 @@ static void radiosrc_modal_build(void)
+@@ -22051,11 +22112,25 @@ static void radiosrc_modal_build(void)
      lv_textarea_set_one_line(s_radiosrc_ta, true);
      lv_textarea_set_max_length(s_radiosrc_ta, RADIO_RELAY_HOST_LEN - 1);
      lv_textarea_set_placeholder_text(s_radiosrc_ta, "e.g. 192.168.1.20");

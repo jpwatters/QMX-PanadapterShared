@@ -1,4 +1,4 @@
-From b0d9a39da877d2df8c0ad6bb12e5c37bc58c4cf5 Mon Sep 17 00:00:00 2001
+From e49aacbd93f40bd5e729d18acf0b0d2dd2b553d9 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sat, 21 Nov 2026 19:35:15 +0000
 Subject: [PATCH 50/54] Tab5 + relay: "Power on the radio" in the drawer
@@ -33,10 +33,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  6 files changed, 201 insertions(+), 8 deletions(-)
 
 diff --git a/README.md b/README.md
-index 6e076da3..111f7f6c 100644
+index e56bd0b8..0646d648 100644
 --- a/README.md
 +++ b/README.md
-@@ -58,6 +58,7 @@ The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-chec
+@@ -59,6 +59,7 @@ The NAS patches were last ported on 2026-11-26, to upstream v2.1.2 (compile-chec
  * FT8/FT4 transmit timed by the relay: the Tab5 hands each burst to the relay in one message, and the relay sends every tone to the radio on its own clock, so Wi-Fi delays can't shift a symbol. Tested: 10 of 10 FT8 bursts with every tone within 2 ms of schedule.
  * 10-burst test on the web page (http://qmx.local/?test): ten CQs in a row for timing tests, then the CQ settings are restored.
  * TX locked: while a TCI program on the Mac has the transmitter, the Tab5 shows “TX locked: Another Device has the transmitter” on its FT8 screen, status line and web page, and refuses FT8/FT4, WSPR, Tune and power calibration instead of keying a radio that will not key. Bench-tested with the relay’s fake radio.
@@ -44,7 +44,7 @@ index 6e076da3..111f7f6c 100644
  * Power off the radio in the drawer (Advanced, under Radio source): two taps send PS0; to the QMX after TA0; and RX;, on USB or over the NAS (where the relay needs its allow-ps0 flag file). Refused while another device has the transmitter. Built and compile-checked; not yet tested on the Tab5.
  * Upstream’s transmit guards apply over the network too: the band guard is checked before every network burst, and upstream’s filter for CAT commands from outside the firmware works with the radio on the NAS as well as on USB.
  
-@@ -115,7 +116,8 @@ Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com
+@@ -116,7 +117,8 @@ Parts: [USB to TTL Serial 5V Adapter Cable, FTDI FT232RL](https://www.amazon.com
  Check on the QMX schematic which pin of the VOL switch is ground before wiring.
  
  * PS1; from PC software on port 3 (TCP 7356): while the radio is off, the relay keeps the client connected, answers PS; with PS0;, and answers PS1; with PS1; while it holds the button. When the radio's USB device comes back, port 3 reopens and everything passes through as before. A second PS1; within 20 s doesn't press again, so it can't switch a booting radio back off.
@@ -145,31 +145,31 @@ index 90cdd46f..b5ba3223 100644
   * Over the network every tone change used to cross WiFi on its own, 160 ms
   * apart, and a lost packet or a stalled WiFi link (2026-10-14: 1.1-1.5 s)
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 06666f13..fd31f053 100644
+index 3fdc6a5d..4a65802f 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -3868,7 +3868,7 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
-  * its own group and is visible everywhere. */
+@@ -3907,7 +3907,7 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  #define DRAWER_SEC_WEBRADIO   54
  #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
--#define N_DRAWER_SECTIONS     59   /* ids 0..58; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR */
-+#define N_DRAWER_SECTIONS     60   /* ids 0..59; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC, 58 RADIOPWR, 59 RADIOON */
+ #define DRAWER_SEC_FT8HOP     57  // FT8/FT4 receive band hopping (Mark N8MH)
+-#define N_DRAWER_SECTIONS     60   /* ids 0..59; 24 retired (no section built), 57 is FT8HOP, 58 RADIOSRC, 59 RADIOPWR */
++#define N_DRAWER_SECTIONS     61   /* ids 0..60; 24 retired (no section built), 57 is FT8HOP, 58 RADIOSRC, 59 RADIOPWR, 60 RADIOON */
  // "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
  // or one plugged into a NAS running tools/nas-relay. Same effect as the web
  // page's POST /api/relay (settings_set_relay + radio_relay_set_target +
-@@ -3878,7 +3878,10 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
+@@ -3917,7 +3917,10 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  // "Power off the radio" - sends PS0; to the QMX after putting it back in
  // receive. Over the NAS the relay passes PS0; only with its allow-ps0 flag.
- #define DRAWER_SEC_RADIOPWR   58
--// ⛔ IDs are 0..58 now. The next one raises N_DRAWER_SECTIONS AND gets an
+ #define DRAWER_SEC_RADIOPWR   59
+-// ⛔ IDs are 0..59 now. The next one raises N_DRAWER_SECTIONS AND gets an
 +// "Power on the radio" - asks the NAS relay to press the QMX's power button
 +// (Remote Power-ON: FTDI cable + opto board on the NAS).
-+#define DRAWER_SEC_RADIOON    59
-+// ⛔ IDs are 0..59 now. The next one raises N_DRAWER_SECTIONS AND gets an
++#define DRAWER_SEC_RADIOON    60
++// ⛔ IDs are 0..60 now. The next one raises N_DRAWER_SECTIONS AND gets an
  // assert below - see the 2026-10-03 note above.
  
  /* Catches the mistake above at COMPILE time instead of as a crash minutes into
-@@ -3897,6 +3900,7 @@ _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS")
+@@ -3937,6 +3940,7 @@ _Static_assert(DRAWER_SEC_FT8HOP < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS")
  _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
  _Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
  _Static_assert(DRAWER_SEC_RADIOPWR < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
@@ -177,7 +177,7 @@ index 06666f13..fd31f053 100644
  _Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
  static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
  static int       s_drawer_section_y[N_DRAWER_SECTIONS];
-@@ -3940,6 +3944,9 @@ static const drawer_item_t GRP_RADIO[] = {
+@@ -3980,6 +3984,9 @@ static const drawer_item_t GRP_RADIO[] = {
      { DRAWER_SEC_RADIOSRC, "Radio source (USB / NAS)", true },
      // Advanced, like "Power off the Tab5": the radio does not come back on by
      // itself (only the relay's Remote Power-ON or a hand on the knob).
@@ -187,7 +187,7 @@ index 06666f13..fd31f053 100644
      { DRAWER_SEC_RADIOPWR, "Power off the radio (QMX)", false },
      { DRAWER_SEC_QMXVOL, "QMX volume", true },
      { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
-@@ -4124,6 +4131,7 @@ static void drawer_set_mode(ui_mode_t mode);
+@@ -4167,6 +4174,7 @@ static void drawer_set_mode(ui_mode_t mode);
  // build - see drawer_usedhcp_btn_cb for why that button has to exist (#307).
  static void drawer_poweroff_btn_cb(lv_event_t *e);
  static void drawer_radiopwr_btn_cb(lv_event_t *e);
@@ -195,7 +195,7 @@ index 06666f13..fd31f053 100644
  static void drawer_usedhcp_btn_cb(lv_event_t *e);
  static void drawer_sdeject_btn_cb(lv_event_t *e);
  static void drawer_reboot_btn_cb(lv_event_t *e);
-@@ -17697,6 +17705,23 @@ static void drawer_build(void)
+@@ -18195,6 +18203,23 @@ static void drawer_build(void)
          y += 72;
      }
  
@@ -219,7 +219,7 @@ index 06666f13..fd31f053 100644
      /* "Power off the radio" - directly under Radio source, the row that says
       * which QMX this is. Same red and two-tap arming as "Power off the Tab5". */
      {
-@@ -21768,6 +21793,77 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
+@@ -22329,6 +22354,77 @@ static void drawer_poweroff_btn_cb(lv_event_t *e)
      ui_power_off_safely();
  }
  

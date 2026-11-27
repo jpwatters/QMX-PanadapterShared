@@ -286,6 +286,14 @@ typedef struct {
      * at all. Declining wrongly costs a contact; answering a CQ that was not
      * for us costs one slot. */
     bool    robot_skip_directed_cq;
+    /* --- A tap on a decode row starts the automatic QSO at once, as a long
+     * press does, instead of opening the Confirm window. Appended, so an old
+     * NVS blob reads back 0 (=off) and nothing changes for anyone who does
+     * not ask. Operator, 2026-11-24: "it can be a race to actually get to work
+     * a station asap after discovering it" - the Confirm window costs a
+     * second tap and can lose the slot. The closing 73 still opens the
+     * window: there is no exchange left to automate. */
+    bool    tap_auto_work;
 } ft8_filters_t;
 
 // Power calibration ("Calibrate Power" WSPR-drawer button, main/ui/
@@ -409,6 +417,7 @@ typedef struct {
     uint32_t js8_freq_hz; // last JS8 preset frequency in Hz, default 14078000
     uint16_t cw_pitch_hz;  // CW sidetone offset in Hz (default 700)
     uint8_t  colormap_idx; // waterfall colour map: 0=Thermal 1=Viridis 2=Turbo 3=Grayscale
+    uint16_t spectrum_h;   // T216: spectrum height in px (100..400); the waterfall takes the rest
     char     my_callsign[16];  // operator callsign for FT8 (15 chars + NUL)
     char     my_grid[8];       // Maidenhead grid (6 chars + NUL, e.g. "JO45ab")
     /* US state/province, two letters, upper case, EMPTY when not set.
@@ -716,7 +725,7 @@ typedef struct {
     //
     // ⚠ RX AUDIO HOLDS IT OFF, which is what an operator actually sees.
     // resource_mgmt_modal.c's refresh_gating() greys and disables the Spot
-    // map, RBN, DX cluster and PSK-RX rows while rx_audio_is_enabled(), and
+    // map and PSK-RX rows while rx_audio_holds_off_feeds(), and
     // pskr_self.c:331 tears the MQTT session down on the same test. Gyula
     // HA3HZ reported it as "checking the Audio Setting causes these settings
     // to be cleared" - nothing is cleared, they are held off, and the modal
@@ -888,6 +897,27 @@ typedef struct {
      * 0 bands ticked, or hopping off, means stay on wspr_dial_hz. */
     uint16_t wspr_hop_mask;
     bool     wspr_hop_en;
+    /* WSPR stay per band in 2-minute cycles, 1..30 (2..60 min). 1 = one
+     * cycle per band, the behaviour before 2026-11-26. */
+    uint8_t  wspr_hop_stay_cycles;
+    /* FT8/FT4 receive band hopping (Mark N8MH, 2026-11-25). Bit i = band i of
+     * ft8_hop.c's kHopBands (the same order as WSPR's: 160 80 60 40 30 20 17
+     * 15 12 10 6). More than one bit = hopping on; there is no separate
+     * switch, the same rule as wspr_hop_mask. A band the radio lacks is
+     * skipped, not forgotten. 0 = off. */
+    uint16_t ft8_hop_mask;     /* ignored while FT8_HOP_ENABLED is 0 - see below */
+    /* Minutes on each band before the next hop (operator, 2026-11-26). Only
+     * 1 2 4 6 10 15 30 are used: each divides a UTC day and is a whole number
+     * of FT8 and FT4 slots, so the hop lands on a slot boundary. Any other
+     * value reads as 2 (ft8_hop.c). */
+    uint8_t  ft8_hop_dwell_min;
+    /* TXCQ period: -1 any, 0 EVEN only, 1 ODD only. Was session-only until
+     * 2026-11-26; saved now, like WSJT-X's "Tx even/1st". */
+    int8_t   ft8_cq_parity;
+    /* CQ period while FT8/FT4 hopping (operator, 2026-11-26): false = ANY,
+     * the TXCQ setting for the whole stay; true = EVEN in the 1st half of
+     * each stay, ODD in the 2nd, so both periods of every band are called. */
+    bool     ft8_hop_cq_split;
 
     /* ⭐ THE MASTER SWITCH FOR THE WHOLE WSPR PAGE, DEFAULT OFF.
      *
@@ -1083,6 +1113,10 @@ void     settings_set_ftx_freq_hz(uint8_t op_mode, uint32_t hz);
 void settings_set_cw_pitch_hz(uint16_t hz);
 // Save waterfall colour-map index (debounced flush).
 void settings_set_colormap_idx(uint8_t idx);
+/* T216 spectrum/waterfall split. Clamped by the UI, not here - settings.c
+ * stores what it is given so an out-of-range value from an imported config is
+ * visible rather than silently rewritten. */
+void settings_set_spectrum_h(uint16_t px);
 
 // Operator identity. Pass NULL or empty to clear. Used by the FT8
 // transmitter (v0.11+) and shown in the FT8 view info pane.
@@ -1176,7 +1210,25 @@ void settings_set_onboarded(bool v);
 
 // FT8 CQ-run reply include/exclude filters (debounced flush).
 void settings_set_ft8_filters(const ft8_filters_t *f);
+/* Narrow accessor for the row-tap path (taskLVGL) - see settings_get_ft8_skip_tx1(). */
+bool settings_get_ft8_tap_auto_work(void);
 bool settings_get_ft8_skip_tx1(void);     // narrow: ft8_filters.skip_tx1, read on taskLVGL
+/* ⛔ FT8/FT4 BAND HOPPING (T220) IS SWITCHED OFF FOR v2.1.2 (operator,
+ * 2026-11-26: release everything "except the band hopping"). Hopping is not
+ * tested on air under CQ/auto-work, and its commits share files with the fixes
+ * that must ship, so it is switched off here and not reverted. With 0:
+ * settings_get_ft8_hop_mask() returns 0, which is the never-ticked state every
+ * hop path already treats as "no hopping" (ft8_hop.c reads the mask only
+ * through it); the drawer section and the web rows are hidden. A stored mask
+ * is kept in NVS and returns when this goes back to 1. */
+#define FT8_HOP_ENABLED 0
+uint16_t settings_get_ft8_hop_mask(void); // narrow: for ft8_hop.c on httpd / taskLVGL stacks
+uint8_t  settings_get_ft8_hop_dwell_min(void);  // narrow, same reason
+int      settings_get_ft8_cq_parity(void);      // narrow: -1 any, 0 even, 1 odd
+bool     settings_get_ft8_hop_cq_split(void);   // narrow
+bool     settings_get_ft8_auto_pileup(void);    // narrow: ft8_filters.auto_pileup
+uint8_t  settings_get_wspr_hop_stay_cycles(void); // narrow, 1..30
+bool settings_get_ft8_robot_en(void);     // narrow: ft8_filters.robot_en, same reason
 void settings_set_kbd_bindings(const kbd_bindings_t *b);
 
 // RX audio output: enable demodulated audio on the Tab5 speaker/headphone
@@ -1226,6 +1278,7 @@ uint8_t settings_get_wspr_rx_cycles(void);
 uint8_t settings_get_wf_rows_per_s(void);
 /* Narrow read, same reason as the rows/s one above it. */
 uint8_t settings_get_spec_peak_s(void);
+uint16_t settings_get_spectrum_h(void);   // T216, narrow: ui.c reads it at build and after an import
 /* The spectrum EMA coefficient, 0..1. Narrow for the same reason again:
  * ui_sync_smoothing_controls() runs on httpd. ⚠ This is the COEFFICIENT, not
  * the smoothing percentage the drawer and the web form show - those invert it
@@ -1481,6 +1534,10 @@ void settings_set_fd_section(const char *section);
 // FT8 simulation mode (debounced flush): phantom-station practice mode -
 // see ft8_sim.h. The real QMX is never keyed while this is on.
 void settings_set_sim_mode_en(bool v);
+/* Called synchronously, on the caller's task, when sim_mode_en changes from
+ * true to false - see ft8_sim_turned_off(). One hook; settings.c cannot
+ * depend on the FT8 modules. */
+void settings_on_sim_off(void (*cb)(void));
 void settings_set_wspr_dial_hz(uint32_t v);
 void settings_set_wspr_tx_en(bool v);
 void settings_set_wspr_rx_cycles(uint8_t v);   // clamped 1-20
@@ -1553,8 +1610,23 @@ void settings_get_my_callsign(char *out, size_t out_sz);
 bool settings_get_wspr_pa_reduce(void);         // narrow getter - small-stack callers
 void settings_set_wspr_pa_reduce(bool v);       // #290 halve PA voltage while WSPR TX is on
 void settings_set_wspr_pa_saved_x10(uint16_t v);// value to restore, tenths of a volt, 0 = none
+/* T219: PA voltage before WSPR's declared-power write, and WSPR's own last
+ * write, tenths of a volt. Returns true when a restore is owed. 0 = clear. */
+bool settings_get_wspr_decl_restore(uint16_t *before_x10, uint16_t *ours_x10);
+void settings_set_wspr_decl_restore(uint16_t before_x10, uint16_t ours_x10);
+
+/* Wait until every urgent NVS write staged so far (wspr_pa_saved_x10,
+ * wspr_dclrst) is committed by the settings_flush task. The setters never
+ * write NVS on the caller's stack, because some callers run on the 4 KB
+ * cat_poll stack. False on timeout. Does no NVS work itself. */
+bool settings_urgent_sync(uint32_t timeout_ms);
 void settings_set_wspr_hop_mask(uint16_t v);
 void settings_set_wspr_hop_en(bool v);
+void settings_set_ft8_hop_mask(uint16_t v);
+void settings_set_ft8_hop_dwell_min(uint8_t v);
+void settings_set_ft8_cq_parity(int v);   // anything but 0/1 stores -1 (any)
+void settings_set_ft8_hop_cq_split(bool v);
+void settings_set_wspr_hop_stay_cycles(uint8_t v);   // clamped 1..30
 void settings_set_wspr_en(bool v);   // master switch for the WSPR page - default OFF
 void settings_set_wspr_net_en(bool v);   // publish spots to wsprnet - default ON since 2026-11-19
 void settings_set_wspr_dump_cycles(uint8_t v);

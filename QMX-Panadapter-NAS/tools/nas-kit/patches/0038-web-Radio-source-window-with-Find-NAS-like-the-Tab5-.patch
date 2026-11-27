@@ -1,4 +1,4 @@
-From 18bfb7823712f3435a3bd666df10d974d9a3cdbc Mon Sep 17 00:00:00 2001
+From f7936cafcfb3278b794ba1781cc8dcdf5db728a0 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 16:00:00 -0500
 Subject: [PATCH 38/54] web: Radio source window with Find NAS, like the Tab5's
@@ -30,7 +30,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  3 files changed, 174 insertions(+), 15 deletions(-)
 
 diff --git a/README.md b/README.md
-index b3a5d876..c416e18c 100644
+index e1e57ad9..adb2fb6a 100644
 --- a/README.md
 +++ b/README.md
 @@ -29,7 +29,7 @@ The NAS patches were last ported on 2026-11-15, to upstream v2.0.0 (compile-chec
@@ -43,10 +43,10 @@ index b3a5d876..c416e18c 100644
  * Automatic reconnect: the stream resumes on its own after the QMX is powered off and on. Tested.
  * Live spectrum on the web page. Tested.
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 4c1654fa..f72711be 100644
+index ff3b40b9..118ce3ed 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -6338,6 +6338,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
+@@ -6374,6 +6374,79 @@ static esp_err_t relay_post_handler(httpd_req_t *req)
      return relay_get_handler(req);
  }
  
@@ -126,7 +126,7 @@ index 4c1654fa..f72711be 100644
  static const httpd_uri_t uri_relay_get = {
      .uri = "/api/relay", .method = HTTP_GET, .handler = relay_get_handler,
  };
-@@ -10481,6 +10554,8 @@ esp_err_t webserver_start(void)
+@@ -10607,6 +10680,8 @@ esp_err_t webserver_start(void)
      reg(&uri_eqsl_creds);
      reg(&uri_relay_get);    // network radio (QMX on a NAS)
      reg(&uri_relay_post);
@@ -136,10 +136,10 @@ index 4c1654fa..f72711be 100644
      reg(&uri_eqsl_upload);
      reg(&uri_cloudlog_creds);
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index e7fade45..1598f45b 100644
+index 221f51cd..0675c67b 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -2149,6 +2149,33 @@
+@@ -2155,6 +2155,33 @@
      </div>
    </div>
  
@@ -173,7 +173,7 @@ index e7fade45..1598f45b 100644
    <div id="mem-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:1000;">
      <!-- max-height + an inner scroll box: with 32 slots the card ran off the
           bottom of the window and the last rows could not be reached at all. -->
-@@ -8232,27 +8259,84 @@ function paintPaused(on) {
+@@ -8324,27 +8351,84 @@ function paintPaused(on) {
  }
  /* Network radio - the QMX plugged into a NAS, reached over TCP through
     tools/nas-relay on the NAS. Blank host = QMX on the Tab5's USB port. */

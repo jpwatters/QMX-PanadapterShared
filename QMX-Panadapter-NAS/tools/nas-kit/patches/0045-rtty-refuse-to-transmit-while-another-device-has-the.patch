@@ -1,4 +1,4 @@
-From 8053e9e74d2ef0b69ea1379aa0a082f79deb448e Mon Sep 17 00:00:00 2001
+From 8a4d37956aa8a2fc7fbdef8061c1ac8913719ee7 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 08:25:57 -0600
 Subject: [PATCH 45/54] rtty: refuse to transmit while another device has the
@@ -16,7 +16,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 5 insertions(+)
 
 diff --git a/main/rtty_tx.c b/main/rtty_tx.c
-index 1cda7bf7..f18f5b44 100644
+index 3292e3e9..f089bc75 100644
 --- a/main/rtty_tx.c
 +++ b/main/rtty_tx.c
 @@ -11,6 +11,7 @@
@@ -27,7 +27,7 @@ index 1cda7bf7..f18f5b44 100644
  #include "storage/settings.h"
  #include "ui/ui.h"
  
-@@ -281,6 +282,10 @@ static esp_err_t start_over(char *err, size_t err_len)
+@@ -285,6 +286,10 @@ static esp_err_t start_over(char *err, size_t err_len)
          snprintf(err, err_len, "another transmission holds the radio"); return ESP_ERR_INVALID_STATE;
      }
      if (wspr_rx_running())          { snprintf(err, err_len, "WSPR is running"); return ESP_ERR_INVALID_STATE; }

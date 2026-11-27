@@ -1,4 +1,4 @@
-From e3869bd9995fd433175d9c22131cf5c0f6abc1dd Mon Sep 17 00:00:00 2001
+From 3d238d5a4fe452982ef616adf5ee3f693972b824 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Fri, 9 Oct 2026 07:15:23 +0000
 Subject: [PATCH 13/54] README: what the network-shared version adds, and how
@@ -15,7 +15,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxunucnfwkhxdqp61S
  1 file changed, 37 insertions(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index ec9a2bc1..f53e3b67 100644
+index fac5502f..af2471de 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,9 +1,45 @@

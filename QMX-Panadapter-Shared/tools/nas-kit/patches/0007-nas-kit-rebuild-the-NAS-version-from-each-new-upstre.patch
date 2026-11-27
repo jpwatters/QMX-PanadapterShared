@@ -1,4 +1,4 @@
-From 8e56b65261a2eab10bfbcee9c729d213514f644c Mon Sep 17 00:00:00 2001
+From 544c37d5a90b527d16e90b311c460626310cca86 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 23:13:44 +0000
 Subject: [PATCH 07/54] nas-kit: rebuild the NAS version from each new upstream

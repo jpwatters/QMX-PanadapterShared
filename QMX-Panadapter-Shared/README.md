@@ -4,7 +4,7 @@
 
 A standalone real-time panadapter — spectrum analyser and waterfall — for the [QRP Labs QMX/QMX+](https://www.qrp-labs.com/qmxp.html) HF transceiver, running on the [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) (ESP32-P4 with a 5" 720×1280 touch display).
 
-**Version: v2.1.0-NAS** — upstream QMX-Panadapter **v2.1.0** plus the NAS patch series 0001-0054 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
+**Version: v2.1.2-NAS** — upstream QMX-Panadapter **v2.1.2** plus the NAS patch series 0001-0054 (tools/nas-kit/patches). Builds report themselves as the upstream version plus `-NAS`.
 
 $$\hspace{22em}\color{gray}\small\textsf{(The above version example from Steffen's Repository)}$$
 
@@ -26,6 +26,7 @@ Each new upstream release can stop the patches applying: new settings take the s
 | v2.0.0 (2026-11-15) | Upstream also enlarged the settings table and took bit 160 (RTTY); the web status gained an RTTY field where the NAS adds its own; a frequency function was renamed; upstream’s Wi-Fi driver fix now re-runs the other driver patches with a command that macOS doesn’t have; RTTY transmit is new | Relay setting bit 161; both status fields kept; the NAS frequency check moved into the renamed function; the driver fix re-runs them with the PowerShell already running (pwsh on the Mac); RTTY refuses to transmit while another device has the transmitter |
 | v2.0.2 (2026-11-18) | Upstream took bits 161 (RTTY contest) and 162 (TX subnet interlock); the README’s licence section, where the NAS appendix follows, changed; the web radio’s MP3 decoder was replaced | Relay setting bit 163; the appendix kept after upstream’s new licence text; nothing to carry for the MP3 decoder |
 | v2.1.0 (2026-11-22) | No conflicting change, but the patches added on the Mac since v2.0.2 could not be merged by the kit, which had no matching base to merge from | Series rebased onto v2.1.0; the "TX locked" refusals use upstream’s new red alert toast |
+| v2.1.2 (2026-11-26) | Bits 163-168 (FT8/FT4 band hopping and spectrum height); drawer section 57 (band hopping); the PSK reporter and FT8 key-down checks changed next to NAS lines | Relay setting bit 169; Radio source section 58, Power off 59, Power on 60; both checks keep upstream’s new code and accept Ethernet or Wi-Fi |
 
 <p align="center"><img src="docs/nas/qmx-nas-setup.png" alt="QRP Labs QMX+ connected by USB to a Synology DS416j NAS, with an optional PC817 opto board on the QMX+ power-on pins driven from the NAS by an FTDI TTL-232R-5V cable (its red wire goes to the ungrounded side of the VOL switch, its black wire to QMX ground); the NAS is wired to a Ubiquiti 8-port switch on the LAN; an M5Stack Tab5 joins either by Wi-Fi or by Ethernet through the optional W5500 PoE base on switch port 1" width="600"></p>
 
@@ -41,7 +42,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter, 
 9. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 10. An update kit that rebuilds all of this on each new upstream release
 
-The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.0; not yet flashed). The last build marked tested was v2.1.0-NAS (2026-11-18).
+The NAS patches were last ported on 2026-11-26, to upstream v2.1.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.2; not yet flashed). The last build marked tested was v2.1.2-NAS (2026-11-18).
 
 **Sharing the radio over the network**
 * Relay on a Synology NAS (tools/nas-relay): runs natively on DSM and owns the QMX/QMX+ over USB. It serves the 48 kHz I/Q stream, CAT control and the radio’s menu port to the Tab5 on TCP 7355. It starts at boot and restarts itself if it stops. Tested on a Synology DS416j.
@@ -197,7 +198,7 @@ There’s also an older serial mode (`MODE=serial bash install-mac.sh`) that cre
 **Keeping up with upstream**
 * Update kit (tools/nas-kit, now in this folder): make-qmx-panadapter-nas.sh rebuilds QMX-Panadapter-NAS from each new upstream release plus the NAS patches; --mark-tested promotes a build to QMX-Panadapter-Shared; replaced folders go to an archive rather than being deleted. Each build copies the kit into the new folder, so the scripts are always there to build the next version. It downloads only the release it builds (about 40 MB) and retries a dropped connection.
 * GitHub publishing (tools/nas-kit/push-to-github.sh): pushes both folders to jpwatters/QMX-PanadapterShared.
-* Version names: builds report themselves as the upstream version plus -NAS, e.g. v2.1.0-NAS.
+* Version names: builds report themselves as the upstream version plus -NAS, e.g. v2.1.2-NAS.
 
 Initially the kit no longer treats any release as tested, so a first build won’t copy itself to Shared.
 
@@ -235,7 +236,7 @@ Other options:
 * `--ref v1.20.5`: builds a specific release instead of the newest.
 * `--force`: rebuilds even when there’s nothing new.
 
-Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v2.1.0-NAS works, run --mark-tested and the push again.
+Flash with nothing plugged into the Tab5’s USB-A port, then power it off and on. Test Find NAS, the spectrum and a few FT8 bursts. When v2.1.2-NAS works, run --mark-tested and the push again.
 If you’ve customised the drawer’s Basic/Advanced menus: check where Radio source ends up after the update. If it looks wrong, reset the drawer map to its defaults on the web page.
 ________________________________________________________________________________________________________________________________________________
 
@@ -281,13 +282,13 @@ The QMX exposes I/Q audio over USB UAC plus CAT control over USB CDC-ACM. The Ta
 
 *40 m CW, zoomed x2 around 7.019.470 MHz, with RBN/DXC spots labelled directly on the trace (v1.16.7). The spectrum trace tracks a per-bin noise floor so real signals pop sharp above a calm baseline. Top bar: band, mode, bandwidth, centre freq, S-meter, zoom. Bottom bar: battery, SD, firmware version, UTC clock, WiFi, callsign, IP. The same view streams live to any browser on the LAN — see [Web UI](#web-ui).*
 
-> **Release — v2.1.0.** v2.1.0 decodes about 20% more FT8 stations per cycle - a second decode pass works through the signals the first pass could not resolve, measured on the air over 1213 cycles. The spectrum no longer breaks up on a busy band, live spots work again, and a new chapter covers reaching the Tab5 from outside your home. v2.0.2 logs RTTY contacts on the Tab5 and in the browser, lets the log window move out of the way, and replaces the web radio's MP3 decoder for licence reasons. Every goal on the original roadmap is met. A complete, self-contained station for the QMX: spectrum and waterfall, the digital modes **FT8, FT4, JS8, RTTY and WSPR** and a CW page - each one a page of its own in the left drawer - with on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v2.0.0 adds MODE: RTTY**: decoded and sent on the Tab5 and in the browser, with Auto speed, shift and polarity, CQ, Answer, Exch and 73 in one press, or typed live - see [RTTY](#rtty). **Receive audio no longer breaks up or drifts in pitch on a busy band.** **No page is a beta any more**: where a limit remains, the guide states it. v1.26.3 made the QSO log safe when it fills up, and v1.26.0 gave the browser noise reduction and an auto-notch - see [docs/mkdocs/releases.md](docs/mkdocs/releases.md) for every release.
+> **Release — v2.1.2.** v2.1.2 makes WSPR receive again after v2.1.1 ran it out of memory, and "Who has heard me" keeps the whole day of PSK Reporter reports. v2.1.1 brings a busy-dropped FT8 pounce back - it resumes if the station answers within 5 minutes, and calls again when they finish - plus Tap to Auto-work, a draggable spectrum/waterfall boundary, stereo binaural CW in the browser, and a Bluetooth mouse wheel that no longer breaks up the audio. v2.1.0 decodes about 20% more FT8 stations per cycle - a second decode pass works through the signals the first pass could not resolve, measured on the air over 1213 cycles. The spectrum no longer breaks up on a busy band, live spots work again, and a new chapter covers reaching the Tab5 from outside your home. v2.0.2 logs RTTY contacts on the Tab5 and in the browser, lets the log window move out of the way, and replaces the web radio's MP3 decoder for licence reasons. Every goal on the original roadmap is met. A complete, self-contained station for the QMX: spectrum and waterfall, the digital modes **FT8, FT4, JS8, RTTY and WSPR** and a CW page - each one a page of its own in the left drawer - with on-device decode and transmit, automatic QSOs, ADIF logging, and upload to **four logbooks — QRZ, eQSL, ARRL LoTW and your own Cloudlog or Wavelog** — with no PC in the loop. It runs offline for POTA/SOTA, streams to any browser on the LAN, and carries its own user manual inside the firmware. **v2.0.0 adds MODE: RTTY**: decoded and sent on the Tab5 and in the browser, with Auto speed, shift and polarity, CQ, Answer, Exch and 73 in one press, or typed live - see [RTTY](#rtty). **Receive audio no longer breaks up or drifts in pitch on a busy band.** **No page is a beta any more**: where a limit remains, the guide states it. v1.26.3 made the QSO log safe when it fills up, and v1.26.0 gave the browser noise reduction and an auto-notch - see [docs/mkdocs/releases.md](docs/mkdocs/releases.md) for every release.
 >
 > ⚠ **Switch your QMX on only after the Tab5 has settled** — once the spectrum is running and WiFi shows a network. Powering the radio while the Tab5 is still starting leaves it short of memory for the whole session, which can make the web interface unreachable. See [Quick Start](docs/mkdocs/quick-start.md).
 >
 > **What changed in earlier releases** is in **[docs/version-history.md](docs/version-history.md)** — every release from v0.1.0 onward, newest last. The section below describes what the firmware does **today**, not what any one release added.
 
-Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v2.1.0.pdf).
+Prefer a single printable file? [Download the User Guide PDF](docs/QMX-Panadapter-UserGuide-v2.1.2.pdf).
 
 <!-- USERGUIDE:START -->
 
@@ -1198,7 +1199,10 @@ no TLS, and it can key the radio, so put it behind a tunnel rather than
 exposing it to the internet. Tailscale needs no router changes; WireGuard needs
 one forwarded port and no account. The **TX interlock** is a second lock that
 refuses a transmit request arriving from outside your own network - it is off
-by default, and it is not a login. Stop commands are never refused.
+by default, and it is not a login. It reads the address off the connection, so
+a router that translates addresses between two of your own networks passes it:
+the address the Tab5 sees is then the router's. Stop commands are never
+refused.
 
 See [Remote Access](docs/mkdocs/guide/remote-access.md) for worked examples.
 

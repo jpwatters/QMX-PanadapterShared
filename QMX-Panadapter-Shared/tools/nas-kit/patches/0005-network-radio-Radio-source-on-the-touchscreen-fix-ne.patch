@@ -1,4 +1,4 @@
-From ebc9f042155a20873139e6a95476d7695a3f310c Mon Sep 17 00:00:00 2001
+From e1f34ad89432e88fe2abc5f0dc16f3fbfb043fba Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 4 Oct 2026 20:10:07 +0000
 Subject: [PATCH 05/54] network-radio: Radio source on the touchscreen; fix
@@ -6531,10 +6531,10 @@ index 1c6e15ce..1e8a3e18 100644
          return ESP_ERR_TIMEOUT;
      }
 diff --git a/main/ui/ui.c b/main/ui/ui.c
-index 36663240..70378b59 100644
+index 9b825526..d6abc43c 100644
 --- a/main/ui/ui.c
 +++ b/main/ui/ui.c
-@@ -97,6 +97,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
+@@ -99,6 +99,7 @@ LV_FONT_DECLARE(qmx_mono_25);   /* shared with the radio-menus screen */
  #include "ft8_test.h"
  #include "esp_lcd_touch.h"
  #include "esp_system.h"        // esp_restart - the drawer's "Restart now" (#270)
@@ -6542,33 +6542,33 @@ index 36663240..70378b59 100644
  #include "bt_hid_mouse.h"      // is the BLE radio actually up, and was it at boot
  
  static const char *TAG = "ui";
-@@ -3867,7 +3868,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
-  * its own group and is visible everywhere. */
+@@ -3906,7 +3907,15 @@ static bool s_drawer_swipe_vertical = false;  /* this drag went vertical */
  #define DRAWER_SEC_WEBRADIO   54
  #define DRAWER_SEC_CWQSK      56  // T144: Semi QSK mode + delay
--#define N_DRAWER_SECTIONS     57   /* ids 0..56; 24 retired (no section built), 56 is CWQSK (T144) */
-+#define N_DRAWER_SECTIONS     58   /* ids 0..57; 24 retired (no section built), 56 is CWQSK (T144), 57 RADIOSRC */
+ #define DRAWER_SEC_FT8HOP     57  // FT8/FT4 receive band hopping (Mark N8MH)
+-#define N_DRAWER_SECTIONS     58   /* ids 0..57; 24 retired (no section built), 57 is FT8HOP */
++#define N_DRAWER_SECTIONS     59   /* ids 0..58; 24 retired (no section built), 57 is FT8HOP, 58 RADIOSRC */
 +// "Radio source" - which QMX the Tab5 talks to: the one on its own USB port,
 +// or one plugged into a NAS running tools/nas-relay. Same effect as the web
 +// page's POST /api/relay (settings_set_relay + radio_relay_set_target +
 +// cat_reconnect), so the switch no longer needs a computer.
-+// (57: upstream uses 0..56 in v1.24.2; N_DRAWER_SECTIONS was 57.)
-+#define DRAWER_SEC_RADIOSRC   57
-+// ⛔ IDs are 0..57 now. The next one raises N_DRAWER_SECTIONS AND gets an
++// (58: upstream uses 0..57 in v2.1.2, 57 for FT8HOP; N_DRAWER_SECTIONS was 58.)
++#define DRAWER_SEC_RADIOSRC   58
++// ⛔ IDs are 0..58 now. The next one raises N_DRAWER_SECTIONS AND gets an
 +// assert below - see the 2026-10-03 note above.
  
  /* Catches the mistake above at COMPILE time instead of as a crash minutes into
   * a session. Every id must be a valid index; raise N_DRAWER_SECTIONS when you
-@@ -3883,6 +3892,8 @@ _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS
- _Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+@@ -3923,6 +3932,8 @@ _Static_assert(DRAWER_SEC_CWSIM   < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS"
  _Static_assert(DRAWER_SEC_MANLOG < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
+ _Static_assert(DRAWER_SEC_FT8HOP < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
  _Static_assert(DRAWER_SEC_WEBRADIO < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 +_Static_assert(DRAWER_SEC_RADIOSRC < N_DRAWER_SECTIONS, "raise N_DRAWER_SECTIONS");
 +_Static_assert(N_DRAWER_SECTIONS <= 64, "drawer masks are uint64_t");
  static lv_obj_t *s_drawer_sections[N_DRAWER_SECTIONS];
  static int       s_drawer_section_y[N_DRAWER_SECTIONS];
  static int       s_drawer_section_h[N_DRAWER_SECTIONS];
-@@ -3922,6 +3933,7 @@ static const drawer_item_t GRP_STATION[] = {
+@@ -3962,6 +3973,7 @@ static const drawer_item_t GRP_STATION[] = {
      { DRAWER_SEC_BPREGION, "Band-plan region", false },
  };
  static const drawer_item_t GRP_RADIO[] = {
@@ -6576,7 +6576,7 @@ index 36663240..70378b59 100644
      { DRAWER_SEC_QMXVOL, "QMX volume", true },
      { DRAWER_SEC_QMXRF, "RF gain (radio's own audio)", true },
      /* T139: under the two gains because it only makes sense read against them
-@@ -4703,6 +4715,9 @@ static void gain_resolve_stop(void);
+@@ -4750,6 +4762,9 @@ static void gain_resolve_stop(void);
  static void drawer_pause_btn_cb(lv_event_t *e);
  static void drawer_term_btn_cb(lv_event_t *e);
  static void drawer_gpsstats_btn_cb(lv_event_t *e);
@@ -6586,7 +6586,7 @@ index 36663240..70378b59 100644
  static void topbar_reconcile_cb(lv_timer_t *t);
  static void drawer_slider_cwtxoff_cb(lv_event_t *e);
  static void ui_set_cw_tx_offset_label(int hz);
-@@ -17651,6 +17666,29 @@ static void drawer_build(void)
+@@ -18149,6 +18164,29 @@ static void drawer_build(void)
      //
      // Directly under the pause button on purpose: an operator reaching for
      // "let me use the QMX menus" on a radio with no front panel wanted this.
@@ -6616,7 +6616,7 @@ index 36663240..70378b59 100644
      {
          lv_obj_t *sec = drawer_section(DRAWER_SEC_TERM, y, 72);
          lv_obj_t *btn = lv_btn_create(sec);
-@@ -21280,6 +21318,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
+@@ -21841,6 +21879,230 @@ static void drawer_bt_restart_cb(lv_event_t *e)
   * physically swap a card - which is exactly when it disappears. It also has a
   * second instruction after the swap, so it has to still be there afterwards.
   * A window waits. */
@@ -6848,10 +6848,10 @@ index 36663240..70378b59 100644
  
  static void sdeject_modal_close_cb(lv_event_t *e)
 diff --git a/main/wifi/wifi.c b/main/wifi/wifi.c
-index 86230d3e..f0fde63b 100644
+index ba5edbb4..be2949d4 100644
 --- a/main/wifi/wifi.c
 +++ b/main/wifi/wifi.c
-@@ -204,6 +204,26 @@ static void set_sdio_gpio_drive(void)
+@@ -234,6 +234,26 @@ static void set_sdio_gpio_drive(void)
  }
  
  // SNTP callback --------------------------------------------------------
@@ -6878,7 +6878,7 @@ index 86230d3e..f0fde63b 100644
  static void sntp_sync_cb(struct timeval *tv)
  {
      struct tm tm_utc;
-@@ -214,8 +234,23 @@ static void sntp_sync_cb(struct timeval *tv)
+@@ -244,8 +264,23 @@ static void sntp_sync_cb(struct timeval *tv)
      xEventGroupSetBits(s_events, BIT_TIME_OK);
  
      // Write to the Tab5 supercap RTC, persist NVS anchor, update system clock,
@@ -6904,7 +6904,7 @@ index 86230d3e..f0fde63b 100644
  }
  
  // Replicates the work IDF's default WIFI_EVENT_STA_START handler (wifi_start in
-@@ -950,6 +985,11 @@ static void on_ip_event(void *arg, esp_event_base_t base,
+@@ -987,6 +1022,11 @@ static void on_ip_event(void *arg, esp_event_base_t base,
              sntp_started = true;
              esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
              cfg.sync_cb = sntp_sync_cb;
@@ -6917,7 +6917,7 @@ index 86230d3e..f0fde63b 100644
              ESP_LOGI(TAG, "SNTP started (pool.ntp.org)");
          }
 diff --git a/tools/check_patches.py b/tools/check_patches.py
-index 5c8ece74..ab56d5d7 100644
+index 383e9cd4..9ca49af5 100644
 --- a/tools/check_patches.py
 +++ b/tools/check_patches.py
 @@ -103,6 +103,13 @@ PATCHES = [

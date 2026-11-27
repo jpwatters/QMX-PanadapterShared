@@ -1,4 +1,4 @@
-From ce678bfac7473e0e0ea66e28985fdf40ae1d217c Mon Sep 17 00:00:00 2001
+From 0b87ebb6f645f378ca8dc4ce3c995c1438c3fb5d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 18 Oct 2026 11:30:00 -0500
 Subject: [PATCH 29/54] Tab5: "TX locked: Another Device has the transmitter"
@@ -9581,7 +9581,7 @@ z{pG*?_g|zRCGeZ|Yr{&C*Kg<#e*AbfJ^zQ`Hyr)zT?G5=_3yJF{FT626eE5G!LHH!
 G^?v|zW!0<z
 
 diff --git a/README.md b/README.md
-index aa7b92e0..011dda07 100644
+index 44b4800c..bb3540cc 100644
 --- a/README.md
 +++ b/README.md
 @@ -39,7 +39,7 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
@@ -9594,10 +9594,10 @@ index aa7b92e0..011dda07 100644
  
  **Keeping up with upstream**
 diff --git a/main/ft8_tx.c b/main/ft8_tx.c
-index cc881da7..9c603590 100644
+index bcd2d61e..50d021d5 100644
 --- a/main/ft8_tx.c
 +++ b/main/ft8_tx.c
-@@ -32,6 +32,7 @@
+@@ -33,6 +33,7 @@
  
  #include "cat/cat.h"
  #include "net/radio_relay.h"
@@ -9605,7 +9605,7 @@ index cc881da7..9c603590 100644
  #include "storage/settings.h"
  
  static const char *TAG = "ft8_tx";
-@@ -908,6 +909,16 @@ bool ft8_tx_arm(const ft8_tx_request_t *req, char *out_err, size_t out_err_len)
+@@ -909,6 +910,16 @@ bool ft8_tx_arm(const ft8_tx_request_t *req, char *out_err, size_t out_err_len)
          return false;
      }
  
@@ -9622,15 +9622,15 @@ index cc881da7..9c603590 100644
      // The operator has released the radio to its own front panel. Arming here
      // would key it from under their hands mid-menu: the TX burst writes TX;/TA;
      // straight to the CDC pipe and does NOT go through the paused poll task, so
-@@ -1274,6 +1285,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
-      * most - checked, because a dial at the top band edge puts the top tone
-      * outside while the base is inside. */
-     char band_err[160] = "";
+@@ -1289,6 +1300,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+      * After that, cat_get_frequency() is the radio's own report, and the band
+      * guard judges it, not the hop's target. No-op when no hop is pending. */
+     const bool hop_confirmed = sim || ft8_hop_wait_confirmed(1000);
 +    char lock_why[128];
      const uint32_t tx_dial = sim ? 0u : cat_get_frequency();
      const bool band_ok = sim ? true
          : tx_band_guard_allows(tx_dial + (uint32_t)req->audio_freq_hz,
-@@ -1284,6 +1296,12 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1314,6 +1326,12 @@ void ft8_tx_run(const ft8_tx_request_t *req)
          ESP_LOGE(TAG, "TX aborted before key-up: %s", band_err);
          ui_toast_alert_ms(band_err, 15000);
          ft8_status_set("%s", band_err);
@@ -9643,7 +9643,7 @@ index cc881da7..9c603590 100644
      } else if (strcmp(mode, "DiGi") != 0) {
          ESP_LOGW(TAG, "TX aborted before key-up: mode drifted to '%s' (need DiGi)", mode);
      } else {
-@@ -1569,6 +1587,13 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1599,6 +1617,13 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                  ESP_LOGI(TAG, "relay burst %s: %u/%d tones, RF on-air %lu ms, latest symbol %+ld ms (NAS clock)",
                           rr.status == 0 ? "complete" : rr.status == 1 ? "aborted" : "FAILED",
                           (unsigned)rr.tones_sent, nn, (unsigned long)rr.duration_ms, (long)rr.latest_ms);
@@ -9766,10 +9766,10 @@ index 1ea06f03..90cdd46f 100644
  uint32_t radio_relay_iq_pairs_total(void);
  const char *radio_relay_last_error(void);
 diff --git a/main/net/webserver.c b/main/net/webserver.c
-index 25344dd5..4c1654fa 100644
+index 7decb176..ff3b40b9 100644
 --- a/main/net/webserver.c
 +++ b/main/net/webserver.c
-@@ -527,6 +527,11 @@ static void add_ft8_tx_status(cJSON *root)
+@@ -547,6 +547,11 @@ static void add_ft8_tx_status(cJSON *root)
          st = "swr_fault";
          snprintf(b, sizeof(b), "SWR %.1f:1 - TX STOPPED - check antenna - tap to clear",
                   (double)trip_swr);
@@ -9781,7 +9781,7 @@ index 25344dd5..4c1654fa 100644
      } else if (tx_st == FT8_TX_ACTIVE) {
          st = "active";
          // Shorter on purpose (operator, 2026-09-05) - one less word to fit
-@@ -722,6 +727,8 @@ static bool web_tune_start(httpd_req_t *req, char *tune_err, size_t tune_err_len
+@@ -746,6 +751,8 @@ static bool web_tune_start(httpd_req_t *req, char *tune_err, size_t tune_err_len
      // Never while the operator has released the radio: Tune keys a carrier, and
      // the mode write it needs would go into a menu they are standing in front of.
      if (cat_user_pause_active()) return false;
@@ -9791,10 +9791,10 @@ index 25344dd5..4c1654fa 100644
       * the Tab5's: nobody is standing in front of the radio. Tune keys a
       * carrier on the DIAL in MD8 - no audio offset. */
 diff --git a/main/net/www/index.html b/main/net/www/index.html
-index cbcec00a..e7fade45 100644
+index ba6409fb..221f51cd 100644
 --- a/main/net/www/index.html
 +++ b/main/net/www/index.html
-@@ -901,6 +901,9 @@
+@@ -904,6 +904,9 @@
       same "TAP TO CLEAR" the Tab5's own prompt uses (Randy N4OPI). */
    #ft8-tx.st-swr_fault { color: #ff2020; border-color: #ff2020; cursor: pointer;
                           background-image: linear-gradient(rgba(255,32,32,.14), rgba(255,32,32,.14)); }
@@ -9805,7 +9805,7 @@ index cbcec00a..e7fade45 100644
    /* ---- Bottom status row ---- */
    #bot {
 diff --git a/main/ui/ft8_screen_view.c b/main/ui/ft8_screen_view.c
-index 0c2641d1..25371356 100644
+index f4c713a1..9bdd765f 100644
 --- a/main/ui/ft8_screen_view.c
 +++ b/main/ui/ft8_screen_view.c
 @@ -41,6 +41,7 @@
@@ -9816,7 +9816,7 @@ index 0c2641d1..25371356 100644
  #include "ft8_test.h"   // ft8_op_mode_set() - FT8/FT4 sub-mode flag
  #include "ft8_greylist.h"
  #include "js8_page.h"
-@@ -2529,6 +2530,12 @@ static void t_clock_cb(lv_timer_t *t)
+@@ -2677,6 +2678,12 @@ static void t_clock_cb(lv_timer_t *t)
                       (double)trip_swr);
              lv_label_set_text(s_lbl_tx, b);
              lv_obj_set_style_text_color(s_lbl_tx, lv_palette_main(LV_PALETTE_RED), 0);
@@ -9830,7 +9830,7 @@ index 0c2641d1..25371356 100644
              // Red: transmitting right now (tap to abort). Each logical chunk
              // gets its own explicit line - "TAP TO ABORT" is always the last
 diff --git a/main/ui/power_cal_modal.c b/main/ui/power_cal_modal.c
-index 8d583cc9..7c1a56f6 100644
+index e8aa0f33..9eb32465 100644
 --- a/main/ui/power_cal_modal.c
 +++ b/main/ui/power_cal_modal.c
 @@ -40,6 +40,7 @@
@@ -9841,7 +9841,7 @@ index 8d583cc9..7c1a56f6 100644
  #include "ft8_tx.h"
  #include "wspr_rx.h"
  #include "wspr_tx.h"    // WSPR_STD_DBM[] - the known reference levels the results table is indexed by
-@@ -758,6 +759,10 @@ static void start_btn_cb(lv_event_t *e)
+@@ -767,6 +768,10 @@ static void start_btn_cb(lv_event_t *e)
          ui_toast("Radio released - take it back before calibrating");
          return;
      }
@@ -9877,7 +9877,7 @@ index e4f22027..a1fd3076 100644
       * the dial itself - no audio offset, unlike the digital modes. Checked
       * before the mode write, not after: once the radio is in MD8 it is already
 diff --git a/main/wspr_tx.c b/main/wspr_tx.c
-index cbffeb7c..8501c77f 100644
+index 2e7b7363..66b826a6 100644
 --- a/main/wspr_tx.c
 +++ b/main/wspr_tx.c
 @@ -24,6 +24,7 @@
@@ -9888,7 +9888,7 @@ index cbffeb7c..8501c77f 100644
  #include "ft8_tx.h"   // ft8_tx_trip_swr / ft8_tx_swr_tripped - the STATION SWR latch
  #include "storage/settings.h"
  #include "util/psram_task.h"
-@@ -502,6 +503,14 @@ static void run_burst(const wspr_tx_request_t *req)
+@@ -546,6 +547,14 @@ static void run_burst(const wspr_tx_request_t *req)
              return;
          }
      }
@@ -9901,9 +9901,9 @@ index cbffeb7c..8501c77f 100644
 +        return;
 +    }
  
-     uint32_t rf_hz = cat_get_frequency() + (uint32_t)req->audio_freq_hz;
-     ESP_LOGW(TAG, "WSPR TX burst starting: '%s' '%s' %d dBm declared, base=%d Hz "
-@@ -831,6 +840,10 @@ bool wspr_tx_arm(const wspr_tx_request_t *req, char *out_err, size_t out_err_len
+     /* ⛔ NO RADIO, NO BURST. A LIVE build had no CAT check here; only the
+      * dry-run arm path had one. Randy N4OPI, 2026-11-26: the QMX had left USB,
+@@ -891,6 +900,10 @@ bool wspr_tx_arm(const wspr_tx_request_t *req, char *out_err, size_t out_err_len
              return false;
          }
      }

@@ -1,4 +1,4 @@
-From 59de0bf78b7cbcb4994add01601571e5269c2bfc Mon Sep 17 00:00:00 2001
+From db4e15e7b6b0af87b3775a810cbe92c96ddbbaf2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 18 Nov 2026 13:17:18 -0600
 Subject: [PATCH 46/54] mac-bridge-app: native macOS QMX Bridge app with a
@@ -82,10 +82,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  create mode 100644 tools/mac-bridge-app/project.yml
 
 diff --git a/README.md b/README.md
-index 552cc5ab..91c50e82 100644
+index f7ec7ef8..d9ea7bc1 100644
 --- a/README.md
 +++ b/README.md
-@@ -34,10 +34,11 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
+@@ -35,10 +35,11 @@ Here’s what the QMX+ PanadapterShared adds on top of upstream QMX-Panadapter,
  2. FT8/FT4 transmit timed by the relay
  3. Network-shared QMX/QMX+ discovery with a UDP broadcast (QMXR? / QMXR!)
  4. A TCI server on the Mac, so WS / WSJT-X / JTDX use the networked QMX/QMX+ with audio
@@ -99,9 +99,9 @@ index 552cc5ab..91c50e82 100644
 +8. Wired Ethernet through the M5Stack W5500 PoE base, alongside Wi-Fi
 +9. An update kit that rebuilds all of this on each new upstream release
  
- The NAS patches were last ported on 2026-11-22, to upstream v2.1.0 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.0; not yet flashed). The last build marked tested was v2.0.2-NAS (2026-11-18).
+ The NAS patches were last ported on 2026-11-26, to upstream v2.1.2 (compile-checked; upstream’s own checks and host tests give the same results as plain v2.1.2; not yet flashed). The last build marked tested was v2.0.2-NAS (2026-11-18).
  
-@@ -125,6 +126,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
+@@ -126,6 +127,7 @@ The base uses the ESP32-P4's SPI3 bus at 20 MHz; SPI2 stays with the SD card.
  *Files*: `main/net/eth_w5500.c` / `.h` (probe, driver, network interface, `net_is_up()`), plus `CONFIG_ETH_SPI_ETHERNET_W5500=y` in `sdkconfig` and `sdkconfig.defaults`. Network features (the relay, spots, SNTP, updates) now ask `net_is_up()` - Ethernet or Wi-Fi - instead of Wi-Fi alone; the Wi-Fi settings screen still shows Wi-Fi only.
  
  **MacOS Client for TCI and Serial Connection**

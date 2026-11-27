@@ -11,7 +11,7 @@ this README and the current `patches/`) into `tools/nas-kit` of the new
 `~/src/QMX-Panadapter-NAS/tools/nas-kit`. Run from there, the script first copies
 itself to a temporary folder, because a rebuild moves that folder to the archive.
 
-* `patches/` - the NAS series (54 patches). It applies to upstream **v2.1.0** as it
+* `patches/` - the NAS series (54 patches). It applies to upstream **v2.1.2** as it
   is (ported 2026-11-18; built, not yet flashed or tested on the Tab5).
   v1.23.1-NAS was flashed and marked tested on 2026-10-31. v1.20.5-NAS was
   built, flashed and marked tested on 2026-10-23 with the series before it,
@@ -19,11 +19,12 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
   the release the patches were made against. Each build writes the release into
   the README's Version line, the CMake version fallback and the relay README, so
   they name the release they were built on. The ports that needed hand work:
-  * the relay's settings bit is DIRTY_RELAY **163** with DIRTY_WORDS **6** (192
-    bits): upstream's v2.0.2 took 161 (RTTY contest) and 162 (TX subnet
-    interlock); v2.0.0 raised DIRTY_WORDS to 6 itself and took 160 for RTTY
+  * the relay's settings bit is DIRTY_RELAY **169** with DIRTY_WORDS **6** (192
+    bits): upstream's v2.1.2 took 163-168 (spectrum height, FT8/FT4 band hop,
+    TXCQ period, hop split, WSPR hop stay); v2.0.2 took 161 (RTTY contest) and
+    162 (TX subnet interlock); v2.0.0 raised DIRTY_WORDS to 6 itself and took 160 for RTTY
     (earlier: 159 in v1.26.1, 157-158 in v1.24.2, 152-156 in v1.24.1).
-    check_dirty_bits is clean, 28 free - patch 0001;
+    check_dirty_bits is clean, 22 free - patch 0001;
   * (v2.1.0) nothing stopped the series except git am: patches made on top of
     earlier ones carry README blobs that no longer exist once upstream's
     README changes, so the series was rebased onto v2.1.0 (it merged without
@@ -39,9 +40,11 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     transmitter (0045). v1.24.1 also passes the
     flush task's settings snapshot as a pointer, so the relay's NVS writes use
     `snap->` - patch 0001;
-  * the Radio source drawer section is id **57** (upstream took 54 for the
-    web-radio player and 55 for CW practice in v1.24.1, and 56 for Semi QSK in
-    v1.24.2), N_DRAWER_SECTIONS **58**, with its `_Static_assert` - patch 0005;
+  * the Radio source drawer section is id **58** (upstream took 54 for the
+    web-radio player and 55 for CW practice in v1.24.1, 56 for Semi QSK in
+    v1.24.2 and 57 for FT8/FT4 band hopping in v2.1.2), with its
+    `_Static_assert` - patch 0005; Power off the radio is 59 (0049) and Power
+    on the radio 60 (0050), N_DRAWER_SECTIONS **61**;
   * (v1.24.2) upstream's new standing patch
     apply_esp_hosted_sdio_copypayload_tolerant.ps1 edits the same allocation as
     the NAS's apply_esp_hosted_sdio_rx_copy_psram.ps1, which already drops the
@@ -71,9 +74,9 @@ itself to a temporary folder, because a rebuild moves that folder to the archive
     (patch 0015); the "TX locked" refusal sits after upstream's band guard (T48)
     (patch 0029); CMakeLists.txt keeps both upstream's configure-on-commit block
     and the -NAS version block.
-  On v2.1.0 the host harnesses (`tools/run_harnesses.py`) give 70 passed, 3
-  failed (ft8_gap and ft8_piece do not build here, rtty_auto), 4 skipped -
-  the same as pristine upstream v2.1.0 in the same environment;
+  On v2.1.2 the host harnesses (`tools/run_harnesses.py`) give 70 passed, 4
+  failed (ft8_gap, ft8_piece and ft8_rcvd_hold do not build here, rtty_auto),
+  4 skipped - the same as pristine upstream v2.1.2 in the same environment;
   check_tx_guard, check_unattended_tx, check_dirty_bits, check_web and
   check_webui are clean, and check_docs gives upstream's own two warnings.
   Later patches: **0021** the version fallback, **0022** the front-page README

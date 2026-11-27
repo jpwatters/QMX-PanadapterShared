@@ -1,4 +1,4 @@
-From a58f7bec454c3ee707ff1e94fe90443061dac121 Mon Sep 17 00:00:00 2001
+From d94776dbee273b5ef460c334fc9d2a5648ac7e4c Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 11:00:00 -0500
 Subject: [PATCH 33/54] README: title "QMX/QMX+ Panadapter Shared over the
@@ -11,7 +11,7 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/README.md b/README.md
-index 26f0c07f..cd4cf1c5 100644
+index ca557da9..f05fb544 100644
 --- a/README.md
 +++ b/README.md
 @@ -1,4 +1,4 @@

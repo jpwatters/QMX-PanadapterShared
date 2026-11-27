@@ -27,6 +27,7 @@
 
 #include "esp_timer.h"   // the sticky-timeout expiry clock
 #include "ft8_qso.h"
+#include "ft8_hop.h"     // ft8_hop_cq_parity - the CQ period while hopping
 #include "ft8_robot.h"   // ft8_band_change_stand_down also stands the robot down
 #include "ft8_pileup.h"
 #include "ft8_greylist.h"
@@ -38,10 +39,13 @@
 #include "ui/ft8_screen.h"
 #include "storage/settings.h"
 #include "adif/adif_log.h"
+#include "ft8_rcvd_hold.h"   // a finished QSO with no RST_RCVD is held, not logged
 #include "net/spots.h"  // spots_activation_for_call() - tag a chase with SIG/SIG_INFO
 #include "cat/cat.h"
 
 #include <string.h>
+#include "esp_attr.h"   // EXT_RAM_BSS_ATTR
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -205,6 +209,9 @@ static int64_t            s_manual_target_ts;
 #define DONE_GRACE_TTL_S 180
 static char               s_last_done_call[FT8_CALL_MAX_LEN];
 static int64_t            s_last_done_ts;
+// True when the QSO that last reached DONE had no RST_RCVD and went to the
+// report hold instead of the log - see finish_wait_done(). Under lock().
+static bool               s_done_log_held;
 
 // --- A partner who never decoded our final ----------------------------------
 // Field report (Roy KI0ER, 2026-07-29, working VE3INB): the exchange completed
@@ -354,11 +361,64 @@ bool ft8_qso_worked_recently(const char *call, uint32_t freq_hz)
 //   own measurement of OUR signal, NOT an echo of the report we sent - proven
 //   on air 2026-07-15 (we sent -08, OS4K rogered R-06). Either field is left
 //   EMPTY if the exchange completes without us ever hearing a numeric value
-//   (e.g. they jump straight to RR73 after a grid answer); adif_log.c then
-//   omits it. Never substitute "599" - that would be a fabricated measurement
-//   uploaded to QRZ/eQSL/LoTW as if real (Roy KI0ER, 2026-07-29).
+//   (e.g. they jump straight to RR73 after a grid answer). Never substitute
+//   "599" - that would be a fabricated measurement uploaded to QRZ/eQSL/LoTW as
+//   if real (Roy KI0ER, 2026-07-29).
+// ⛔ An empty RST_RCVD is no longer LOGGED (operator, 2026-11-25): the QSO is
+//   held for a late report and dropped if none comes - see ft8_rcvd_hold.h and
+//   finish_wait_done(). An empty RST_SENT still logs with the field omitted.
 static char               s_rst_sent[8];
 static char               s_rst_rcvd[8];
+
+/* Write one FT8/FT4/JS8 record behind the duplicate guard. The ONE place this
+ * file calls adif_log_record(): the normal wrap-up and a held QSO completed by
+ * a late report both come here, so neither can skip the guard. Returns the
+ * microseconds the write took (0 when nothing was written). */
+static int64_t write_adif_record(const adif_qso_t *qso, const char *target)
+{
+    bool dup = (s_logged_call[0] &&
+                strcmp(s_logged_call, target) == 0 &&
+                strcmp(adif_log_band_for_freq(qso->freq_hz),
+                       adif_log_band_for_freq(s_logged_freq_hz)) == 0 &&
+                ((int64_t)time(NULL) - s_logged_ts) < QSO_DUP_LOG_WINDOW_SEC);
+    if (dup) {
+        ESP_LOGW(TAG, "not logging %s again - same call/band logged %llds ago",
+                 target, (long long)((int64_t)time(NULL) - s_logged_ts));
+        return 0;
+    }
+    int64_t t0 = esp_timer_get_time();
+    bool logged = adif_log_record(qso);
+    int64_t us = esp_timer_get_time() - t0;
+    // Only a QSO that is ON FLASH may arm the duplicate guard: a refused one
+    // marked here would make a second attempt to log the same contact read as
+    // "already logged" and skip it.
+    if (logged) {
+        strncpy(s_logged_call, target, sizeof(s_logged_call) - 1);
+        s_logged_call[sizeof(s_logged_call) - 1] = '\0';
+        s_logged_freq_hz = qso->freq_hz;
+        s_logged_ts      = (int64_t)time(NULL);
+    } else {
+        ESP_LOGE(TAG, "QSO with %s completed but NOT logged (storage full)", target);
+    }
+    return us;
+}
+
+/* What happened to the last held QSO, for the screen and the web result line.
+ * A sequence number, not a flag: the outcome lands up to a minute after DONE,
+ * often while the next contact is running, so the view shows it on the edge
+ * of this number changing. Written under lock(). */
+static uint32_t s_hold_evt_seq;
+static char     s_hold_evt_text[64];
+
+static void hold_event(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void hold_event(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s_hold_evt_text, sizeof(s_hold_evt_text), fmt, ap);
+    va_end(ap);
+    s_hold_evt_seq++;
+}
 /* Their grid, remembered for the LIFETIME OF THIS QSO (Gyula HA3HZ, 2026-09-06:
  * "the associated call sign and grid data should be recorded in memory, then
  * incorrect entries would not occur").
@@ -1134,6 +1194,23 @@ static void rearm_current(void)
         }
     }
 
+    /* Band hop with the CQ split on: EVEN in the 1st half of each stay, ODD in
+     * the 2nd (operator, 2026-11-26 - the two periods are two channels on one
+     * band, and both should be called). Only the CQ itself; a reply's period
+     * comes from the station it answers. */
+    if (st == FT8_QSO_CQ) {
+        int hp = -1;
+        const int plan = ft8_hop_cq_plan(&hp);
+        if (plan == 1) {
+            ESP_LOGI(TAG, "CQ split: waiting for the %s slot of this half", hp ? "ODD" : "EVEN");
+            return;    /* cq_listen_for_answers() re-arms next RX slot */
+        }
+        if (plan == 0) {
+            req.use_parity     = true;
+            req.want_even_slot = (hp == 0);
+        }
+    }
+
     // A partner visibly working somebody else is no longer held through here -
     // ft8_qso_advance() abandons the pounce outright the moment it sees that
     // (2026-11-02), so there is nothing left for rearm_current() to suppress.
@@ -1379,16 +1456,39 @@ static void relocate_tone_if_clashing(bool is_cq)
 // The auto path only ever re-engages a station the operator already chose to
 // work, within the window - not a new unattended-TX category.
 #define QSO_RESUME_WINDOW_SEC 300
-static char             s_resume_call[FT8_CALL_MAX_LEN];
-static ft8_qso_state_t  s_resume_state;
-static ft8_tx_request_t s_resume_req;       // the message we were repeating
-static bool             s_resume_have_req;
-static char             s_resume_rst_sent[8], s_resume_rst_rcvd[8];
-static char             s_resume_fd_exch[FT8_FD_EXCH_LEN];
-static bool             s_resume_from_cq;
-static int              s_resume_freq_hz;
-static int              s_resume_partner_hz;
-static int64_t          s_resume_at;        // time(NULL) at abandonment
+/* ⭐ FOUR RECORDS, NOT ONE (operator, 2026-11-24). With a single record,
+ * every new drop overwrote the last: M7JVH was dropped for being busy at
+ * 312.6 s, IQ5PJ at 446.4 s replaced him, and M7JVH's CQ at 518.1 s - inside
+ * the window, with us free - was never re-called. Four covers a busy evening
+ * of pounces inside the 5-minute window; when all four are live the OLDEST is
+ * the one given up. One record per callsign: saving the same station again
+ * refreshes its entry. PSRAM, not internal RAM - each record carries a full
+ * ft8_tx_request_t and internal RAM is the scarce one (project memory:
+ * internal RAM .bss audit). */
+#define QSO_RESUME_MAX 4
+typedef struct {
+    char             call[FT8_CALL_MAX_LEN];   // empty = free slot
+    ft8_qso_state_t  state;
+    ft8_tx_request_t req;                       // the message we were repeating
+    char             rst_sent[8], rst_rcvd[8];
+    char             fd_exch[FT8_FD_EXCH_LEN];
+    bool             from_cq;
+    int              freq_hz;
+    int              partner_hz;
+    int64_t          at;                        // time(NULL) at abandonment
+    /* Set only when the record was saved because the partner was BUSY with a
+     * third party (the partner_busy_with() abandon in ft8_qso_advance()). Such
+     * a partner did nothing wrong - they picked someone else first - so when
+     * they finish with that station (73/RR73/RRR to them, or a fresh CQ)
+     * inside the window, we call them again: resume_target_free_heard().
+     * Operator, 2026-11-24, after HB9SFL sent "N8MZN HB9SFL 73" 57 s after
+     * dropping us and nothing re-called: "i should have retried working him
+     * automatically after his 73 to the other station". A timeout or an abort
+     * leaves it false: a station that never answered is not re-called just
+     * because it went on to work others. */
+    bool             recall;
+} resume_rec_t;
+static EXT_RAM_BSS_ATTR resume_rec_t s_resume[QSO_RESUME_MAX];
 
 // True while we're draining the pileup (auto-work-pileup): the current QSO was
 // started by try_start_pileup_pounce(). Lets a timed-out pileup pounce advance
@@ -1398,64 +1498,103 @@ static bool             s_pileup_active;
 
 // Snapshot the current exchange as resumable. Call under lock(), BEFORE the
 // abandon path mutates state. Only exchange states are worth resuming.
-static void resume_record_save_locked(void)
+// Returns the record's index, or -1 if nothing was saved (so the busy-abandon
+// path can mark exactly that record for re-call).
+static int resume_record_save_locked(void)
 {
-    if (!s_target[0] || !s_have_cur) return;
+    if (!s_target[0] || !s_have_cur) return -1;
     if (s_state != FT8_QSO_WAIT_RPT && s_state != FT8_QSO_WAIT_ROGER &&
-        s_state != FT8_QSO_WAIT_RR73) return;
-    strncpy(s_resume_call, s_target, sizeof(s_resume_call) - 1);
-    s_resume_call[sizeof(s_resume_call) - 1] = '\0';
-    s_resume_state    = s_state;
-    s_resume_req      = s_cur_req;
-    s_resume_have_req = true;
-    memcpy(s_resume_rst_sent, s_rst_sent, sizeof(s_resume_rst_sent));
-    memcpy(s_resume_rst_rcvd, s_rst_rcvd, sizeof(s_resume_rst_rcvd));
-    memcpy(s_resume_fd_exch,  s_fd_their_exch, sizeof(s_resume_fd_exch));
-    s_resume_from_cq  = s_from_cq;
-    s_resume_freq_hz  = s_freq_hz;
-    s_resume_partner_hz = s_partner_freq_hz;
-    s_resume_at       = (int64_t)time(NULL);
+        s_state != FT8_QSO_WAIT_RR73) return -1;
+    const int64_t now = (int64_t)time(NULL);
+    int k = -1;
+    for (int i = 0; i < QSO_RESUME_MAX; i++)          // same station: refresh it
+        if (s_resume[i].call[0] && strcmp(s_resume[i].call, s_target) == 0) { k = i; break; }
+    if (k < 0)                                          // a free or expired slot
+        for (int i = 0; i < QSO_RESUME_MAX; i++)
+            if (!s_resume[i].call[0] ||
+                now - s_resume[i].at > QSO_RESUME_WINDOW_SEC) { k = i; break; }
+    if (k < 0) {                                        // all live: give up the oldest
+        k = 0;
+        for (int i = 1; i < QSO_RESUME_MAX; i++)
+            if (s_resume[i].at < s_resume[k].at) k = i;
+        ESP_LOGI(TAG, "resume: all %d records live - dropping %s (oldest) for %s",
+                 QSO_RESUME_MAX, s_resume[k].call, s_target);
+    }
+    resume_rec_t *r = &s_resume[k];
+    /* memcpy, not strncpy: both are FT8_CALL_MAX_LEN arrays, and GCC on the
+     * Tab5 build rejects strncpy(dst, src, sizeof - 1) between equal-size
+     * arrays as -Werror=stringop-truncation. The host compiler did not, so
+     * 70860ad7 reached main uncompiled for the P4. */
+    _Static_assert(sizeof(r->call) == sizeof(s_target), "resume call size");
+    memcpy(r->call, s_target, sizeof(r->call));
+    r->call[sizeof(r->call) - 1] = '\0';
+    r->state      = s_state;
+    r->req        = s_cur_req;
+    memcpy(r->rst_sent, s_rst_sent, sizeof(r->rst_sent));
+    memcpy(r->rst_rcvd, s_rst_rcvd, sizeof(r->rst_rcvd));
+    memcpy(r->fd_exch,  s_fd_their_exch, sizeof(r->fd_exch));
+    r->from_cq    = s_from_cq;
+    r->freq_hz    = s_freq_hz;
+    r->partner_hz = s_partner_freq_hz;
+    r->at         = now;
+    r->recall     = false;              // only the busy-abandon path sets it
+    return k;
 }
 
-static bool resume_record_fresh(const char *call)
+// Index of a live (inside the window) record for `call`, or -1.
+static int resume_record_find(const char *call)
 {
-    if (!s_resume_call[0] || !s_resume_have_req || !call || !call[0]) return false;
-    if (strcmp(s_resume_call, call) != 0) return false;
-    return ((int64_t)time(NULL) - s_resume_at) <= QSO_RESUME_WINDOW_SEC;
+    if (!call || !call[0]) return -1;
+    const int64_t now = (int64_t)time(NULL);
+    for (int i = 0; i < QSO_RESUME_MAX; i++) {
+        if (!s_resume[i].call[0] || strcmp(s_resume[i].call, call) != 0) continue;
+        return (now - s_resume[i].at <= QSO_RESUME_WINDOW_SEC) ? i : -1;
+    }
+    return -1;
 }
 
-// Restore the abandoned exchange and re-arm its last outgoing message; the
+// Forget `call`'s record, if any. Caller holds lock().
+static void resume_record_drop_locked(const char *call)
+{
+    if (!call || !call[0]) return;
+    for (int i = 0; i < QSO_RESUME_MAX; i++)
+        if (s_resume[i].call[0] && strcmp(s_resume[i].call, call) == 0)
+            s_resume[i].call[0] = '\0';
+}
+
+// Restore abandoned exchange k and re-arm its last outgoing message; the
 // normal advance() flow then processes whatever the partner sends next (an
 // R-report/RR73 heard this very slot advances immediately). One-shot: the
 // record is consumed. Caller ensures the machine is idle/interruptible.
-static void resume_restore(void)
+static void resume_restore(int k)
 {
+    if (k < 0 || k >= QSO_RESUME_MAX) return;
     lock();
-    strncpy(s_target, s_resume_call, sizeof(s_target) - 1);
+    resume_rec_t *r = &s_resume[k];
+    memcpy(s_target, r->call, sizeof(s_target));   // equal sizes, see save
     s_target[sizeof(s_target) - 1] = '\0';
-    s_state        = s_resume_state;
-    s_cur_req      = s_resume_req;
+    s_state        = r->state;
+    s_cur_req      = r->req;
     s_have_cur     = true;
-    memcpy(s_rst_sent, s_resume_rst_sent, sizeof(s_rst_sent));
-    memcpy(s_rst_rcvd, s_resume_rst_rcvd, sizeof(s_rst_rcvd));
-    memcpy(s_fd_their_exch, s_resume_fd_exch, sizeof(s_fd_their_exch));
-    s_from_cq      = s_resume_from_cq;
-    s_freq_hz      = s_resume_freq_hz;
-    s_partner_freq_hz = s_resume_partner_hz;
+    memcpy(s_rst_sent, r->rst_sent, sizeof(s_rst_sent));
+    memcpy(s_rst_rcvd, r->rst_rcvd, sizeof(s_rst_rcvd));
+    memcpy(s_fd_their_exch, r->fd_exch, sizeof(s_fd_their_exch));
+    s_from_cq      = r->from_cq;
+    s_freq_hz      = r->freq_hz;
+    s_partner_freq_hz = r->partner_hz;
     s_missed_slots = 0;
     s_min_scan_utc = 0;             // partner is audible NOW - scan immediately
-    s_resume_call[0]  = '\0';
-    s_resume_have_req = false;
+    r->call[0]     = '\0';
     unlock();
 }
 
 // Did the abandoned partner transmit a message addressed to us THIS slot?
 // (Runs on the decode task - the ~11 KB stack snapshot is fine there, same
 // pattern as capture_pileup_callers.)
-static bool resume_comeback_heard(int64_t slot_sec)
+// Returns the record index, or -1.
+static int resume_comeback_heard(int64_t slot_sec)
 {
-    if (!s_my_call[0]) return false;
-    if (!resume_record_fresh(s_resume_call)) return false;
+    if (!s_my_call[0]) return -1;
     ft8_call_t snap[FT8_CALL_TABLE_SIZE];
     int n = 0;
     ft8_screen_get_all(snap, FT8_CALL_TABLE_SIZE, &n);
@@ -1465,10 +1604,37 @@ static bool resume_comeback_heard(int64_t slot_sec)
         if (!split_msg3(snap[i].last_text, t1, sizeof(t1), t2, sizeof(t2),
                         rest, sizeof(rest))) continue;
         if (strcmp(t1, s_my_call) != 0) continue;
-        if (strcmp(t2, s_resume_call) != 0) continue;
-        return true;
+        int k = resume_record_find(t2);
+        if (k >= 0) return k;
     }
-    return false;
+    return -1;
+}
+
+// Did a partner we dropped for being BUSY finish with that station THIS slot?
+// Their message must be a sign-off to a third party (73 / RR73 / RRR - the same
+// three words partner_busy_with() reads as "free") or a fresh CQ. A message to
+// US is the comeback path, not this one. Returns the record index, or -1.
+static int resume_target_free_heard(int64_t slot_sec)
+{
+    if (!s_my_call[0]) return -1;
+    ft8_call_t snap[FT8_CALL_TABLE_SIZE];
+    int n = 0;
+    ft8_screen_get_all(snap, FT8_CALL_TABLE_SIZE, &n);
+    for (int i = 0; i < n; i++) {
+        if (snap[i].last_utc != slot_sec) continue;
+        int k = resume_record_find(snap[i].call);
+        if (k < 0 || !s_resume[k].recall) continue;
+        const char *text = snap[i].last_text;
+        if (strncmp(text, "CQ ", 3) == 0) return k;
+        char t1[16], t2[16], rest[FT8_FD_EXCH_LEN];
+        if (!split_msg3(text, t1, sizeof(t1), t2, sizeof(t2), rest, sizeof(rest)))
+            continue;
+        if (strcmp(t1, s_my_call) == 0) continue;       // to us: the comeback path
+        if (strcmp(t2, snap[i].call) != 0) continue;
+        if (strcmp(rest, "73") == 0 || strcmp(rest, "RR73") == 0 ||
+            strcmp(rest, "RRR") == 0) return k;
+    }
+    return -1;
 }
 
 // No progress this RX slot. Count it; on the Nth, give up on this station -
@@ -1656,11 +1822,12 @@ bool ft8_qso_start(const ft8_tx_request_t *tx1_req, char *err, size_t err_len)
     // were sending; their next R-report/RR73/73 advances normally) instead of
     // restarting from TX1 - "just finish QSOs if they get broken up"
     // (operator request 2026-07-16).
-    if (resume_record_fresh(tx1_req->target_call)) {
+    int rk = resume_record_find(tx1_req->target_call);
+    if (rk >= 0) {
         char who[FT8_CALL_MAX_LEN];
-        strncpy(who, s_resume_call, sizeof(who) - 1);
+        strncpy(who, s_resume[rk].call, sizeof(who) - 1);
         who[sizeof(who) - 1] = '\0';
-        resume_restore();
+        resume_restore(rk);
         ft8_pileup_remove(who);
         arm_current_if_idle();
         ft8_status_set("QSO %s: resuming where we left off", who);
@@ -1968,6 +2135,15 @@ bool ft8_qso_start_cq(const ft8_tx_request_t *cq_req, char *err, size_t err_len)
     // lock to the parity of the first TX slot so re-arms always target the
     // same slot type and the opposite slot stays free for RX.
     ft8_tx_request_t req_copy = *cq_req;
+    /* Band hop CQ split: its period wins, and a WAIT defers the first CQ to
+     * the run's per-slot re-arm (Sim 2026-11-26: the first CQ ignored the
+     * split). */
+    int hop_par = -1;
+    const int hop_plan = ft8_hop_cq_plan(&hop_par);
+    if (hop_plan >= 0) {
+        req_copy.use_parity     = true;
+        req_copy.want_even_slot = (hop_par == 0);
+    }
     if (!req_copy.use_parity) {
         int64_t next_slot = next_slot_sec(false, false, req_copy.protocol);
         req_copy.use_parity     = true;
@@ -1975,7 +2151,9 @@ bool ft8_qso_start_cq(const ft8_tx_request_t *cq_req, char *err, size_t err_len)
     }
 
     char arm_err[64];
-    if (!ft8_tx_arm(&req_copy, arm_err, sizeof(arm_err))) {
+    if (hop_plan == 1)
+        ESP_LOGI(TAG, "CQ split: first CQ waits for the %s slot of this half", hop_par ? "ODD" : "EVEN");
+    else if (!ft8_tx_arm(&req_copy, arm_err, sizeof(arm_err))) {
         if (err) snprintf(err, err_len, "%s", arm_err);
         return false;
     }
@@ -2059,6 +2237,15 @@ static void cqrun_answer(const char *caller, int caller_freq, int caller_snr,
     fmt_report(caller_snr, rpt, sizeof(rpt));
 
     if (got_rr73 || got_73) {
+        /* An UNSOLICITED RR73/73 to our CQ (EO80F, 2026-11-25): no report was
+         * exchanged either way. We still answer 73, deliberately:
+         *  - WSJT-X logs when it SENDS RR73, so their log already holds the
+         *    contact; our 73 neither adds it nor takes it away. It only ends
+         *    their repeats and clears the frequency.
+         *  - Answering with a report instead would change the TX sequence on a
+         *    guess about how their software reacts to a report after RR73.
+         * What changed is OUR log: with no RST_RCVD the wrap-up holds the QSO
+         * for a late report and drops it if none comes (ft8_rcvd_hold.h). */
         ok = send_next(FT8_TX_KIND_73, caller, our_freq, slot_sec, "73",
                        FT8_QSO_WAIT_DONE);
         if (ok) {
@@ -2240,7 +2427,22 @@ typedef enum {
     PILE_SKIP_WORKED_BEFORE,
     PILE_SKIP_WORKED_RECENTLY,
     PILE_SKIP_GREYLIST,
+    PILE_SKIP_NOT_HEARD,
 } pile_skip_t;
+
+/* Auto-work only a caller heard in one of their last two slots.
+ *
+ * ⛔ The pile-up keeps an entry for an hour (PILEUP_MAX_AGE_S, ft8_pileup.c),
+ * which is right for the operator picking from the list by hand - he can see
+ * the age. The automatic drain had no age test at all. Seen 2026-11-24:
+ * U01YXC was decoded ONCE ('OZ1LAV U01YXC RQ47', an AP decode) while we were
+ * working IK2LHP, never again, and the drain took him 76 s later and sent our
+ * report six times - three minutes - to nobody. A caller who is still waiting
+ * repeats every 30 s; one missed in two of their slots has gone, or was never
+ * there. 75 s from the slot start they were last heard in = their previous
+ * slot or the one before (30 s per own-parity slot, plus the ~13 s into our
+ * slot at which this runs, plus margin). Manual picks are not affected. */
+#define PILEUP_AUTO_MAX_AGE_S 75
 
 static const char *pile_skip_name(pile_skip_t r)
 {
@@ -2248,6 +2450,7 @@ static const char *pile_skip_name(pile_skip_t r)
     case PILE_SKIP_WORKED_BEFORE:   return "worked-before";
     case PILE_SKIP_WORKED_RECENTLY: return "worked just now";
     case PILE_SKIP_GREYLIST:        return "grey-listed";
+    case PILE_SKIP_NOT_HEARD:       return "not heard lately";
     default:                        return "ok";
     }
 }
@@ -2281,10 +2484,15 @@ static int pileup_pick_best(const ft8_pileup_entry_t *pile, int n,
                             const qmx_settings_t *qs, pile_skip_t *why)
 {
     int best = -1;
+    const int64_t now = (int64_t)time(NULL);
     for (int i = 0; i < n; i++) {
         if (!pile[i].call[0]) { why[i] = PILE_OK; continue; }
         why[i] = pileup_candidate_skip(pile[i].call, qs);
         if (why[i] != PILE_OK) continue;
+        if (now - pile[i].last_seen_utc > PILEUP_AUTO_MAX_AGE_S) {
+            why[i] = PILE_SKIP_NOT_HEARD;
+            continue;
+        }
         if (best < 0 || pile[i].snr_db > pile[best].snr_db) best = i;
     }
     return best;
@@ -2959,9 +3167,23 @@ static void finish_wait_done(const char *target)
              * restructured and the TX timing certainly should not be. */
             int64_t wrap_t0 = esp_timer_get_time();
             int64_t adif_us = 0;
-            lock(); s_state = FT8_QSO_DONE; s_have_cur = false; unlock();
-            ft8_status_set("QSO %s: complete!", target);
-            ESP_LOGI(TAG, "QSO with %s complete", target);
+            /* Decided BEFORE the state reads DONE, in the same lock: the screen
+             * and the web read ft8_qso_done_log_held() on the DONE edge, and
+             * must never see "complete" for a QSO that is not going to the log
+             * yet. */
+            lock();
+            bool hold_log = ft8_rcvd_hold_needed(s_rst_rcvd, s_fd_their_exch[0] != '\0');
+            s_done_log_held = hold_log;
+            s_state = FT8_QSO_DONE; s_have_cur = false;
+            unlock();
+            if (hold_log) {
+                ft8_status_set("QSO %s: done - no report from them yet, log held", target);
+                ESP_LOGI(TAG, "QSO with %s complete - no report received, log held "
+                              "for %d slots", target, FT8_RCVD_HOLD_SLOTS);
+            } else {
+                ft8_status_set("QSO %s: complete!", target);
+                ESP_LOGI(TAG, "QSO with %s complete", target);
+            }
             clear_dt_follow();   // QSO done - back to the UTC/GPS beat
             // Drop the just-worked station from the pileup. It was removed at
             // qso_start, but the partner keeps addressing us through the
@@ -3039,10 +3261,9 @@ static void finish_wait_done(const char *target)
 
             // A completed QSO with this call supersedes any older resumable
             // half-QSO - never auto-resume into a duplicate afterwards.
-            if (s_resume_call[0] && strcmp(s_resume_call, target) == 0) {
-                s_resume_call[0]  = '\0';
-                s_resume_have_req = false;
-            }
+            lock();
+            resume_record_drop_locked(target);
+            unlock();
 
             // Build and save the ADIF record.
             qmx_settings_t qs;
@@ -3117,33 +3338,50 @@ static void finish_wait_done(const char *target)
                 .their_sig      = their_sig[0] ? their_sig : NULL,
                 .their_sig_info = their_ref[0] ? their_ref : NULL,
             };
-            // Duplicate guard (see QSO_DUP_LOG_WINDOW_SEC): the same call on the
-            // same band inside the window is this same contact reaching DONE a
-            // second time - most often because the operator finished it by hand
-            // after the machine already had - not a second QSO.
-            bool dup = (s_logged_call[0] &&
-                        strcmp(s_logged_call, target) == 0 &&
-                        strcmp(adif_log_band_for_freq(qso.freq_hz),
-                               adif_log_band_for_freq(s_logged_freq_hz)) == 0 &&
-                        ((int64_t)time(NULL) - s_logged_ts) < QSO_DUP_LOG_WINDOW_SEC);
-            if (dup) {
-                ESP_LOGW(TAG, "not logging %s again - same call/band logged %llds ago",
-                         target, (long long)((int64_t)time(NULL) - s_logged_ts));
+            if (hold_log) {
+                /* ⛔ NO RST_RCVD - DO NOT LOG IT YET (operator, 2026-11-25).
+                 * R1BDX sent RR73 without a report, then sent R-12 one slot
+                 * later; EO80F sent an unsolicited RR73 and never a report.
+                 * Both used to log with an empty RST_RCVD. The record is held
+                 * and rcvd_hold_scan() logs it if their report arrives inside
+                 * FT8_RCVD_HOLD_SLOTS, or drops it with a warning if not. FD
+                 * QSOs carry the class/section instead and never get here. */
+                ft8_rcvd_hold_t h = {0};
+                snprintf(h.call,       sizeof(h.call),       "%s", target);
+                snprintf(h.rst_sent,   sizeof(h.rst_sent),   "%s", s_rst_sent);
+                snprintf(h.their_grid, sizeof(h.their_grid), "%s", their_grid);
+                snprintf(h.mode,       sizeof(h.mode),       "%s", qso.mode ? qso.mode : "");
+                snprintf(h.sig,        sizeof(h.sig),        "%s", their_sig);
+                snprintf(h.sig_info,   sizeof(h.sig_info),   "%s", their_ref);
+                h.freq_hz  = qso.freq_hz;
+                h.qso_time = qso.qso_time;
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                int64_t now_ms = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+                ft8_rcvd_hold_t ev;
+                lock();
+                bool evicted = ft8_rcvd_hold_add(&h, now_ms,
+                                                 ftx_protocol_slot_ms(ft8_op_mode_protocol()), &ev);
+                if (evicted)
+                    hold_event("%s  NOT logged - no report received", ev.call);
+                unlock();
+                if (evicted)
+                    ESP_LOGW(TAG, "QSO with %s NOT logged: no report received, and its "
+                                  "hold was evicted by %s (%d held at once)",
+                             ev.call, target, FT8_RCVD_HOLD_MAX);
             } else {
-                int64_t adif_t0 = esp_timer_get_time();
-                bool logged = adif_log_record(&qso);
-                adif_us = esp_timer_get_time() - adif_t0;
-                // Only a QSO that is ON FLASH may arm the duplicate guard: a
-                // refused one marked here would make a second attempt to log
-                // the same contact read as "already logged" and skip it.
-                if (logged) {
-                    strncpy(s_logged_call, target, sizeof(s_logged_call) - 1);
-                    s_logged_call[sizeof(s_logged_call) - 1] = '\0';
-                    s_logged_freq_hz = qso.freq_hz;
-                    s_logged_ts      = (int64_t)time(NULL);
-                } else {
-                    ESP_LOGE(TAG, "QSO with %s completed but NOT logged (storage full)", target);
-                }
+                // A report is in hand: any older held exchange with this
+                // station is superseded by this one, never logged as well.
+                lock();
+                bool superseded = ft8_rcvd_hold_drop(target);
+                unlock();
+                if (superseded)
+                    ESP_LOGI(TAG, "held QSO with %s superseded by this one", target);
+                // Duplicate guard inside (see QSO_DUP_LOG_WINDOW_SEC): the same
+                // call on the same band inside the window is this same contact
+                // reaching DONE a second time - most often because the operator
+                // finished it by hand after the machine already had.
+                adif_us = write_adif_record(&qso, target);
             }
             // Grace ring: note it on BOTH branches. A contact reaching DONE a
             // second time is still one we have just worked, and it is precisely
@@ -3158,6 +3396,80 @@ static void finish_wait_done(const char *target)
                      (long long)((esp_timer_get_time() - wrap_t0) / 1000),
                      (long long)(adif_us / 1000));
         }
+}
+
+/* Log a held QSO whose report has now arrived (see ft8_rcvd_hold.h). */
+static void log_held_qso(const ft8_rcvd_hold_t *h)
+{
+    qmx_settings_t qs;
+    settings_load_all(&qs);
+    adif_qso_t qso = {
+        .their_call     = h->call,
+        .my_call        = s_my_call,
+        .my_grid        = qs.my_grid,
+        .their_grid     = h->their_grid,
+        .freq_hz        = h->freq_hz,
+        .mode           = h->mode,
+        .rst_sent       = h->rst_sent,
+        .rst_rcvd       = h->rst_rcvd,
+        .qso_time       = (time_t)h->qso_time,   // when the exchange ended, not now
+        .their_sig      = h->sig[0]      ? h->sig      : NULL,
+        .their_sig_info = h->sig_info[0] ? h->sig_info : NULL,
+    };
+    ESP_LOGI(TAG, "held QSO with %s: their report %s arrived - logging it",
+             h->call, h->rst_rcvd);
+    write_adif_record(&qso, h->call);
+}
+
+/* Once per decoded slot: does a held partner's report sit in THIS slot's
+ * decodes, and has any hold run out? Two callers - the slot advance and the
+ * end-of-slot late look - both serialised on s_adv_lock, so a held QSO cannot
+ * be logged twice. The late look matters here: an early advance can run
+ * before the partner's report is decoded.
+ *
+ * The status line is NOT touched: by now it belongs to the next contact. The
+ * outcome goes to hold_event(), which the screen and the web result show. */
+static void rcvd_hold_scan(int64_t slot_sec)
+{
+    lock();
+    bool any = ft8_rcvd_hold_any();
+    unlock();
+    if (!any) return;
+
+    // PSRAM, never the stack: the late look runs on a second decode task.
+    ft8_call_t *snap = heap_caps_malloc(sizeof(ft8_call_t) * FT8_CALL_TABLE_SIZE,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // No snapshot = no look at this slot. Expiring now could drop a QSO whose
+    // report sits in exactly this slot, so the expiry waits a slot as well.
+    if (!snap) return;
+    const int64_t slot_ms = slot_sec * 1000;
+    int n = 0;
+    ft8_screen_get_all(snap, FT8_CALL_TABLE_SIZE, &n);
+    for (int i = 0; i < n; i++) {
+        if (snap[i].last_utc != slot_sec) continue;
+        char t1[16], t2[16], rest[FT8_FD_EXCH_LEN];
+        if (!split_msg3(snap[i].last_text, t1, sizeof(t1), t2, sizeof(t2),
+                        rest, sizeof(rest))) continue;
+        ft8_rcvd_hold_t done;
+        lock();
+        bool got = ft8_rcvd_hold_on_msg(s_my_call, t1, t2, rest, slot_ms, &done);
+        if (got) hold_event("%s  QSO logged (report %s)", done.call, done.rst_rcvd);
+        unlock();
+        if (got) log_held_qso(&done);
+    }
+    free(snap);
+
+    for (;;) {
+        ft8_rcvd_hold_t gone;
+        lock();
+        bool expired = ft8_rcvd_hold_expire(slot_ms, &gone);
+        if (expired) hold_event("%s  NOT logged - no report received", gone.call);
+        unlock();
+        if (!expired) break;
+        ESP_LOGW(TAG, "QSO with %s NOT logged: no report from them in the %d slots "
+                      "after the exchange ended - the record would have no RST_RCVD",
+                 gone.call, FT8_RCVD_HOLD_SLOTS);
+    }
 }
 
 /* The CQ-run answer scan, as its own function because it has TWO callers.
@@ -3281,6 +3593,13 @@ void ft8_qso_slot_late_look(int64_t slot_sec)
      * nobody automatically. */
     capture_pileup_callers(slot_sec);
 
+    /* A held QSO's report may be among the decodes the early advance did not
+     * see. Under s_adv_lock so it cannot run alongside the advance's own scan
+     * (the advance already holds that lock when it scans). */
+    if (s_adv_lock) xSemaphoreTake(s_adv_lock, portMAX_DELAY);
+    rcvd_hold_scan(slot_sec);
+    if (s_adv_lock) xSemaphoreGive(s_adv_lock);
+
     if (st == FT8_QSO_CQ) cq_listen_for_answers(slot_sec, freq, true);
 }
 
@@ -3307,6 +3626,11 @@ static void ft8_qso_advance_body(int64_t slot_sec)
      * abort returns with the check gone from this task, look elsewhere. */
 
     capture_pileup_callers(slot_sec);
+
+    // A held QSO whose report arrives in this slot is logged here (see
+    // ft8_rcvd_hold.h). Every slot, whatever the state: the hold outlives the
+    // QSO and the next contact may already be running.
+    rcvd_hold_scan(slot_sec);
 
     // Take a copy of the partner's grid while their row is still in the decode
     // table. It ages out of that table on its own schedule, and on a slow QRP
@@ -3388,14 +3712,39 @@ static void ft8_qso_advance_body(int64_t slot_sec)
         unlock();
         bool interruptible = (st0 == FT8_QSO_IDLE || st0 == FT8_QSO_DONE ||
                               st0 == FT8_QSO_TIMEOUT || st0 == FT8_QSO_CQ);
-        if (interruptible && resume_comeback_heard(slot_sec)) {
+        int rk = interruptible ? resume_comeback_heard(slot_sec) : -1;
+        int fk = (interruptible && rk < 0) ? resume_target_free_heard(slot_sec) : -1;
+        if (rk >= 0) {
             char who[FT8_CALL_MAX_LEN];
-            strncpy(who, s_resume_call, sizeof(who) - 1);
+            strncpy(who, s_resume[rk].call, sizeof(who) - 1);
             who[sizeof(who) - 1] = '\0';
             if (st0 == FT8_QSO_CQ) ft8_tx_disarm();
-            resume_restore();
+            resume_restore(rk);
             ft8_status_set("QSO %s: partner came back - resuming", who);
             ESP_LOGI(TAG, "resume (auto): %s heard again - continuing exchange", who);
+        } else if (fk >= 0) {
+            /* They finished with the station they chose over us: call again
+             * with the message we were repeating. Their answer cannot come
+             * before the slot after our burst, so this slot and the next are
+             * not misses. */
+            char who[FT8_CALL_MAX_LEN];
+            strncpy(who, s_resume[fk].call, sizeof(who) - 1);
+            who[sizeof(who) - 1] = '\0';
+            if (st0 == FT8_QSO_CQ) ft8_tx_disarm();
+            resume_restore(fk);
+            lock();
+            s_min_scan_utc = slot_sec + 30;
+            unlock();
+            /* ⛔ ARM IT NOW. resume_restore() only puts the request back; the
+             * comeback path gets its arm from the WAIT_* handler processing
+             * the partner's message, but here there is no message to us, so
+             * nothing armed and the call waited for some later trigger. Seen
+             * on its first run, 2026-11-24: re-call at 215.9 s, first burst
+             * only at 245.6 s, one slot after IK2LHP's next CQ re-triggered
+             * it. Same helper the state changes use - not a new arming site. */
+            arm_current_replacing_armed();
+            ft8_status_set("QSO %s: free again - calling", who);
+            ESP_LOGI(TAG, "resume (re-call): %s finished with the other station - calling again", who);
         }
     }
 
@@ -3593,6 +3942,16 @@ static void ft8_qso_advance_body(int64_t slot_sec)
             ft8_status_set("%s busy with %s - moving on",
                            target, with[0] ? with : "someone");
             lock();
+            /* ⛔ SAVE THE RESUME RECORD FIRST. The history note at
+             * partner_busy_with() promised that the 5-minute resume window
+             * "still re-engages automatically if the target addresses us
+             * again" - but this path never saved one, so nothing could. Seen
+             * 2026-11-24: HB9SFL took N8MZN over us (abandoned here at
+             * 112.7 s), then sent "OZ1LAV HB9SFL R-21" twice, 207 s and 237 s
+             * later, and nothing answered. The timeout and abort paths have
+             * always saved; this one was added later without it. */
+            int rk = resume_record_save_locked();
+            if (rk >= 0) s_resume[rk].recall = true;
             s_state         = FT8_QSO_IDLE;
             s_target[0]     = '\0';
             s_have_cur      = false;
@@ -4155,6 +4514,16 @@ void ft8_qso_notify_manual_final(const char *target_call, const char *final_extr
         }
         free(snap);
     }
+    /* Their report usually came a step EARLIER than their last message (a
+     * hand-run grid flow ends on RR73). The reply builder recorded it with
+     * the call it belongs to when the operator answered it - use that before
+     * the QSO goes to the report hold for want of one (ft8_rcvd_hold.h). */
+    if (!rst_rcvd[0]) {
+        lock();
+        if (s_heard_their_rpt[0] && strcmp(s_heard_their_rpt_call, target_call) == 0)
+            snprintf(rst_rcvd, sizeof(rst_rcvd), "%.7s", s_heard_their_rpt);
+        unlock();
+    }
 
     lock();
     s_state = FT8_QSO_WAIT_DONE;
@@ -4264,6 +4633,16 @@ void ft8_qso_abort(void)
     // A mid-exchange abort is resumable too (no-op for CQ/idle aborts - the
     // save helper only records WAIT_* exchange states).
     resume_record_save_locked();
+    /* The aborted station is no longer "being worked", so its row drops the
+     * orange working highlight now, not when MANUAL_TARGET_TTL_S (5 min) runs
+     * out. The pounce paths set s_manual_target as well as s_target, and
+     * ft8_qso_get_working_target() falls back to it once the state is IDLE -
+     * so a pounce cancelled before it ever transmitted stayed orange
+     * (operator, 2026-11-24: "please leave him unhighlighted as i changed my
+     * mind"). Only when it names the station being aborted: a manual target
+     * for someone else is not ours to clear. */
+    if (target[0] && s_manual_target[0] && strcmp(s_manual_target, target) == 0)
+        s_manual_target[0] = '\0';
     s_state         = FT8_QSO_IDLE;
     s_target[0]     = '\0';
     s_have_cur      = false;
@@ -4319,10 +4698,7 @@ bool ft8_qso_skip_exchange(char *skipped, size_t skipped_len,
     ft8_qso_abort();
 
     lock();
-    if (strcmp(s_resume_call, target) == 0) {
-        s_resume_call[0]  = '\0';
-        s_resume_have_req = false;
-    }
+    resume_record_drop_locked(target);
     unlock();
 
     /* ⛔ The grey-list entry is what stops the robot answering this station's
@@ -4362,6 +4738,23 @@ void ft8_qso_get_target(char *buf, size_t len)
     strncpy(buf, s_target, len - 1);
     buf[len - 1] = '\0';
     unlock();
+}
+
+bool ft8_qso_done_log_held(void)
+{
+    lock();
+    bool held = s_done_log_held;
+    unlock();
+    return held;
+}
+
+uint32_t ft8_qso_hold_event(char *buf, size_t len)
+{
+    lock();
+    uint32_t seq = s_hold_evt_seq;
+    if (buf && len) snprintf(buf, len, "%s", s_hold_evt_text);
+    unlock();
+    return seq;
 }
 
 void ft8_qso_get_pinned_call(char *buf, size_t len)

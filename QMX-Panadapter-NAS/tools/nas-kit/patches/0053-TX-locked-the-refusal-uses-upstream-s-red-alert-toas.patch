@@ -1,4 +1,4 @@
-From 9ad8da510fd4eea40f4f206984ec2b4262273280 Mon Sep 17 00:00:00 2001
+From 912f4271c5d87c3b3a63c24ddb3a7b9f44f99ef4 Mon Sep 17 00:00:00 2001
 From: J P <1953637+jpwatters@users.noreply.github.com>
 Date: Sun, 22 Nov 2026 13:25:45 -0600
 Subject: [PATCH 53/54] TX locked: the refusal uses upstream's red alert toast
@@ -20,10 +20,10 @@ Claude-Session: https://claude.ai/code/session_01W7MAsxUnuCnfwkHxdqp61S
  4 files changed, 5 insertions(+), 5 deletions(-)
 
 diff --git a/main/ft8_tx.c b/main/ft8_tx.c
-index 9c603590..1a13800f 100644
+index 50d021d5..9d7c26f9 100644
 --- a/main/ft8_tx.c
 +++ b/main/ft8_tx.c
-@@ -1301,7 +1301,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1331,7 +1331,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
          // meantime). Not keyed at all - the relay would drop it anyway.
          ESP_LOGW(TAG, "TX not keyed: " RADIO_RELAY_TX_LOCKED_MSG " (%s)", lock_why);
          ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
@@ -32,7 +32,7 @@ index 9c603590..1a13800f 100644
      } else if (strcmp(mode, "DiGi") != 0) {
          ESP_LOGW(TAG, "TX aborted before key-up: mode drifted to '%s' (need DiGi)", mode);
      } else {
-@@ -1592,7 +1592,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
+@@ -1622,7 +1622,7 @@ void ft8_tx_run(const ft8_tx_request_t *req)
                      // the check above and the hand-over.
                      ESP_LOGW(TAG, "relay refused the burst: " RADIO_RELAY_TX_LOCKED_MSG);
                      ft8_status_set("%s", RADIO_RELAY_TX_LOCKED_MSG);
@@ -42,10 +42,10 @@ index 9c603590..1a13800f 100644
              } else {
                  ESP_LOGW(TAG, "no report from the relay for the burst - sending key-up from the Tab5");
 diff --git a/main/ui/power_cal_modal.c b/main/ui/power_cal_modal.c
-index 7c1a56f6..f68233a4 100644
+index 9eb32465..19979d48 100644
 --- a/main/ui/power_cal_modal.c
 +++ b/main/ui/power_cal_modal.c
-@@ -760,7 +760,7 @@ static void start_btn_cb(lv_event_t *e)
+@@ -769,7 +769,7 @@ static void start_btn_cb(lv_event_t *e)
          return;
      }
      if (radio_relay_tx_locked(NULL, 0)) {
@@ -68,10 +68,10 @@ index a1fd3076..0aa5a0d6 100644
      }
      /* ⛔ BAND GUARD (T48). Tune keys a CARRIER, and in MD8 the emitted RF is
 diff --git a/main/wspr_tx.c b/main/wspr_tx.c
-index 8501c77f..558d9666 100644
+index 66b826a6..6fad9515 100644
 --- a/main/wspr_tx.c
 +++ b/main/wspr_tx.c
-@@ -507,7 +507,7 @@ static void run_burst(const wspr_tx_request_t *req)
+@@ -551,7 +551,7 @@ static void run_burst(const wspr_tx_request_t *req)
      // "burst starting" line, for the same reason as the SWR check above.
      if (!s_burst_sim && radio_relay_tx_locked(NULL, 0)) {
          ESP_LOGW(TAG, "WSPR TX REFUSED: " RADIO_RELAY_TX_LOCKED_MSG);

@@ -94,6 +94,7 @@ char *config_io_export(size_t *out_len)
     APP("rtty_contest_next  = %u\n", (unsigned)(c.rtty_contest.serial_next ? c.rtty_contest.serial_next : 1));
     APP("zoom               = %.2f\n", (double)c.zoom_factor);
     APP("colormap           = %u\n", (unsigned)c.colormap_idx);
+    APP("spectrum_h         = %u\n", (unsigned)c.spectrum_h);
     APP("brightness         = %u\n", (unsigned)c.brightness_pct);
     APP("ema_alpha          = %.2f\n", (double)c.ema_alpha);
     APP("db_min             = %.0f\n", (double)c.db_min);
@@ -222,6 +223,11 @@ char *config_io_export(size_t *out_len)
     APP("wspr_rx_cycles     = %u\n", (unsigned)c.wspr_rx_cycles);
     APP("wspr_band_hop      = %s\n", yn(c.wspr_hop_en));
     APP("wspr_hop_mask      = %u\n", (unsigned)c.wspr_hop_mask);
+    APP("ft8_hop_mask       = %u\n", (unsigned)c.ft8_hop_mask);
+    APP("ft8_hop_minutes    = %u\n", (unsigned)c.ft8_hop_dwell_min);
+    APP("ft8_cq_period      = %s\n", c.ft8_cq_parity == 0 ? "even" : c.ft8_cq_parity == 1 ? "odd" : "any");
+    APP("ft8_hop_cq_split   = %s\n", yn(c.ft8_hop_cq_split));
+    APP("wspr_hop_cycles    = %u\n", (unsigned)c.wspr_hop_stay_cycles);
     APP("wspr_publish       = %s\n", yn(c.wspr_net_en));
 
     // LoTW callsign cert + private key, single-line base64 DER (full-backup
@@ -266,6 +272,7 @@ char *config_io_export(size_t *out_len)
     APP("cq_show_others        = %s\n", yn(c.ft8_filters.cq_show_others));
     APP("hide_worked_before    = %s\n", yn(c.ft8_filters.hide_worked_before));
     APP("robot_skip_directed_cq = %s\n", yn(c.ft8_filters.robot_skip_directed_cq));
+    APP("tap_auto_work         = %s\n", yn(c.ft8_filters.tap_auto_work));
 
     /* ⭐ THE POWER CALIBRATION - the reason this whole audit happened.
      *
@@ -512,6 +519,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "ota_autodownload")) settings_set_ota_autodl(to_bool(val));
             else if (!strcasecmp(key, "zoom"))              settings_set_zoom_factor((float)atof(val));
             else if (!strcasecmp(key, "colormap"))          settings_set_colormap_idx((uint8_t)atoi(val));
+            else if (!strcasecmp(key, "spectrum_h"))        settings_set_spectrum_h((uint16_t)atoi(val));
             else if (!strcasecmp(key, "brightness"))        settings_set_brightness_pct((uint8_t)atoi(val));
             else if (!strcasecmp(key, "ema_alpha"))         settings_set_ema_alpha((float)atof(val));
             else if (!strcasecmp(key, "db_min"))            settings_set_db_min((float)atof(val));
@@ -644,6 +652,12 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "wspr_rx_cycles"))    settings_set_wspr_rx_cycles((uint8_t)atoi(val));
             else if (!strcasecmp(key, "wspr_band_hop"))     settings_set_wspr_hop_en(to_bool(val));
             else if (!strcasecmp(key, "wspr_hop_mask"))     settings_set_wspr_hop_mask((uint16_t)atoi(val));
+            else if (!strcasecmp(key, "ft8_hop_mask"))      settings_set_ft8_hop_mask((uint16_t)atoi(val));
+            else if (!strcasecmp(key, "ft8_hop_minutes"))   settings_set_ft8_hop_dwell_min((uint8_t)atoi(val));
+            else if (!strcasecmp(key, "ft8_cq_period"))     settings_set_ft8_cq_parity(
+                         !strcasecmp(val, "even") ? 0 : !strcasecmp(val, "odd") ? 1 : -1);
+            else if (!strcasecmp(key, "ft8_hop_cq_split"))  settings_set_ft8_hop_cq_split(to_bool(val));
+            else if (!strcasecmp(key, "wspr_hop_cycles"))   settings_set_wspr_hop_stay_cycles((uint8_t)atoi(val));
             else if (!strcasecmp(key, "wspr_publish"))      settings_set_wspr_net_en(to_bool(val));
             else break;   // unknown key: ignore, don't count
             applied++;
@@ -692,6 +706,7 @@ int config_io_import(char *text)
             else if (!strcasecmp(key, "cq_show_others"))        { filt.cq_show_others = b; filt_touched = true; }
             else if (!strcasecmp(key, "hide_worked_before"))    { filt.hide_worked_before = b; filt_touched = true; }
             else if (!strcasecmp(key, "robot_skip_directed_cq")) { filt.robot_skip_directed_cq = b; filt_touched = true; }
+            else if (!strcasecmp(key, "tap_auto_work"))         { filt.tap_auto_work = b; filt_touched = true; }
             else if (!strcasecmp(key, "include1")) { strncpy(filt.incl_text[0], val, FT8_FILTER_TEXT_LEN - 1); filt.incl_text[0][FT8_FILTER_TEXT_LEN-1]='\0'; filt_touched = true; }
             else if (!strcasecmp(key, "include2")) { strncpy(filt.incl_text[1], val, FT8_FILTER_TEXT_LEN - 1); filt.incl_text[1][FT8_FILTER_TEXT_LEN-1]='\0'; filt_touched = true; }
             else if (!strcasecmp(key, "exclude1")) { strncpy(filt.excl_text[0], val, FT8_FILTER_TEXT_LEN - 1); filt.excl_text[0][FT8_FILTER_TEXT_LEN-1]='\0'; filt_touched = true; }
